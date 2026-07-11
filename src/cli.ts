@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { discoverAssets } from "./installer/assets.js";
@@ -54,5 +55,8 @@ export async function run(argv: string[]): Promise<number> {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url))
+if (
+  process.argv[1] !== undefined &&
+  realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)
+)
   process.exitCode = await run(process.argv.slice(2));

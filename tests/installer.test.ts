@@ -132,3 +132,11 @@ describe("asset installer", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
+
+describe("CLI parser", () => {
+  it("rejects unknown commands and options", async () => {
+    const { run } = await import("../src/cli.js");
+    expect(await run(["unknown"])).toBe(2);
+    expect(await run(["install", "--unknown"])).toBe(2);
+  });
+});

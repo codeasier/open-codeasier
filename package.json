@@ -14,6 +14,9 @@
   "bin": {
     "open-codeasier": "./dist/cli.js"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     "./server": {
       "types": "./dist/plugin.d.ts",
