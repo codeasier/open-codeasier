@@ -38,8 +38,8 @@ describe("plugin module", () => {
       worktree: "/repo",
       serverUrl: new URL("http://localhost"),
     } as any);
-    expect(hooks.tool).toHaveProperty("cce_session_review");
-    const output = await hooks.tool?.cce_session_review?.execute(
+    expect(hooks.tool).toHaveProperty("session_review");
+    const output = await hooks.tool?.session_review?.execute(
       { sessionID: "ses_123", mode: "summary" },
       {
         sessionID: "current",

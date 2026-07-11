@@ -4,7 +4,7 @@ import { createSessionReviewTool } from "./session-review/tool.js";
 
 export const server: Plugin = async ({ client }) => ({
   tool: {
-    cce_session_review: createSessionReviewTool(client as SessionClient),
+    session_review: createSessionReviewTool(client as SessionClient),
   },
 });
 

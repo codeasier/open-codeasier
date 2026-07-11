@@ -22,14 +22,14 @@ jobs:
           npm pack
           tar -tzf open-codeasier-*.tgz | sort > "$RUNNER_TEMP/package-contents"
           grep -qx 'package/dist/plugin.js' "$RUNNER_TEMP/package-contents"
-          grep -qx 'package/skills/cce-session-review/SKILL.md' "$RUNNER_TEMP/package-contents"
-          grep -qx 'package/commands/cce-session-review.md' "$RUNNER_TEMP/package-contents"
+          grep -qx 'package/skills/session-review/SKILL.md' "$RUNNER_TEMP/package-contents"
+          grep -qx 'package/commands/session-review.md' "$RUNNER_TEMP/package-contents"
           mkdir "$RUNNER_TEMP/package-smoke"
           npm install --prefix "$RUNNER_TEMP/package-smoke" "$GITHUB_WORKSPACE"/open-codeasier-*.tgz
           (cd "$RUNNER_TEMP/package-smoke" && node --input-type=module -e "import('open-codeasier/server').then((m) => { if (!m.default.server) process.exit(1) })")
           HOME="$RUNNER_TEMP/home" "$RUNNER_TEMP/package-smoke/node_modules/.bin/open-codeasier" install
-          test -f "$RUNNER_TEMP/home/.config/opencode/skills/cce-session-review/SKILL.md"
-          test -f "$RUNNER_TEMP/home/.config/opencode/commands/cce-session-review.md"
+          test -f "$RUNNER_TEMP/home/.config/opencode/skills/session-review/SKILL.md"
+          test -f "$RUNNER_TEMP/home/.config/opencode/commands/session-review.md"
           HOME="$RUNNER_TEMP/home" "$RUNNER_TEMP/package-smoke/node_modules/.bin/open-codeasier" uninstall
-          test ! -e "$RUNNER_TEMP/home/.config/opencode/skills/cce-session-review/SKILL.md"
-          test ! -e "$RUNNER_TEMP/home/.config/opencode/commands/cce-session-review.md"
+          test ! -e "$RUNNER_TEMP/home/.config/opencode/skills/session-review/SKILL.md"
+          test ! -e "$RUNNER_TEMP/home/.config/opencode/commands/session-review.md"

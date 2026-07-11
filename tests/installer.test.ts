@@ -33,7 +33,7 @@ async function fixture(content = "one") {
     source,
     asset: {
       source,
-      relativeTarget: "commands/cce-test.md" as const,
+      relativeTarget: "commands/test.md" as const,
       sha256: sha256(content),
     },
   };
