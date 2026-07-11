@@ -5,7 +5,10 @@ import plugin from "../src/plugin.js";
 describe("plugin module", () => {
   it("exports the OpenCode server entry", () => {
     expect(plugin).toEqual(
-      expect.objectContaining({ server: expect.any(Function) }),
+      expect.objectContaining({
+        id: "open-codeasier",
+        server: expect.any(Function),
+      }),
     );
   });
 

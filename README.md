@@ -5,7 +5,7 @@ OpenCode-native workflow skills plus a read-only, SDK-backed session review tool
 ## Requirements
 
 - Node.js 22 or newer
-- OpenCode compatible with `@opencode-ai/plugin` and `@opencode-ai/sdk` 1.17.18
+- OpenCode 1.14.49 or newer
 
 ## Install
 

@@ -8,4 +8,4 @@ export const server: Plugin = async ({ client }) => ({
   },
 });
 
-export default { server } satisfies PluginModule;
+export default { id: "open-codeasier", server } satisfies PluginModule;
