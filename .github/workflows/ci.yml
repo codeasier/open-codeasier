@@ -49,8 +49,7 @@ jobs:
           npm pack
           mkdir "$RUNNER_TEMP/opencode-minimum"
           npm install --prefix "$RUNNER_TEMP/opencode-minimum" opencode-ai@1.14.49 "$GITHUB_WORKSPACE"/open-codeasier-*.tgz
-          mkdir -p "$RUNNER_TEMP/home/.config/opencode"
-          node -e "require('node:fs').writeFileSync(process.argv[1], JSON.stringify({ plugin: [require('node:url').pathToFileURL(process.argv[2]).href] }))" "$RUNNER_TEMP/home/.config/opencode/opencode.json" "$RUNNER_TEMP/opencode-minimum/node_modules/open-codeasier/dist/plugin.js"
-          HOME="$RUNNER_TEMP/home" "$RUNNER_TEMP/opencode-minimum/node_modules/.bin/opencode" debug config --print-logs 2> "$RUNNER_TEMP/opencode-minimum.log"
+          node -e "require('node:fs').writeFileSync(process.argv[1], JSON.stringify({ plugin: [require('node:url').pathToFileURL(process.argv[2]).href] }))" "$RUNNER_TEMP/opencode-minimum.json" "$RUNNER_TEMP/opencode-minimum/node_modules/open-codeasier/dist/plugin.js"
+          OPENCODE_CONFIG="$RUNNER_TEMP/opencode-minimum.json" "$RUNNER_TEMP/opencode-minimum/node_modules/.bin/opencode" debug config --print-logs 2> "$RUNNER_TEMP/opencode-minimum.log"
           grep -q 'open-codeasier/dist/plugin.js' "$RUNNER_TEMP/opencode-minimum.log"
           ! grep -q 'failed to load plugin' "$RUNNER_TEMP/opencode-minimum.log"
