@@ -1,0 +1,49 @@
+{
+  "name": "open-codeasier",
+  "version": "0.1.0",
+  "description": "OpenCode-native workflow skills and session review tools",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "dist",
+    "skills",
+    "commands",
+    "README.md",
+    "LICENSE"
+  ],
+  "bin": {
+    "open-codeasier": "./dist/cli.js"
+  },
+  "exports": {
+    "./server": {
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "1.17.18",
+    "@opencode-ai/sdk": "1.17.18"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.30.1",
+    "@types/node": "22.15.32",
+    "eslint": "9.30.1",
+    "prettier": "3.6.2",
+    "typescript": "5.8.3",
+    "typescript-eslint": "8.35.0",
+    "vitest": "3.2.4"
+  },
+  "engines": {
+    "node": ">=22",
+    "opencode": ">=1.17.18"
+  }
+}
