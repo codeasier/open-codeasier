@@ -45,7 +45,8 @@ jobs:
       - run: npm ci
       - run: npm run build
       - id: minimum-version
-        run: echo "version=$(node -p \"require('./package.json').engines.opencode.match(/\\d+\\.\\d+\\.\\d+/)[0]\")" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "version=$(node -p 'require("./package.json").engines.opencode.match(/\d+\.\d+\.\d+/)[0]')" >> "$GITHUB_OUTPUT"
       - name: OpenCode minimum-version plugin-loading smoke test
         run: |
           npm pack
