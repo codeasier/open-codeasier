@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
+import { lstat, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { PackagedAsset } from "./assets.js";
 import { sha256 } from "./assets.js";
@@ -7,6 +7,7 @@ import {
   manifestPath,
   readManifest,
   writeManifest,
+  validateAssetPath,
 } from "./manifest.js";
 import type { InstallTarget } from "./paths.js";
 
@@ -23,6 +24,26 @@ async function currentHash(path: string): Promise<string | undefined> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
+  }
+}
+
+async function rejectSymlinks(root: string, path: string): Promise<void> {
+  try {
+    if ((await lstat(root)).isSymbolicLink())
+      throw new AssetConflictError(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  let current = root;
+  for (const segment of path.slice(root.length + 1).split("/")) {
+    current = join(current, segment);
+    try {
+      if ((await lstat(current)).isSymbolicLink())
+        throw new AssetConflictError(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
   }
 }
 
@@ -54,12 +75,26 @@ export async function installAssets(input: {
     removed: [] as string[],
     unchanged: [] as string[],
   };
+  const staged = new Map<string, Buffer>();
 
   for (const asset of input.assets) {
+    validateAssetPath(asset.relativeTarget);
+    const contents = await readFile(asset.source);
+    if (sha256(contents) !== asset.sha256)
+      throw new Error(
+        `Packaged asset changed while installing: ${asset.source}`,
+      );
+    staged.set(asset.relativeTarget, contents);
     const target = join(input.target.root, asset.relativeTarget);
+    await rejectSymlinks(input.target.root, target);
     const current = await currentHash(target);
     const expected = owned.get(asset.relativeTarget);
-    if (current === asset.sha256) result.unchanged.push(asset.relativeTarget);
+    if (
+      expected !== undefined &&
+      current === expected &&
+      current === asset.sha256
+    )
+      result.unchanged.push(asset.relativeTarget);
     else {
       if (
         current !== undefined &&
@@ -72,26 +107,18 @@ export async function installAssets(input: {
   for (const [path, expected] of owned) {
     if (next.has(path)) continue;
     const target = join(input.target.root, path);
+    await rejectSymlinks(input.target.root, target);
     const current = await currentHash(target);
     if (current !== undefined && current !== expected)
       throw new AssetConflictError(target);
     if (current !== undefined) result.removed.push(path);
   }
   if (input.dryRun) return result;
-  for (const path of result.removed) {
-    const target = join(input.target.root, path);
-    await rm(target);
-    await removeEmptyParents(target, input.target.root);
-  }
   for (const path of result.written) {
-    const asset = input.assets.find(
-      (candidate) => candidate.relativeTarget === path,
-    );
-    if (asset === undefined) throw new Error(`Missing planned asset: ${path}`);
-    await atomicWrite(
-      join(input.target.root, path),
-      await readFile(asset.source),
-    );
+    const contents = staged.get(path);
+    if (contents === undefined)
+      throw new Error(`Missing staged asset: ${path}`);
+    await atomicWrite(join(input.target.root, path), contents);
   }
   await writeManifest(input.target.root, {
     schemaVersion: 1,
@@ -101,6 +128,11 @@ export async function installAssets(input: {
       sha256,
     })),
   });
+  for (const path of result.removed) {
+    const target = join(input.target.root, path);
+    await rm(target);
+    await removeEmptyParents(target, input.target.root);
+  }
   return result;
 }
 
@@ -112,6 +144,7 @@ export async function uninstallAssets(input: {
   const removed: string[] = [];
   for (const file of manifest?.files ?? []) {
     const target = join(input.target.root, file.path);
+    await rejectSymlinks(input.target.root, target);
     const current = await currentHash(target);
     if (current === undefined) continue;
     if (current !== file.sha256) throw new AssetConflictError(target);

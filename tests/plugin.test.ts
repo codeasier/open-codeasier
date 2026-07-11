@@ -58,7 +58,7 @@ describe("plugin module", () => {
     });
     expect(output).toMatchObject({
       title: "Session review input: ses_123",
-      metadata: { mode: "summary", truncated: false },
+      metadata: { mode: "summary", truncated: false, omittedMessages: 0 },
     });
     expect((output as any).output).toContain('"sessionID":"ses_123"');
   });

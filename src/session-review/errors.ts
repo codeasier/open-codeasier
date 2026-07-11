@@ -2,6 +2,7 @@ export type SessionReviewErrorCode =
   | "SESSION_NOT_FOUND"
   | "SESSION_ACCESS_DENIED"
   | "SESSION_EMPTY"
+  | "RESPONSE_TOO_LARGE"
   | "SDK_FAILURE";
 
 export class SessionReviewError extends Error {

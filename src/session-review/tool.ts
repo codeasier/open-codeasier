@@ -27,6 +27,8 @@ export function createSessionReviewTool(client: SessionClient) {
             mode: args.mode,
             truncated: review.truncated,
             includedMessages: review.includedMessages,
+            omittedMessages: review.omittedMessages,
+            retainedMessageIDs: review.retainedMessageIDs,
           },
         };
       } catch (error) {

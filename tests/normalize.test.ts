@@ -99,4 +99,70 @@ describe("session normalization", () => {
       "...[truncated]",
     );
   });
+  it("handles pinned SDK tool states and bounds arbitrary inputs deterministically", () => {
+    const input = message("m1", "hello") as any;
+    const circular: any = {
+      z: "x".repeat(5_000),
+      a: { b: { c: { d: { e: { f: 1 } } } } },
+    };
+    circular.self = circular;
+    input.parts = [
+      {
+        type: "tool",
+        tool: "a",
+        state: { status: "pending", input: circular },
+      },
+      { type: "tool", tool: "b", state: { status: "running", input: [1, 2] } },
+      {
+        type: "tool",
+        tool: "c",
+        state: { status: "completed", input: {}, output: "ok" },
+      },
+      {
+        type: "tool",
+        tool: "d",
+        state: { status: "error", input: {}, error: "bad" },
+      },
+    ];
+    const first = normalizeSession({
+      session: session as any,
+      messages: [input],
+      mode: "summary",
+    });
+    const second = normalizeSession({
+      session: session as any,
+      messages: [input],
+      mode: "summary",
+    });
+    expect(first).toEqual(second);
+    expect(JSON.stringify(first)).toContain("[circular]");
+    expect(first.messages[0]?.parts.map((part: any) => part.status)).toEqual([
+      "pending",
+      "running",
+      "completed",
+      "error",
+    ]);
+  });
+  it("bounds the complete response and reports retained IDs and omissions", () => {
+    const messages = [1, 2, 3].map((id) => message(`m${id}`, "x".repeat(100)));
+    const result = normalizeSession({
+      session: session as any,
+      messages: messages as any,
+      mode: "troubleshoot",
+      limits: { maxBytes: 500 },
+    });
+    expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(500);
+    expect(result.omittedMessages).toBe(3 - result.includedMessages);
+    expect(result.retainedMessageIDs).toEqual(
+      result.messages.map((item) => item.id),
+    );
+    expect(() =>
+      normalizeSession({
+        session: session as any,
+        messages: messages as any,
+        mode: "summary",
+        limits: { maxBytes: 1 },
+      }),
+    ).toThrow(expect.objectContaining({ code: "RESPONSE_TOO_LARGE" }));
+  });
 });

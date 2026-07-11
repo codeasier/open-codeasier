@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -115,6 +115,89 @@ describe("asset installer", () => {
         dryRun: false,
       }),
     ).rejects.toBeInstanceOf(AssetConflictError);
+  });
+  it("refuses an identical unowned file", async () => {
+    const f = await fixture();
+    const target = resolveTarget({ project: join(f.root, "project") });
+    await mkdir(join(target.root, "commands"), { recursive: true });
+    await writeFile(join(target.root, f.asset.relativeTarget), "one");
+    await expect(
+      installAssets({
+        target,
+        assets: [f.asset],
+        packageVersion: "1",
+        dryRun: false,
+      }),
+    ).rejects.toBeInstanceOf(AssetConflictError);
+  });
+  it.each([
+    "commands/../outside.md",
+    "/commands/x.md",
+    "skills/x/other.md",
+    "commands/x/y.md",
+    "commands/UPPER.md",
+    "skills/.hidden/SKILL.md",
+  ])("rejects invalid manifest path %s", async (path) => {
+    const f = await fixture();
+    const target = resolveTarget({ project: join(f.root, "project") });
+    await mkdir(join(target.root, ".open-codeasier"), { recursive: true });
+    await writeFile(
+      join(target.root, ".open-codeasier", "installed-assets.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        packageVersion: "1",
+        files: [{ path, sha256: sha256("x") }],
+      }),
+    );
+    await expect(uninstallAssets({ target, dryRun: false })).rejects.toThrow(
+      "Invalid open-codeasier asset path",
+    );
+  });
+  it("rejects symlinked target parents and leaves", async () => {
+    const f = await fixture();
+    const outside = join(f.root, "outside");
+    await mkdir(outside);
+    for (const leaf of [false, true]) {
+      const target = resolveTarget({
+        project: join(f.root, leaf ? "leaf" : "parent"),
+      });
+      await mkdir(target.root, { recursive: true });
+      if (leaf) {
+        await mkdir(join(target.root, "commands"));
+        await symlink(
+          join(outside, "x.md"),
+          join(target.root, f.asset.relativeTarget),
+        );
+      } else await symlink(outside, join(target.root, "commands"));
+      await expect(
+        installAssets({
+          target,
+          assets: [f.asset],
+          packageVersion: "1",
+          dryRun: false,
+        }),
+      ).rejects.toBeInstanceOf(AssetConflictError);
+    }
+  });
+  it("reads all sources before mutating targets", async () => {
+    const f = await fixture();
+    const target = resolveTarget({ project: join(f.root, "project") });
+    const missing = {
+      ...f.asset,
+      source: join(f.root, "missing.md"),
+      relativeTarget: "commands/missing.md" as const,
+    };
+    await expect(
+      installAssets({
+        target,
+        assets: [f.asset, missing],
+        packageVersion: "1",
+        dryRun: false,
+      }),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(join(target.root, f.asset.relativeTarget)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("dry-runs without mutation", async () => {
     const f = await fixture();

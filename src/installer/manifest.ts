@@ -1,6 +1,16 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
+const NAME = "[a-z0-9]+(?:-[a-z0-9]+)*";
+const ASSET_PATH = new RegExp(
+  `^(?:skills/${NAME}/SKILL\\.md|commands/${NAME}\\.md)$`,
+);
+
+export function validateAssetPath(path: string): void {
+  if (!ASSET_PATH.test(path))
+    throw new Error(`Invalid open-codeasier asset path: ${path}`);
+}
+
 export type InstallManifest = {
   schemaVersion: 1;
   packageVersion: string;
@@ -38,7 +48,9 @@ export async function readManifest(
     ) {
       throw new Error("Invalid open-codeasier install manifest");
     }
-    return value as InstallManifest;
+    const manifest = value as InstallManifest;
+    for (const file of manifest.files) validateAssetPath(file.path);
+    return manifest;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;

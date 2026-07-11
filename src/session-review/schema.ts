@@ -40,6 +40,8 @@ export type NormalizedSession = {
   messages: ReviewMessage[];
   totalMessages: number;
   includedMessages: number;
+  omittedMessages: number;
+  retainedMessageIDs: string[];
   truncated: boolean;
   firstMessageID?: string;
   lastMessageID?: string;
