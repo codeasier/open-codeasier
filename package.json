@@ -12,7 +12,7 @@
     "LICENSE"
   ],
   "bin": {
-    "open-codeasier": "./dist/cli.js"
+    "open-codeasier": "dist/cli.js"
   },
   "publishConfig": {
     "access": "public"
