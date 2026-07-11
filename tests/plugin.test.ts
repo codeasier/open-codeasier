@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import { describe, expect, it, vi } from "vitest";
 import plugin from "../src/plugin.js";
 
 describe("plugin module", () => {
@@ -6,5 +7,59 @@ describe("plugin module", () => {
     expect(plugin).toEqual(
       expect.objectContaining({ server: expect.any(Function) }),
     );
+  });
+
+  it("registers and executes the explicit read-only session tool", async () => {
+    const client = {
+      session: {
+        get: vi.fn().mockResolvedValue({
+          data: {
+            id: "ses_123",
+            title: "x",
+            time: { created: 1, updated: 2 },
+          },
+          response: { status: 200 },
+        }),
+        messages: vi.fn().mockResolvedValue({
+          data: [
+            {
+              info: { id: "m1", role: "user", time: { created: 1 } },
+              parts: [{ type: "text", text: "hi" }],
+            },
+          ],
+          response: { status: 200 },
+        }),
+      },
+    };
+    const hooks = await plugin.server({
+      client,
+      project: {},
+      directory: "/repo",
+      worktree: "/repo",
+      serverUrl: new URL("http://localhost"),
+    } as any);
+    expect(hooks.tool).toHaveProperty("cce_session_review");
+    const output = await hooks.tool?.cce_session_review?.execute(
+      { sessionID: "ses_123", mode: "summary" },
+      {
+        sessionID: "current",
+        messageID: "m",
+        agent: "a",
+        directory: "/repo",
+        worktree: "/repo",
+        abort: new AbortController().signal,
+        metadata() {},
+        async ask() {},
+      },
+    );
+    expect(client.session.get).toHaveBeenCalledWith({
+      path: { id: "ses_123" },
+      query: { directory: "/repo" },
+    });
+    expect(output).toMatchObject({
+      title: "Session review input: ses_123",
+      metadata: { mode: "summary", truncated: false },
+    });
+    expect((output as any).output).toContain('"sessionID":"ses_123"');
   });
 });
