@@ -33,3 +33,25 @@ jobs:
           HOME="$RUNNER_TEMP/home" "$RUNNER_TEMP/package-smoke/node_modules/.bin/open-codeasier" uninstall
           test ! -e "$RUNNER_TEMP/home/.config/opencode/skills/session-review/SKILL.md"
           test ! -e "$RUNNER_TEMP/home/.config/opencode/commands/session-review.md"
+
+  minimum-opencode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - id: minimum-version
+        run: |
+          echo "version=$(node -p 'require("./package.json").engines.opencode.match(/\d+\.\d+\.\d+/)[0]')" >> "$GITHUB_OUTPUT"
+      - name: OpenCode minimum-version plugin-loading smoke test
+        run: |
+          npm pack
+          npm install --prefix "$RUNNER_TEMP/opencode-minimum" opencode-ai@"${{ steps.minimum-version.outputs.version }}" "$GITHUB_WORKSPACE"/open-codeasier-*.tgz
+          node -e "require('node:fs').writeFileSync(process.argv[1], JSON.stringify({ plugin: [require('node:url').pathToFileURL(process.argv[2]).href] }))" "$RUNNER_TEMP/opencode-minimum.json" "$RUNNER_TEMP/opencode-minimum/node_modules/open-codeasier/dist/plugin.js"
+          OPENCODE_CONFIG="$RUNNER_TEMP/opencode-minimum.json" "$RUNNER_TEMP/opencode-minimum/node_modules/.bin/opencode" debug config --print-logs 2> "$RUNNER_TEMP/opencode-minimum.log"
+          grep -q 'open-codeasier/dist/plugin.js' "$RUNNER_TEMP/opencode-minimum.log"
+          ! grep -q 'failed to load plugin' "$RUNNER_TEMP/opencode-minimum.log"
