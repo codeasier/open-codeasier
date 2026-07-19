@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -51,6 +52,20 @@ afterEach(async () => {
 });
 
 describe("workflow generator", () => {
+  it("can be imported when process.argv[1] is absent", async () => {
+    await expect(
+      execFileAsync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `process.argv.splice(1); await import(${JSON.stringify(pathToFileURL(generator).href)});`,
+        ],
+        { encoding: "utf8" },
+      ),
+    ).resolves.toMatchObject({ stdout: "", stderr: "" });
+  });
+
   it("renders OpenCode and Codex wording into platform-native targets", async () => {
     const open = await fixture();
     await run(open.source, open.target, "opencode");
@@ -166,6 +181,34 @@ describe("workflow generator", () => {
     await expect(
       readFile(join(invalid.target, "skills/docs-governance/SKILL.md"), "utf8"),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects unsupported and duplicate frontmatter fields", async () => {
+    const malformed = await fixture();
+    await writeFile(
+      join(malformed.source, "workflow-source/skills/issue-review.md"),
+      "---\nname: issue-review\nunsupported YAML\ndescription: Review.\n---\n",
+    );
+    await expect(
+      run(malformed.source, malformed.target, "opencode"),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "issue-review: unsupported frontmatter line: unsupported YAML",
+      ),
+    });
+
+    const duplicate = await fixture();
+    await writeFile(
+      join(duplicate.source, "workflow-source/skills/issue-review.md"),
+      "---\nname: issue-review\nname: issue-review\ndescription: Review.\n---\n",
+    );
+    await expect(
+      run(duplicate.source, duplicate.target, "opencode"),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "issue-review: duplicate frontmatter key: name",
+      ),
+    });
   });
 
   it("renders ordinary literal single braces unchanged without balancing", async () => {

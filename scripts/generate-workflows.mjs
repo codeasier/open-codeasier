@@ -82,13 +82,18 @@ function parseArguments(args) {
 function validateFrontmatter(skill, contents) {
   const match = contents.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
   if (!match) throw new Error(`${skill}: missing YAML frontmatter`);
-  const fields = Object.fromEntries(
-    match[1]
-      .split("\n")
-      .map((line) => line.match(/^([a-z_]+):\s*(.+)$/))
-      .filter(Boolean)
-      .map((line) => [line[1], line[2].trim()]),
-  );
+  const fields = {};
+  for (const line of match[1].split("\n")) {
+    const field = line.match(/^([a-z_]+):\s*(\S(?:.*\S)?)\s*$/);
+    if (!field) {
+      throw new Error(`${skill}: unsupported frontmatter line: ${line}`);
+    }
+    const [, key, value] = field;
+    if (key in fields) {
+      throw new Error(`${skill}: duplicate frontmatter key: ${key}`);
+    }
+    fields[key] = value;
+  }
   if (fields.name !== skill) {
     throw new Error(`${skill}: frontmatter name must equal ${skill}`);
   }
@@ -131,7 +136,7 @@ async function atomicWrite(path, contents) {
     await writeFile(temporary, contents);
     await rename(temporary, path);
   } catch (error) {
-    await rm(temporary, { force: true });
+    await rm(temporary, { force: true }).catch(() => undefined);
     throw error;
   }
 }
@@ -224,7 +229,10 @@ export async function main(args = process.argv.slice(2)) {
   );
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   main().catch((error) => {
     console.error(`error: ${error.message}`);
     process.exitCode = 1;
