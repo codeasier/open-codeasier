@@ -125,6 +125,20 @@ describe("workflow generator", () => {
     });
   });
 
+  it("reports malformed profile JSON with platform and profile context", async () => {
+    const { source, target } = await fixture();
+    await writeFile(
+      join(source, "workflow-source/platforms/codex.json"),
+      '{"ASK_REQUIRED_FIELDS":',
+    );
+
+    await expect(run(source, target, "codex")).rejects.toMatchObject({
+      stderr: expect.stringContaining(
+        "codex profile workflow-source/platforms/codex.json: invalid JSON",
+      ),
+    });
+  });
+
   it("rejects unknown skills and invalid rendered frontmatter", async () => {
     const unknown = await fixture();
     await writeFile(
@@ -186,21 +200,66 @@ describe("workflow generator", () => {
     ).rejects.toMatchObject({
       stderr: expect.stringContaining("malformed or unresolved placeholder"),
     });
+
+    for (const placeholder of [
+      "{{{ASK_REQUIRED_FIELDS}}}",
+      "{{ASK_REQUIRED_FIELDS}}}",
+      "{{ASK_REQUIRED_FIELDS}}x}",
+    ]) {
+      const extraBrace = await fixture();
+      const extraBracePath = join(
+        extraBrace.source,
+        "workflow-source/skills/issue-submit.md",
+      );
+      await writeFile(
+        extraBracePath,
+        `${await readFile(extraBracePath, "utf8")} ${placeholder}\n`,
+      );
+      await expect(
+        run(extraBrace.source, extraBrace.target, "opencode"),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining("malformed or unresolved placeholder"),
+      });
+    }
   });
 
-  it("produces deterministic LF-terminated output", async () => {
+  it("normalizes CRLF and lone CR into deterministic LF-terminated output", async () => {
     const { source, target } = await fixture();
+    const issueTemplate = join(
+      source,
+      "workflow-source/skills/issue-submit.md",
+    );
+    const specTemplate = join(source, "workflow-source/skills/spec-write.md");
+    await writeFile(
+      issueTemplate,
+      (await readFile(issueTemplate, "utf8")).replaceAll("\n", "\r\n"),
+    );
+    await writeFile(
+      specTemplate,
+      (await readFile(specTemplate, "utf8")).replaceAll("\n", "\r"),
+    );
+
     await run(source, target, "codex");
-    const first = await readFile(
+    const firstIssue = await readFile(
+      join(target, "plugins/codex-codeasier/skills/issue-submit/SKILL.md"),
+    );
+    const firstSpec = await readFile(
       join(target, "plugins/codex-codeasier/skills/spec-write/SKILL.md"),
     );
     await run(source, target, "codex");
-    const second = await readFile(
+    const secondIssue = await readFile(
+      join(target, "plugins/codex-codeasier/skills/issue-submit/SKILL.md"),
+    );
+    const secondSpec = await readFile(
       join(target, "plugins/codex-codeasier/skills/spec-write/SKILL.md"),
     );
-    expect(second).toEqual(first);
-    expect(first.includes(Buffer.from("\r\n"))).toBe(false);
-    expect(first.at(-1)).toBe(10);
-    expect(first.at(-2)).not.toBe(10);
+    expect(secondIssue).toEqual(firstIssue);
+    expect(secondSpec).toEqual(firstSpec);
+    expect(firstIssue.includes(13)).toBe(false);
+    expect(firstSpec.includes(13)).toBe(false);
+    expect(firstIssue.at(-1)).toBe(10);
+    expect(firstSpec.at(-1)).toBe(10);
+    expect(firstIssue.at(-2)).not.toBe(10);
+    expect(firstSpec.at(-2)).not.toBe(10);
   });
 });

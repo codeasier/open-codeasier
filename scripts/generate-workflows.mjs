@@ -25,7 +25,7 @@ export const expectedSkills = [
   "worktree-clean",
 ];
 
-const placeholderPattern = /\{\{([^{}]*)\}\}/g;
+const placeholderPattern = /(?<!\{)\{\{([^{}]*)\}\}(?!\})/g;
 const placeholderName = /^[A-Z][A-Z0-9_]*$/;
 const targetPrefix = {
   opencode: "skills",
@@ -76,6 +76,9 @@ function validateFrontmatter(skill, contents) {
 }
 
 function render(skill, template, profile, usedKeys) {
+  if (/[{}]/.test(template.replace(placeholderPattern, ""))) {
+    throw new Error(`${skill}: malformed or unresolved placeholder`);
+  }
   const unknown = new Set();
   const rendered = template.replace(placeholderPattern, (_, key) => {
     if (
@@ -94,10 +97,7 @@ function render(skill, template, profile, usedKeys) {
       `${skill}: missing profile values: ${[...unknown].sort().join(", ")}`,
     );
   }
-  if (rendered.includes("{{") || rendered.includes("}}")) {
-    throw new Error(`${skill}: malformed or unresolved placeholder`);
-  }
-  const normalized = `${rendered.replaceAll("\r\n", "\n").trimEnd()}\n`;
+  const normalized = `${rendered.replace(/\r\n?/g, "\n").trimEnd()}\n`;
   validateFrontmatter(skill, normalized);
   return normalized;
 }
@@ -136,7 +136,17 @@ export async function main(args = process.argv.slice(2)) {
     "platforms",
     `${options.platform}.json`,
   );
-  const profile = JSON.parse(await readFile(profilePath, "utf8"));
+  let profile;
+  try {
+    profile = JSON.parse(await readFile(profilePath, "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(
+        `${options.platform} profile workflow-source/platforms/${options.platform}.json: invalid JSON: ${error.message}`,
+      );
+    }
+    throw error;
+  }
   if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
     throw new Error(`${options.platform}: profile must be an object`);
   }
