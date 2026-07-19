@@ -96,7 +96,9 @@ function validateFrontmatter(skill, contents) {
       "-?:,[]{}#&*!|>'\"%@`".includes(value[0]) ||
       ["[", "]", "{", "}"].some((delimiter) => value.includes(delimiter)) ||
       /\s#/.test(value) ||
-      /:\s/.test(value)
+      /:(?:\s|$)/.test(value) ||
+      /^(?:null|true|false|~|[+-]?\.(?:inf|nan))$/i.test(value) ||
+      /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value)
     ) {
       throw new Error(`${skill}: unsupported frontmatter value for ${key}`);
     }

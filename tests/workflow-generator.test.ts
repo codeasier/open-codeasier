@@ -224,6 +224,16 @@ describe("workflow generator", () => {
       "Review {draft}",
       "Review # comment",
       "Review: details",
+      "Review:",
+      "true",
+      "FALSE",
+      "null",
+      "~",
+      "123",
+      "12.34",
+      "1.2e3",
+      ".Inf",
+      ".NaN",
     ] as const) {
       const { source, target } = await fixture();
       await writeFile(
