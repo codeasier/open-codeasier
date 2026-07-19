@@ -147,6 +147,17 @@ async function atomicWrite(path, contents) {
   }
 }
 
+async function isDirectExecution(candidate) {
+  if (!candidate) return false;
+  let candidatePath;
+  try {
+    candidatePath = await realpath(candidate);
+  } catch {
+    return false;
+  }
+  return candidatePath === (await realpath(fileURLToPath(import.meta.url)));
+}
+
 export async function main(args = process.argv.slice(2)) {
   const options = parseArguments(args);
   const ownRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -235,11 +246,7 @@ export async function main(args = process.argv.slice(2)) {
   );
 }
 
-if (
-  process.argv[1] &&
-  (await realpath(fileURLToPath(import.meta.url))) ===
-    (await realpath(process.argv[1]))
-) {
+if (await isDirectExecution(process.argv[1])) {
   main().catch((error) => {
     console.error(`error: ${error.message}`);
     process.exitCode = 1;

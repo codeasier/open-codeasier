@@ -74,6 +74,24 @@ describe("workflow generator", () => {
     ).resolves.toMatchObject({ stdout: "", stderr: "" });
   });
 
+  it("can be imported when process.argv[1] cannot be canonicalized", async () => {
+    const missingEntry = join(
+      tmpdir(),
+      `missing-workflow-generator-${process.pid}-${Date.now()}.mjs`,
+    );
+    await expect(
+      execFileAsync(
+        process.execPath,
+        [
+          "--input-type=module",
+          "--eval",
+          `process.argv[1] = ${JSON.stringify(missingEntry)}; await import(${JSON.stringify(pathToFileURL(generator).href)});`,
+        ],
+        { encoding: "utf8" },
+      ),
+    ).resolves.toMatchObject({ stdout: "", stderr: "" });
+  });
+
   it("runs when invoked through a symlinked generator path", async () => {
     const { source, target } = await fixture();
     const linkedGenerator = join(target, "linked-generator.mjs");
