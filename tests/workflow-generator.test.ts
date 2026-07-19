@@ -234,6 +234,10 @@ describe("workflow generator", () => {
       "1.2e3",
       ".Inf",
       ".NaN",
+      "0xFF",
+      "1_000",
+      "2026-07-19",
+      "Review\u0007control",
     ] as const) {
       const { source, target } = await fixture();
       await writeFile(

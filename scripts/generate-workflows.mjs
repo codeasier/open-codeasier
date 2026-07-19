@@ -93,12 +93,7 @@ function validateFrontmatter(skill, contents) {
       throw new Error(`${skill}: duplicate frontmatter key: ${key}`);
     }
     if (
-      "-?:,[]{}#&*!|>'\"%@`".includes(value[0]) ||
-      ["[", "]", "{", "}"].some((delimiter) => value.includes(delimiter)) ||
-      /\s#/.test(value) ||
-      /:(?:\s|$)/.test(value) ||
-      /^(?:null|true|false|~|[+-]?\.(?:inf|nan))$/i.test(value) ||
-      /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value)
+      !/^(?!(?:null|true|false)$)[A-Za-z][A-Za-z0-9 .,()/'_-]*$/i.test(value)
     ) {
       throw new Error(`${skill}: unsupported frontmatter value for ${key}`);
     }
