@@ -26,12 +26,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run build",
+    "check": "npm run workflows:check && npm run format:check && npm run lint && npm run typecheck && npm test && npm run build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "workflows:generate": "node scripts/generate-workflows.mjs --platform opencode --target .",
+    "workflows:check": "node scripts/check-workflows.mjs --platform opencode --target ."
   },
   "dependencies": {
     "@opencode-ai/plugin": "1.14.49",
