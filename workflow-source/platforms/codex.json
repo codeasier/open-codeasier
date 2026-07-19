@@ -1,0 +1,4 @@
+{
+  "ASK_REQUIRED_FIELDS": "Ask the user for each required field one at a time",
+  "RESOLVE_AMBIGUITY": "Resolve ambiguity by asking the user one focused question at a time"
+}
