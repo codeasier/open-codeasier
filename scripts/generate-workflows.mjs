@@ -32,6 +32,33 @@ const targetPrefix = {
   codex: "plugins/codex-codeasier/skills",
 };
 
+function validatePlaceholderStructure(skill, template) {
+  let literalDepth = 0;
+  for (let index = 0; index < template.length; index += 1) {
+    if (template.startsWith("{{", index)) {
+      const close = template.indexOf("}}", index + 2);
+      if (close === -1 || /[{}]/.test(template.slice(index + 2, close))) {
+        throw new Error(`${skill}: malformed or unresolved placeholder`);
+      }
+      index = close + 1;
+      continue;
+    }
+    if (template.startsWith("}}", index)) {
+      throw new Error(`${skill}: malformed or unresolved placeholder`);
+    }
+    if (template[index] === "{") literalDepth += 1;
+    if (template[index] === "}") {
+      literalDepth -= 1;
+      if (literalDepth < 0) {
+        throw new Error(`${skill}: malformed or unresolved placeholder`);
+      }
+    }
+  }
+  if (literalDepth !== 0) {
+    throw new Error(`${skill}: malformed or unresolved placeholder`);
+  }
+}
+
 function parseArguments(args) {
   const options = { check: false };
   for (let index = 0; index < args.length; index += 1) {
@@ -76,16 +103,13 @@ function validateFrontmatter(skill, contents) {
 }
 
 function render(skill, template, profile, usedKeys) {
-  if (/[{}]/.test(template.replace(placeholderPattern, ""))) {
-    throw new Error(`${skill}: malformed or unresolved placeholder`);
-  }
+  validatePlaceholderStructure(skill, template);
   const unknown = new Set();
   const rendered = template.replace(placeholderPattern, (_, key) => {
-    if (
-      !placeholderName.test(key) ||
-      !(key in profile) ||
-      typeof profile[key] !== "string"
-    ) {
+    if (!placeholderName.test(key)) {
+      throw new Error(`${skill}: invalid placeholder name: ${key}`);
+    }
+    if (!(key in profile) || typeof profile[key] !== "string") {
       unknown.add(key);
       return `{{${key}}}`;
     }

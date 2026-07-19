@@ -168,7 +168,26 @@ describe("workflow generator", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("rejects unknown and malformed placeholders", async () => {
+  it("renders ordinary literal single braces unchanged", async () => {
+    const { source, target } = await fixture();
+    const templatePath = join(
+      source,
+      "workflow-source/skills/docs-governance.md",
+    );
+    const literal = "Use an object shaped like { name: value }.";
+    await writeFile(
+      templatePath,
+      `${await readFile(templatePath, "utf8")}\n${literal}\n`,
+    );
+
+    await run(source, target, "opencode");
+
+    await expect(
+      readFile(join(target, "skills/docs-governance/SKILL.md"), "utf8"),
+    ).resolves.toContain(literal);
+  });
+
+  it("rejects unknown placeholders and invalid placeholder names", async () => {
     const unknown = await fixture();
     const issuePath = join(
       unknown.source,
@@ -186,37 +205,46 @@ describe("workflow generator", () => {
       ),
     });
 
-    const malformed = await fixture();
-    const specPath = join(
-      malformed.source,
-      "workflow-source/skills/spec-write.md",
-    );
-    await writeFile(
-      specPath,
-      `${await readFile(specPath, "utf8")}{{RESOLVE_AMBIGUITY}\n`,
-    );
-    await expect(
-      run(malformed.source, malformed.target, "opencode"),
-    ).rejects.toMatchObject({
-      stderr: expect.stringContaining("malformed or unresolved placeholder"),
-    });
+    for (const placeholder of [
+      "{{lowercase}}",
+      "{{_LEADING_UNDERSCORE}}",
+    ] as const) {
+      const invalid = await fixture();
+      const invalidPath = join(
+        invalid.source,
+        "workflow-source/skills/issue-submit.md",
+      );
+      await writeFile(
+        invalidPath,
+        `${await readFile(invalidPath, "utf8")} ${placeholder}\n`,
+      );
+      await expect(
+        run(invalid.source, invalid.target, "opencode"),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining("invalid placeholder name"),
+      });
+    }
+  });
 
+  it("rejects malformed placeholder constructs", async () => {
     for (const placeholder of [
       "{{{ASK_REQUIRED_FIELDS}}}",
       "{{ASK_REQUIRED_FIELDS}}}",
       "{{ASK_REQUIRED_FIELDS}}x}",
-    ]) {
-      const extraBrace = await fixture();
-      const extraBracePath = join(
-        extraBrace.source,
+      "{{ASK_REQUIRED_FIELDS",
+      "ASK_REQUIRED_FIELDS}}",
+    ] as const) {
+      const malformed = await fixture();
+      const templatePath = join(
+        malformed.source,
         "workflow-source/skills/issue-submit.md",
       );
       await writeFile(
-        extraBracePath,
-        `${await readFile(extraBracePath, "utf8")} ${placeholder}\n`,
+        templatePath,
+        `${await readFile(templatePath, "utf8")} ${placeholder}\n`,
       );
       await expect(
-        run(extraBrace.source, extraBrace.target, "opencode"),
+        run(malformed.source, malformed.target, "opencode"),
       ).rejects.toMatchObject({
         stderr: expect.stringContaining("malformed or unresolved placeholder"),
       });
