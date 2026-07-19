@@ -403,4 +403,12 @@ describe("workflow generator", () => {
     expect(firstIssue.at(-2)).not.toBe(10);
     expect(firstSpec.at(-2)).not.toBe(10);
   });
+
+  it("keeps committed OpenCode workflows generated from the canonical source", async () => {
+    await expect(
+      run(resolve("."), resolve("."), "opencode", true),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining("Generated opencode workflows are current"),
+    });
+  });
 });
