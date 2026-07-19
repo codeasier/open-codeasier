@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import console from "node:console";
 import {
+  lstat,
   mkdir,
   readFile,
   realpath,
@@ -147,6 +148,21 @@ async function atomicWrite(path, contents) {
   }
 }
 
+async function rejectTargetSymlinks(root, segments) {
+  let current = root;
+  for (const segment of [undefined, ...segments]) {
+    if (segment !== undefined) current = join(current, segment);
+    try {
+      if ((await lstat(current)).isSymbolicLink()) {
+        throw new Error(`symlinked workflow target: ${current}`);
+      }
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      throw error;
+    }
+  }
+}
+
 async function isDirectExecution(candidate) {
   if (!candidate) return false;
   let candidatePath;
@@ -213,6 +229,14 @@ export async function main(args = process.argv.slice(2)) {
     throw new Error(
       `${options.platform}: unused profile keys: ${unused.join(", ")}`,
     );
+  }
+
+  for (const skill of actualSkills) {
+    await rejectTargetSymlinks(targetRoot, [
+      ...targetPrefix[options.platform].split("/"),
+      skill,
+      "SKILL.md",
+    ]);
   }
 
   const mismatches = [];

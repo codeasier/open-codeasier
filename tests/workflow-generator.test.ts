@@ -9,7 +9,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
@@ -165,6 +165,67 @@ describe("workflow generator", () => {
     await expect(readFile(issuePath, "utf8")).resolves.toBe("stale issue\n");
     await expect(readFile(specPath, "utf8")).resolves.toBe("stale spec\n");
   });
+
+  it
+    .skipIf(process.platform === "win32")
+    .each([
+      "target root",
+      "platform prefix",
+      "skill directory",
+      "workflow leaf",
+    ] as const)(
+    "rejects a symlinked %s in write and check modes",
+    async (kind) => {
+      for (const check of [false, true]) {
+        const fixtureRoot = await fixture();
+        const outside = join(
+          dirname(fixtureRoot.target),
+          `outside-${kind.replaceAll(" ", "-")}-${check}`,
+        );
+        await mkdir(outside);
+        let protectedPath = join(outside, "SKILL.md");
+
+        if (kind === "target root") {
+          await rm(fixtureRoot.target, { recursive: true });
+          await symlink(outside, fixtureRoot.target);
+          protectedPath = join(outside, "skills/docs-governance/SKILL.md");
+        } else if (kind === "platform prefix") {
+          await symlink(outside, join(fixtureRoot.target, "skills"));
+          protectedPath = join(outside, "docs-governance/SKILL.md");
+        } else if (kind === "skill directory") {
+          await mkdir(join(fixtureRoot.target, "skills"));
+          await symlink(
+            outside,
+            join(fixtureRoot.target, "skills/docs-governance"),
+          );
+        } else {
+          await mkdir(join(fixtureRoot.target, "skills/docs-governance"), {
+            recursive: true,
+          });
+          await writeFile(protectedPath, "outside sentinel\n");
+          await symlink(
+            protectedPath,
+            join(fixtureRoot.target, "skills/docs-governance/SKILL.md"),
+          );
+        }
+
+        await expect(
+          run(fixtureRoot.source, fixtureRoot.target, "opencode", check),
+        ).rejects.toMatchObject({
+          stderr: expect.stringContaining("symlinked workflow target"),
+        });
+        if (kind === "workflow leaf") {
+          await expect(readFile(protectedPath, "utf8")).resolves.toBe(
+            "outside sentinel\n",
+          );
+        } else {
+          await expect(readFile(protectedPath, "utf8")).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+        }
+      }
+    },
+  );
 
   it("rejects missing and unused profile values", async () => {
     const missing = await fixture();
