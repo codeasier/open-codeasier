@@ -1,5 +1,13 @@
 import { execFile } from "node:child_process";
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -64,6 +72,35 @@ describe("workflow generator", () => {
         { encoding: "utf8" },
       ),
     ).resolves.toMatchObject({ stdout: "", stderr: "" });
+  });
+
+  it("runs when invoked through a symlinked generator path", async () => {
+    const { source, target } = await fixture();
+    const linkedGenerator = join(target, "linked-generator.mjs");
+    await symlink(generator, linkedGenerator);
+
+    await expect(
+      execFileAsync(
+        process.execPath,
+        [
+          linkedGenerator,
+          "--platform",
+          "opencode",
+          "--source",
+          source,
+          "--target",
+          target,
+        ],
+        { encoding: "utf8" },
+      ),
+    ).resolves.toMatchObject({
+      stdout: expect.stringContaining("Generated 10 opencode workflows"),
+    });
+    await expect(
+      readFile(join(target, "skills/issue-submit/SKILL.md"), "utf8"),
+    ).resolves.toContain(
+      "Use the question tool to collect each required field",
+    );
   });
 
   it("renders OpenCode and Codex wording into platform-native targets", async () => {

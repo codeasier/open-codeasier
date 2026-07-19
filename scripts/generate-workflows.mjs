@@ -3,6 +3,7 @@ import console from "node:console";
 import {
   mkdir,
   readFile,
+  realpath,
   readdir,
   rename,
   rm,
@@ -10,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const expectedSkills = [
   "docs-governance",
@@ -236,7 +237,8 @@ export async function main(args = process.argv.slice(2)) {
 
 if (
   process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
+  (await realpath(fileURLToPath(import.meta.url))) ===
+    (await realpath(process.argv[1]))
 ) {
   main().catch((error) => {
     console.error(`error: ${error.message}`);
