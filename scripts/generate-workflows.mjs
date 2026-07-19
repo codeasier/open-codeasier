@@ -92,6 +92,14 @@ function validateFrontmatter(skill, contents) {
     if (key in fields) {
       throw new Error(`${skill}: duplicate frontmatter key: ${key}`);
     }
+    if (
+      "-?:,[]{}#&*!|>'\"%@`".includes(value[0]) ||
+      ["[", "]", "{", "}"].some((delimiter) => value.includes(delimiter)) ||
+      /\s#/.test(value) ||
+      /:\s/.test(value)
+    ) {
+      throw new Error(`${skill}: unsupported frontmatter value for ${key}`);
+    }
     fields[key] = value;
   }
   if (fields.name !== skill) {

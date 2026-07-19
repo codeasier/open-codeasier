@@ -211,6 +211,34 @@ describe("workflow generator", () => {
     });
   });
 
+  it("rejects frontmatter values outside the restricted plain-scalar format", async () => {
+    for (const value of [
+      "[unterminated",
+      '"quoted"',
+      "'quoted'",
+      "| block",
+      "> block",
+      "*alias",
+      "!tagged",
+      "%directive",
+      "Review {draft}",
+      "Review # comment",
+      "Review: details",
+    ] as const) {
+      const { source, target } = await fixture();
+      await writeFile(
+        join(source, "workflow-source/skills/issue-review.md"),
+        `---\nname: issue-review\ndescription: ${value}\n---\n`,
+      );
+
+      await expect(run(source, target, "opencode")).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          "issue-review: unsupported frontmatter value for description",
+        ),
+      });
+    }
+  });
+
   it("renders ordinary literal single braces unchanged without balancing", async () => {
     for (const literal of [
       "Use an object shaped like { name: value }.",
