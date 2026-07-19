@@ -60,6 +60,7 @@ node scripts/generate-workflows.mjs \
 ### Task 1: Establish Canonical Templates And Profiles
 
 **Files:**
+
 - Create: `workflow-source/skills/docs-governance.md`
 - Create: `workflow-source/skills/issue-resolve.md`
 - Create: `workflow-source/skills/issue-review.md`
@@ -191,6 +192,7 @@ Expected: one commit containing only twelve new source/profile files.
 ### Task 2: Build The Deterministic Generator With Tests
 
 **Files:**
+
 - Create: `scripts/generate-workflows.mjs`
 - Create: `scripts/check-workflows.mjs`
 - Create: `tests/workflow-generator.test.ts`
@@ -247,7 +249,9 @@ async function run(
 }
 
 afterEach(async () => {
-  await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { recursive: true })));
+  await Promise.all(
+    temporaryRoots.splice(0).map((root) => rm(root, { recursive: true })),
+  );
 });
 
 describe("workflow generator", () => {
@@ -258,7 +262,9 @@ describe("workflow generator", () => {
       join(open.target, "skills/issue-submit/SKILL.md"),
       "utf8",
     );
-    expect(openIssue).toContain("Use the question tool to collect each required field");
+    expect(openIssue).toContain(
+      "Use the question tool to collect each required field",
+    );
     expect(openIssue.endsWith("\n")).toBe(true);
 
     const codex = await fixture();
@@ -270,7 +276,9 @@ describe("workflow generator", () => {
       ),
       "utf8",
     );
-    expect(codexIssue).toContain("Ask the user for each required field one at a time");
+    expect(codexIssue).toContain(
+      "Ask the user for each required field one at a time",
+    );
     expect(codexIssue).not.toContain("question tool");
   });
 
@@ -309,7 +317,14 @@ Expected: FAIL because `scripts/generate-workflows.mjs` does not exist.
 Create `scripts/generate-workflows.mjs`. The implementation must export `main`, stage and validate all outputs before writing, and use only Node.js standard-library modules:
 
 ```js
-import { readFile, readdir, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import {
+  readFile,
+  readdir,
+  mkdir,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -379,7 +394,11 @@ function validateFrontmatter(skill, contents) {
 function render(skill, template, profile, usedKeys) {
   const unknown = new Set();
   const rendered = template.replace(placeholderPattern, (_, key) => {
-    if (!placeholderName.test(key) || !(key in profile) || typeof profile[key] !== "string") {
+    if (
+      !placeholderName.test(key) ||
+      !(key in profile) ||
+      typeof profile[key] !== "string"
+    ) {
       unknown.add(key);
       return `{{${key}}}`;
     }
@@ -387,7 +406,9 @@ function render(skill, template, profile, usedKeys) {
     return profile[key];
   });
   if (unknown.size) {
-    throw new Error(`${skill}: missing profile values: ${[...unknown].sort().join(", ")}`);
+    throw new Error(
+      `${skill}: missing profile values: ${[...unknown].sort().join(", ")}`,
+    );
   }
   if (/\{\{[^{}]+\}\}/.test(rendered)) {
     throw new Error(`${skill}: unresolved placeholder`);
@@ -451,7 +472,9 @@ export async function main(args = process.argv.slice(2)) {
   const profileKeys = Object.keys(profile).sort();
   const unused = profileKeys.filter((key) => !usedKeys.has(key));
   if (unused.length) {
-    throw new Error(`${options.platform}: unused profile keys: ${unused.join(", ")}`);
+    throw new Error(
+      `${options.platform}: unused profile keys: ${unused.join(", ")}`,
+    );
   }
 
   const mismatches = [];
@@ -523,66 +546,76 @@ Expected: PASS with two tests. The stale-target test must capture one rejected p
 Append these tests inside the existing `describe` block in `tests/workflow-generator.test.ts`:
 
 ```ts
-  it("rejects missing and unused profile values", async () => {
-    const missing = await fixture();
-    await writeFile(
-      join(missing.source, "workflow-source/platforms/opencode.json"),
-      JSON.stringify({ RESOLVE_AMBIGUITY: "Resolve ambiguity" }),
-    );
-    await expect(run(missing.source, missing.target, "opencode")).rejects.toMatchObject({
-      stderr: expect.stringContaining("missing profile values: ASK_REQUIRED_FIELDS"),
-    });
-
-    const unused = await fixture();
-    const profilePath = join(
-      unused.source,
-      "workflow-source/platforms/opencode.json",
-    );
-    const profile = JSON.parse(await readFile(profilePath, "utf8"));
-    profile.UNUSED = "unused";
-    await writeFile(profilePath, JSON.stringify(profile));
-    await expect(run(unused.source, unused.target, "opencode")).rejects.toMatchObject({
-      stderr: expect.stringContaining("unused profile keys: UNUSED"),
-    });
+it("rejects missing and unused profile values", async () => {
+  const missing = await fixture();
+  await writeFile(
+    join(missing.source, "workflow-source/platforms/opencode.json"),
+    JSON.stringify({ RESOLVE_AMBIGUITY: "Resolve ambiguity" }),
+  );
+  await expect(
+    run(missing.source, missing.target, "opencode"),
+  ).rejects.toMatchObject({
+    stderr: expect.stringContaining(
+      "missing profile values: ASK_REQUIRED_FIELDS",
+    ),
   });
 
-  it("rejects unknown skills and invalid rendered frontmatter", async () => {
-    const unknown = await fixture();
-    await writeFile(
-      join(unknown.source, "workflow-source/skills/extra.md"),
-      "---\nname: extra\ndescription: Extra.\n---\n",
-    );
-    await expect(run(unknown.source, unknown.target, "opencode")).rejects.toMatchObject({
-      stderr: expect.stringContaining("Canonical skills must be exactly"),
-    });
+  const unused = await fixture();
+  const profilePath = join(
+    unused.source,
+    "workflow-source/platforms/opencode.json",
+  );
+  const profile = JSON.parse(await readFile(profilePath, "utf8"));
+  profile.UNUSED = "unused";
+  await writeFile(profilePath, JSON.stringify(profile));
+  await expect(
+    run(unused.source, unused.target, "opencode"),
+  ).rejects.toMatchObject({
+    stderr: expect.stringContaining("unused profile keys: UNUSED"),
+  });
+});
 
-    const invalid = await fixture();
-    await writeFile(
-      join(invalid.source, "workflow-source/skills/issue-review.md"),
-      "---\nname: wrong\ndescription: Review.\n---\n",
-    );
-    await expect(run(invalid.source, invalid.target, "opencode")).rejects.toMatchObject({
-      stderr: expect.stringContaining(
-        "issue-review: frontmatter name must equal issue-review",
-      ),
-    });
+it("rejects unknown skills and invalid rendered frontmatter", async () => {
+  const unknown = await fixture();
+  await writeFile(
+    join(unknown.source, "workflow-source/skills/extra.md"),
+    "---\nname: extra\ndescription: Extra.\n---\n",
+  );
+  await expect(
+    run(unknown.source, unknown.target, "opencode"),
+  ).rejects.toMatchObject({
+    stderr: expect.stringContaining("Canonical skills must be exactly"),
   });
 
-  it("produces deterministic LF-terminated output", async () => {
-    const { source, target } = await fixture();
-    await run(source, target, "codex");
-    const first = await readFile(
-      join(target, "plugins/codex-codeasier/skills/spec-write/SKILL.md"),
-    );
-    await run(source, target, "codex");
-    const second = await readFile(
-      join(target, "plugins/codex-codeasier/skills/spec-write/SKILL.md"),
-    );
-    expect(second).toEqual(first);
-    expect(first.includes(Buffer.from("\r\n"))).toBe(false);
-    expect(first.at(-1)).toBe(10);
-    expect(first.at(-2)).not.toBe(10);
+  const invalid = await fixture();
+  await writeFile(
+    join(invalid.source, "workflow-source/skills/issue-review.md"),
+    "---\nname: wrong\ndescription: Review.\n---\n",
+  );
+  await expect(
+    run(invalid.source, invalid.target, "opencode"),
+  ).rejects.toMatchObject({
+    stderr: expect.stringContaining(
+      "issue-review: frontmatter name must equal issue-review",
+    ),
   });
+});
+
+it("produces deterministic LF-terminated output", async () => {
+  const { source, target } = await fixture();
+  await run(source, target, "codex");
+  const first = await readFile(
+    join(target, "plugins/codex-codeasier/skills/spec-write/SKILL.md"),
+  );
+  await run(source, target, "codex");
+  const second = await readFile(
+    join(target, "plugins/codex-codeasier/skills/spec-write/SKILL.md"),
+  );
+  expect(second).toEqual(first);
+  expect(first.includes(Buffer.from("\r\n"))).toBe(false);
+  expect(first.at(-1)).toBe(10);
+  expect(first.at(-2)).not.toBe(10);
+});
 ```
 
 - [ ] **Step 7: Run focused tests, lint, and formatting**
@@ -610,6 +643,7 @@ Expected: one commit containing only the generator, check wrapper, and focused t
 ### Task 3: Prove Byte-Preserving OpenCode Generation
 
 **Files:**
+
 - Verify only: `skills/docs-governance/SKILL.md`
 - Verify only: `skills/issue-resolve/SKILL.md`
 - Verify only: `skills/issue-review/SKILL.md`
@@ -657,13 +691,13 @@ Expected: exit code `0` and no output.
 Append to `tests/workflow-generator.test.ts` outside the temporary-fixture assertions but inside the `describe` block:
 
 ```ts
-  it("keeps committed OpenCode workflows generated from the canonical source", async () => {
-    await expect(
-      run(resolve("."), resolve("."), "opencode", true),
-    ).resolves.toMatchObject({
-      stdout: expect.stringContaining("Generated opencode workflows are current"),
-    });
+it("keeps committed OpenCode workflows generated from the canonical source", async () => {
+  await expect(
+    run(resolve("."), resolve("."), "opencode", true),
+  ).resolves.toMatchObject({
+    stdout: expect.stringContaining("Generated opencode workflows are current"),
   });
+});
 ```
 
 - [ ] **Step 5: Run the complete test suite**
@@ -688,6 +722,7 @@ Expected: one test-only commit. There must be no staged `skills/` changes.
 ### Task 4: Integrate OpenCode Commands And CI
 
 **Files:**
+
 - Modify: `package.json:27-35`
 - Modify: `.github/workflows/ci.yml:18-20`
 
@@ -724,7 +759,7 @@ Expected: `Generated opencode workflows are current`.
 In `.github/workflows/ci.yml`, insert this step after `npm ci` and before `npm run check`:
 
 ```yaml
-      - run: npm run workflows:check
+- run: npm run workflows:check
 ```
 
 This explicit step makes the generated-source boundary visible in CI logs even though `npm run check` also enforces it locally.
@@ -751,6 +786,7 @@ Expected: one commit containing only package scripts and CI integration.
 ### Task 5: Finalize The OpenCode Authority Commit
 
 **Files:**
+
 - Verify: all OpenCode files created or modified in Tasks 1-4
 
 - [ ] **Step 1: Inspect repository state and intended diff**
@@ -789,6 +825,7 @@ Expected: one 40-character lowercase hexadecimal SHA. Save it as `OPEN_CODEASIER
 ### Task 6: Add And Validate The Codex Upstream Lock
 
 **Files:**
+
 - Create: `workflow-source.lock.json`
 - Modify: `scripts/validate.mjs:1-49`
 
@@ -853,7 +890,9 @@ if (
   const expectedLockFields = ["commit", "generator", "repository"];
   const actualLockFields = Object.keys(workflowSourceLock).sort();
   if (JSON.stringify(actualLockFields) !== JSON.stringify(expectedLockFields)) {
-    fail(`workflow source lock fields must be exactly: ${expectedLockFields.join(", ")}`);
+    fail(
+      `workflow source lock fields must be exactly: ${expectedLockFields.join(", ")}`,
+    );
   }
 }
 ```
@@ -894,6 +933,7 @@ Expected: one commit containing only the lock and its local validation.
 ### Task 7: Verify Byte-Preserving Codex Generation
 
 **Files:**
+
 - Verify only: `plugins/codex-codeasier/skills/*/SKILL.md`
 
 - [ ] **Step 1: Check out the pinned authority into an approved temporary directory**
@@ -948,6 +988,7 @@ Expected: existing marketplace validation passes and still forbids OpenCode and 
 ### Task 8: Add Pinned Cross-Repository Codex CI
 
 **Files:**
+
 - Modify: `.github/workflows/ci.yml`
 
 - [ ] **Step 1: Add the pinned source checkout and generation check**
@@ -1032,6 +1073,7 @@ Expected: one CI-only commit.
 ### Task 9: End-To-End Verification And Documentation Check
 
 **Files:**
+
 - Verify: both repositories
 - Modify only if inaccurate: `README.md` in either repository
 
