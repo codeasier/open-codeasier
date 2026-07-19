@@ -33,11 +33,16 @@ const targetPrefix = {
 };
 
 function validatePlaceholderStructure(skill, template) {
-  let literalDepth = 0;
   for (let index = 0; index < template.length; index += 1) {
     if (template.startsWith("{{", index)) {
       const close = template.indexOf("}}", index + 2);
-      if (close === -1 || /[{}]/.test(template.slice(index + 2, close))) {
+      const trailing = close === -1 ? "" : template.slice(close + 2);
+      if (
+        close === -1 ||
+        /[{}]/.test(template.slice(index + 2, close)) ||
+        trailing.startsWith("}") ||
+        /^[^\s{}]*}/.test(trailing)
+      ) {
         throw new Error(`${skill}: malformed or unresolved placeholder`);
       }
       index = close + 1;
@@ -46,16 +51,6 @@ function validatePlaceholderStructure(skill, template) {
     if (template.startsWith("}}", index)) {
       throw new Error(`${skill}: malformed or unresolved placeholder`);
     }
-    if (template[index] === "{") literalDepth += 1;
-    if (template[index] === "}") {
-      literalDepth -= 1;
-      if (literalDepth < 0) {
-        throw new Error(`${skill}: malformed or unresolved placeholder`);
-      }
-    }
-  }
-  if (literalDepth !== 0) {
-    throw new Error(`${skill}: malformed or unresolved placeholder`);
   }
 }
 
@@ -120,6 +115,9 @@ function render(skill, template, profile, usedKeys) {
     throw new Error(
       `${skill}: missing profile values: ${[...unknown].sort().join(", ")}`,
     );
+  }
+  if (rendered.includes("{{") || rendered.includes("}}")) {
+    throw new Error(`${skill}: malformed or unresolved placeholder`);
   }
   const normalized = `${rendered.replace(/\r\n?/g, "\n").trimEnd()}\n`;
   validateFrontmatter(skill, normalized);

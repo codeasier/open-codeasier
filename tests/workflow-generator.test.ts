@@ -168,23 +168,28 @@ describe("workflow generator", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("renders ordinary literal single braces unchanged", async () => {
-    const { source, target } = await fixture();
-    const templatePath = join(
-      source,
-      "workflow-source/skills/docs-governance.md",
-    );
-    const literal = "Use an object shaped like { name: value }.";
-    await writeFile(
-      templatePath,
-      `${await readFile(templatePath, "utf8")}\n${literal}\n`,
-    );
+  it("renders ordinary literal single braces unchanged without balancing", async () => {
+    for (const literal of [
+      "Use an object shaped like { name: value }.",
+      "A single opening brace { is literal.",
+      "A single closing brace } is literal.",
+    ] as const) {
+      const { source, target } = await fixture();
+      const templatePath = join(
+        source,
+        "workflow-source/skills/docs-governance.md",
+      );
+      await writeFile(
+        templatePath,
+        `${await readFile(templatePath, "utf8")}\n${literal}\n`,
+      );
 
-    await run(source, target, "opencode");
+      await run(source, target, "opencode");
 
-    await expect(
-      readFile(join(target, "skills/docs-governance/SKILL.md"), "utf8"),
-    ).resolves.toContain(literal);
+      await expect(
+        readFile(join(target, "skills/docs-governance/SKILL.md"), "utf8"),
+      ).resolves.toContain(literal);
+    }
   });
 
   it("rejects unknown placeholders and invalid placeholder names", async () => {
@@ -247,6 +252,29 @@ describe("workflow generator", () => {
         run(malformed.source, malformed.target, "opencode"),
       ).rejects.toMatchObject({
         stderr: expect.stringContaining("malformed or unresolved placeholder"),
+      });
+    }
+  });
+
+  it("rejects double-brace syntax introduced by profile values", async () => {
+    for (const injected of [
+      "Ask for {{UNKNOWN}}",
+      "Ask for {{UNKNOWN",
+      "Ask for UNKNOWN}}",
+    ] as const) {
+      const { source, target } = await fixture();
+      const profilePath = join(
+        source,
+        "workflow-source/platforms/opencode.json",
+      );
+      const profile = JSON.parse(await readFile(profilePath, "utf8"));
+      profile.ASK_REQUIRED_FIELDS = injected;
+      await writeFile(profilePath, JSON.stringify(profile));
+
+      await expect(run(source, target, "opencode")).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          "issue-submit: malformed or unresolved placeholder",
+        ),
       });
     }
   });
