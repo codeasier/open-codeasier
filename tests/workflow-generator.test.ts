@@ -112,7 +112,7 @@ describe("workflow generator", () => {
         { encoding: "utf8" },
       ),
     ).resolves.toMatchObject({
-      stdout: expect.stringContaining("Generated 10 opencode workflows"),
+      stdout: expect.stringContaining("Generated 11 opencode workflows"),
     });
     await expect(
       readFile(join(target, "skills/issue-submit/SKILL.md"), "utf8"),
@@ -123,7 +123,8 @@ describe("workflow generator", () => {
 
   it("renders OpenCode and Codex wording into platform-native targets", async () => {
     const open = await fixture();
-    await run(open.source, open.target, "opencode");
+    const openResult = await run(open.source, open.target, "opencode");
+    expect(openResult.stdout).toContain("Generated 11 opencode workflows");
     const openIssue = await readFile(
       join(open.target, "skills/issue-submit/SKILL.md"),
       "utf8",
@@ -132,6 +133,27 @@ describe("workflow generator", () => {
       "Use the question tool to collect each required field",
     );
     expect(openIssue.endsWith("\n")).toBe(true);
+    const openHandoff = await readFile(
+      join(open.target, "skills/handoff/SKILL.md"),
+      "utf8",
+    );
+    expect(openHandoff).toContain("# Handoff");
+    expect(openHandoff).toContain(".agent/handoff/<name>/HANDOFF.md");
+    expect(openHandoff).toContain("Wait for explicit user confirmation");
+    expect(openHandoff).toContain("^[a-z0-9]+(?:-[a-z0-9]+)*$");
+    for (const heading of [
+      "## Objective",
+      "## Current State",
+      "## Decisions",
+      "## Changes",
+      "## Verification",
+      "## Remaining Work",
+      "## Risks And Unknowns",
+      "## Resume Instructions",
+      "## Handoff History",
+    ]) {
+      expect(openHandoff).toContain(heading);
+    }
 
     const codex = await fixture();
     await run(codex.source, codex.target, "codex");
@@ -146,6 +168,15 @@ describe("workflow generator", () => {
       "Ask the user for each required field one at a time",
     );
     expect(codexIssue).not.toContain("question tool");
+    const codexHandoff = await readFile(
+      join(
+        codex.target,
+        "plugins/codex-codeasier/skills/handoff/SKILL.md",
+      ),
+      "utf8",
+    );
+    expect(codexHandoff).toBe(openHandoff);
+    expect(codexHandoff).not.toMatch(/OpenCode|question tool|session_review/);
   });
 
   it("reports every stale target in check mode without writing", async () => {
