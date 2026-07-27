@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 
 export const expectedSkills = [
   "docs-governance",
+  "handoff",
   "issue-resolve",
   "issue-review",
   "issue-submit",

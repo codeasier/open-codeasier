@@ -1,6 +1,6 @@
 # open-codeasier
 
-OpenCode-native workflow skills plus a read-only, SDK-backed session review tool. Adapted from [codeasier/claude-codeasier](https://github.com/codeasier/claude-codeasier), with no runtime dependency on that repository.
+OpenCode-native workflow skills, cross-session task handoffs, and a read-only SDK-backed session review tool. Adapted from [codeasier/claude-codeasier](https://github.com/codeasier/claude-codeasier), with no runtime dependency on that repository.
 
 ## Requirements
 
@@ -48,7 +48,14 @@ npx open-codeasier uninstall --project .
 | `/release-prep`    | `<version>`                                    | Prepare a repository release       |
 | `/spec-write`      | `<change-description>`                         | Write a package under `specs/`     |
 | `/spec-run`        | `<change-id>`                                  | Execute an approved spec package   |
+| `/handoff`         | `[name]`                                       | Create or load a task handoff      |
 | `/session-review`  | `<summary\|troubleshoot> <session-id> [focus]` | Review one explicit session        |
+
+## Task Handoffs
+
+Run `/handoff` without arguments to create or update `.agent/handoff/<name>/HANDOFF.md` from the current session and workspace. Run `/handoff <name>` in a later session to validate and load that handoff; the agent reports its understanding and waits for confirmation before continuing the task.
+
+Handoff names contain only lowercase letters, digits, and hyphens. Handoff documents may contain repository state and task context, so review them before committing or sharing them.
 
 ## Session Safety
 
