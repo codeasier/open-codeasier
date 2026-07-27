@@ -1,6 +1,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { discoverAssets } from "../src/installer/assets.js";
 
 const forbidden =
   /CLAUDE_(PLUGIN_ROOT|SKILL_DIR|SESSION_ID)|\.claude\/settings\.local\.json|disable-model-invocation:|allowed-tools:|argument-hint:/;
@@ -11,7 +12,7 @@ describe("distributed workflow assets", () => {
     const skillDirectories = (
       await readdir("skills", { withFileTypes: true })
     ).filter((entry) => entry.isDirectory());
-    expect(skillDirectories).toHaveLength(11);
+    expect(skillDirectories).toHaveLength(12);
     const names: string[] = [];
     for (const directory of skillDirectories) {
       expect(directory.name).not.toMatch(legacyPublicPrefix);
@@ -30,7 +31,7 @@ describe("distributed workflow assets", () => {
     }
     expect(new Set(names).size).toBe(names.length);
     const commands = await readdir("commands");
-    expect(commands).toHaveLength(11);
+    expect(commands).toHaveLength(12);
     expect(commands.join("\n")).not.toMatch(legacyPublicPrefix);
     for (const name of names) {
       const content = await readFile(join("commands", `${name}.md`), "utf8");
@@ -40,6 +41,12 @@ describe("distributed workflow assets", () => {
         content.match(new RegExp("Load the `" + name + "` skill", "g")),
       ).toHaveLength(1);
     }
+  });
+
+  it("packages the handoff skill and command for installation", async () => {
+    const paths = (await discoverAssets()).map((asset) => asset.relativeTarget);
+    expect(paths).toContain("skills/handoff/SKILL.md");
+    expect(paths).toContain("commands/handoff.md");
   });
 
   it("keeps public documentation and runtime registrations prefix-free", async () => {
