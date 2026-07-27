@@ -141,6 +141,12 @@ describe("workflow generator", () => {
     expect(openHandoff).toContain(".agent/handoff/<name>/HANDOFF.md");
     expect(openHandoff).toContain("Wait for explicit user confirmation");
     expect(openHandoff).toContain("^[a-z0-9]+(?:-[a-z0-9]+)*$");
+    expect(openHandoff).toContain(
+      "Each history entry must include a timestamp, status, and material progress",
+    );
+    expect(openHandoff).toContain(
+      "report the failed operation and whether the document changed",
+    );
     for (const heading of [
       "## Objective",
       "## Current State",
@@ -169,10 +175,7 @@ describe("workflow generator", () => {
     );
     expect(codexIssue).not.toContain("question tool");
     const codexHandoff = await readFile(
-      join(
-        codex.target,
-        "plugins/codex-codeasier/skills/handoff/SKILL.md",
-      ),
+      join(codex.target, "plugins/codex-codeasier/skills/handoff/SKILL.md"),
       "utf8",
     );
     expect(codexHandoff).toBe(openHandoff);

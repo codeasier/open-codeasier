@@ -23,19 +23,27 @@ Read an existing handoff before updating it. Write one canonical document with t
 - Status: active | blocked | ready-for-review | completed
 
 ## Objective
+
 ## Current State
+
 ## Decisions
+
 ## Changes
+
 ## Verification
+
 ## Remaining Work
+
 ## Risks And Unknowns
+
 ## Resume Instructions
+
 ## Handoff History
 ```
 
-Keep current-state sections concise and actionable rather than copying the conversation. Preserve still-valid decisions, risks, and prior history; remove superseded current-state claims; append one short timestamped history entry for this successful handoff. `Changes` must identify relevant files and uncommitted state without claiming the handoff workflow created them. `Verification` must distinguish passed, failed, and not-run checks and must not present an old result as newly executed. `Resume Instructions` must give one concrete first action and any prerequisite.
+Keep current-state sections concise and actionable rather than copying the conversation. Preserve still-valid decisions, risks, and prior history; remove superseded current-state claims; append one short history entry for this successful handoff. Each history entry must include a timestamp, status, and material progress since the previous entry. `Changes` must identify relevant files and uncommitted state without claiming the handoff workflow created them. `Verification` must distinguish passed, failed, and not-run checks and must not present an old result as newly executed. `Resume Instructions` must give one concrete first action and any prerequisite.
 
-Do not include secrets, credentials, tokens, unnecessary personal data, complete logs, large diffs, or full transcripts. If Git evidence is unavailable, say so explicitly. After writing, read the file back and verify its canonical path, required headings, handoff ID, supported status, and consistency with the gathered evidence. Report the path, status, and important evidence gaps.
+Do not include secrets, credentials, tokens, unnecessary personal data, complete logs, large diffs, or full transcripts. If Git evidence is unavailable, say so explicitly. After writing, read the file back and verify its canonical path, required headings, handoff ID, supported status, history entry fields, and consistency with the gathered evidence. If a native tool operation fails, report the failed operation and whether the document changed. Report the path, status, and important evidence gaps.
 
 ## Intake Mode
 
