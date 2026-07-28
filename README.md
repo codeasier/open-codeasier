@@ -45,7 +45,7 @@ npx open-codeasier uninstall --project .
 | `/pr-followup`     | `<pr-number> [focus]`                          | Address PR review feedback         |
 | `/worktree-clean`  | none                                           | Inspect and clean safe worktrees   |
 | `/docs-governance` | `[audit\|fix] [scope]`                         | Audit or repair documentation      |
-| `/release-prep`    | `<version>`                                    | Prepare a repository release       |
+| `/release-prep`    | `[version]`                                    | Prepare a repository release       |
 | `/spec-write`      | `<change-description>`                         | Write a package under `specs/`     |
 | `/spec-run`        | `<change-id>`                                  | Execute an approved spec package   |
 | `/handoff`         | `[name]`                                       | Create or load a task handoff      |
