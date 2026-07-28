@@ -160,6 +160,17 @@ describe("workflow generator", () => {
     ]) {
       expect(openHandoff).toContain(heading);
     }
+    const openRelease = await readFile(
+      join(open.target, "skills/release-prep/SKILL.md"),
+      "utf8",
+    );
+    expect(openRelease).toContain("When a target version is supplied");
+    expect(openRelease).toContain("remote default branch");
+    expect(openRelease).toContain("latest applicable tag");
+    expect(openRelease).toContain("comparison range");
+    expect(openRelease).toContain(
+      "Wait for explicit user confirmation before using the recommendation",
+    );
 
     const codex = await fixture();
     await run(codex.source, codex.target, "codex");
@@ -178,6 +189,14 @@ describe("workflow generator", () => {
       join(codex.target, "plugins/codex-codeasier/skills/handoff/SKILL.md"),
       "utf8",
     );
+    const codexRelease = await readFile(
+      join(
+        codex.target,
+        "plugins/codex-codeasier/skills/release-prep/SKILL.md",
+      ),
+      "utf8",
+    );
+    expect(codexRelease).toBe(openRelease);
     expect(codexHandoff).toBe(openHandoff);
     expect(codexHandoff).not.toMatch(/OpenCode|question tool|session_review/);
   });
