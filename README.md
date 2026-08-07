@@ -1,6 +1,6 @@
 # open-codeasier
 
-OpenCode-native workflow skills, cross-session task handoffs, and a read-only SDK-backed session review tool. Adapted from [codeasier/claude-codeasier](https://github.com/codeasier/claude-codeasier), with no runtime dependency on that repository.
+OpenCode-native workflow skills, configurable cross-review orchestration, cross-session task handoffs, and a read-only SDK-backed session review tool. Adapted from [codeasier/claude-codeasier](https://github.com/codeasier/claude-codeasier), with no runtime dependency on that repository.
 
 ## Requirements
 
@@ -27,7 +27,7 @@ Install them only for the current project:
 npx open-codeasier install --project .
 ```
 
-Preview operations with `--dry-run`. Upgrade by rerunning `install`; files changed after installation are never overwritten. Remove only package-owned assets with:
+Assets are installed under `~/.config/opencode/` or `<project>/.opencode/`. Preview operations with `--dry-run`. Upgrade by rerunning `install`; files changed after installation are never overwritten. Remove only package-owned assets with:
 
 ```bash
 npx open-codeasier uninstall
@@ -36,20 +36,92 @@ npx open-codeasier uninstall --project .
 
 ## Commands
 
-| Command            | Arguments                                      | Purpose                            |
-| ------------------ | ---------------------------------------------- | ---------------------------------- |
-| `/understand-me`   | idea or document                               | Challenge and refine an idea       |
-| `/issue-resolve`   | `<issue-number>`                               | Resolve an issue in a worktree     |
-| `/issue-review`    | `<issue-number>`                               | Review an issue with evidence      |
-| `/issue-submit`    | `<owner/repo>`                                 | Submit a confirmed templated issue |
-| `/pr-followup`     | `<pr-number> [focus]`                          | Address PR review feedback         |
-| `/worktree-clean`  | none                                           | Inspect and clean safe worktrees   |
-| `/docs-governance` | `[audit\|fix] [scope]`                         | Audit or repair documentation      |
-| `/release-prep`    | `[version]`                                    | Prepare a repository release       |
-| `/spec-write`      | `<change-description>`                         | Write a package under `specs/`     |
-| `/spec-run`        | `<change-id>`                                  | Execute an approved spec package   |
-| `/handoff`         | `[name]`                                       | Create or load a task handoff      |
-| `/session-review`  | `<summary\|troubleshoot> <session-id> [focus]` | Review one explicit session        |
+| Command            | Arguments                                      | Purpose                              |
+| ------------------ | ---------------------------------------------- | ------------------------------------ |
+| `/understand-me`   | idea or document                               | Challenge and refine an idea         |
+| `/cross-review`    | `init\|setup\|[options] <target>`              | Configure or run independent reviews |
+| `/issue-resolve`   | `<issue-number>`                               | Resolve an issue in a worktree       |
+| `/issue-review`    | `<issue-number>`                               | Review an issue with evidence        |
+| `/issue-submit`    | `<owner/repo>`                                 | Submit a confirmed templated issue   |
+| `/pr-followup`     | `<pr-number> [focus]`                          | Address PR review feedback           |
+| `/worktree-clean`  | none                                           | Inspect and clean safe worktrees     |
+| `/docs-governance` | `[audit\|fix] [scope]`                         | Audit or repair documentation        |
+| `/release-prep`    | `[version]`                                    | Prepare a repository release         |
+| `/spec-write`      | `<change-description>`                         | Write a package under `specs/`       |
+| `/spec-run`        | `<change-id>`                                  | Execute an approved spec package     |
+| `/handoff`         | `[name]`                                       | Create or load a task handoff        |
+| `/session-review`  | `<summary\|troubleshoot> <session-id> [focus]` | Review one explicit session          |
+
+## Cross Review
+
+Configure reviewers once in `cross-review.json`; the session command stays short. Global defaults live at `~/.config/opencode/cross-review.json`, and `<project>/.opencode/cross-review.json` overrides them per key.
+
+Create a starter configuration at either scope:
+
+```bash
+# Current project (--local is the default)
+npx open-codeasier init
+npx open-codeasier init --local
+
+# Another project (the path defaults to the current directory)
+npx open-codeasier init /path/to/project
+npx open-codeasier init --local /path/to/project
+
+# Current user
+npx open-codeasier init --global
+```
+
+The initializer writes three role-oriented reviewers plus a judge and refuses to overwrite an existing configuration. Replace its `provider/...` placeholders with exact identifiers from `opencode models`. Add `--dry-run` to preview the destination without writing.
+
+OpenCode can guide the same setup interactively. Run `/cross-review init` (local by default), `/cross-review init --global`, or ask the session to "set up cross-review". It discovers identifiers with `opencode models`, asks for each reviewer model and responsibility plus the judge, and writes the selected scope after confirmation.
+
+```json
+{
+  "reviewers": [
+    {
+      "model": "anthropic/claude-sonnet-4",
+      "focus": "correctness and behavior"
+    },
+    {
+      "model": "deepseek/deepseek-chat",
+      "focus": "security and authentication"
+    },
+    {
+      "model": "openai/gpt-5",
+      "focus": "performance and behavioral regressions"
+    }
+  ],
+  "judgeModel": "openai/gpt-5",
+  "maxConcurrency": 3
+}
+```
+
+Then run reviews with only a target:
+
+```text
+/cross-review main...HEAD
+```
+
+A `reviewers` array defines the exact reviewer set and gives each reviewer its own optional `focus`. A flat alternative uses `reviewModels` (assigned round-robin across `agents`, which defaults to 3) plus one shared `focus`:
+
+```json
+{
+  "reviewModels": ["anthropic/claude-sonnet-4", "deepseek/deepseek-chat"],
+  "agents": 4,
+  "judgeModel": "openai/gpt-5",
+  "focus": "security and regressions"
+}
+```
+
+Optional per-invocation overrides keep working: `--review-models`, `--agents`, `--max-concurrency`, `--judge-model`, and `--focus`; any explicit argument wins over configuration. Model names are exact OpenCode `provider/model` identifiers reported by `opencode models`.
+
+The `cross_review` plugin tool creates isolated OpenCode SDK sessions. Each reviewer uses the installed `cross-reviewer` agent, receives the same normalized target, and cannot access another reviewer's output. The agent denies edit, shell, and delegation permissions, while each SDK prompt also disables mutating and delegation tools.
+
+- `--agents` and `--max-concurrency` accept 1-8 and default to 3.
+- `--judge-model` and the configured `judgeModel` are optional. Without one, the parent session verifies, deduplicates, calibrates, and consolidates findings; a configured `judgeModel` launches a read-only judge session with that explicit model. Setting `--judge-model` overrides the configured value.
+- Malformed or unavailable models fail explicitly. Reviewer failures are isolated, but a majority quorum is required; cancellation stops outstanding OpenCode reviewer sessions.
+
+Each reviewer and judge consumes model tokens. Increasing reviewers or selecting more expensive models raises cost approximately with the number of sessions; no model silently falls back to another provider or model.
 
 ## Task Handoffs
 

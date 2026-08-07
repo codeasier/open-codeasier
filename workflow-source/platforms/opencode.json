@@ -1,4 +1,7 @@
 {
   "ASK_REQUIRED_FIELDS": "Use the question tool to collect each required field",
+  "CROSS_REVIEW_CONFIG": "The tool reads configuration from `.opencode/cross-review.json` (project) and then `~/.config/opencode/cross-review.json` (global); project keys override global. A `reviewers` array assigns each reviewer its own optional `focus`; `reviewModels` values are assigned round-robin across the reviewer count.",
+  "CROSS_REVIEW_ORCHESTRATION": "Call `cross_review` with the normalized arguments. The tool reads the configuration itself, validates model availability, creates isolated reviewer sessions, and enforces bounded concurrency.",
+  "MODEL_NAMING": "Use exact OpenCode `provider/model` identifiers from `opencode models`; malformed, disconnected, or unavailable models are errors.",
   "RESOLVE_AMBIGUITY": "Resolve ambiguity with the question tool"
 }

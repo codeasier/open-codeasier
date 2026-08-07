@@ -15,6 +15,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 export const expectedSkills = [
+  "cross-review",
   "docs-governance",
   "handoff",
   "issue-resolve",
@@ -34,6 +35,14 @@ const targetPrefix = {
   opencode: "skills",
   codex: "plugins/codex-codeasier/skills",
 };
+
+function renderAgent(instructions) {
+  const body = `${instructions.replace(/\r\n?/g, "\n").trim()}\n`;
+  if (body.includes("{{") || body.includes("}}")) {
+    throw new Error("cross-reviewer: placeholders are not supported");
+  }
+  return `---\ndescription: Read-only isolated code reviewer and cross-review judge\nmode: subagent\npermission:\n  edit: deny\n  bash: deny\n  task: deny\n---\n\n${body}`;
+}
 
 function validatePlaceholderStructure(skill, template) {
   for (let index = 0; index < template.length; index += 1) {
@@ -214,13 +223,29 @@ export async function main(args = process.argv.slice(2)) {
 
   const usedKeys = new Set();
   const outputs = [];
-  for (const skill of actualSkills) {
+  const platformSkills = actualSkills.filter(
+    (skill) => options.platform === "opencode" || skill !== "cross-review",
+  );
+  for (const skill of platformSkills) {
     const template = await readFile(join(skillsRoot, `${skill}.md`), "utf8");
     const contents = render(skill, template, profile, usedKeys);
     outputs.push({
       displayPath: `${targetPrefix[options.platform]}/${skill}/SKILL.md`,
       path: join(targetRoot, targetPrefix[options.platform], skill, "SKILL.md"),
       contents,
+    });
+  }
+
+  if (options.platform === "opencode") {
+    const agentInstructions = await readFile(
+      join(sourceRoot, "workflow-source", "agents", "cross-reviewer.md"),
+      "utf8",
+    );
+    const agentRelativePath = "agents/cross-reviewer.md";
+    outputs.push({
+      displayPath: agentRelativePath,
+      path: join(targetRoot, agentRelativePath),
+      contents: renderAgent(agentInstructions),
     });
   }
 
@@ -232,13 +257,8 @@ export async function main(args = process.argv.slice(2)) {
     );
   }
 
-  for (const skill of actualSkills) {
-    await rejectTargetSymlinks(targetRoot, [
-      ...targetPrefix[options.platform].split("/"),
-      skill,
-      "SKILL.md",
-    ]);
-  }
+  for (const output of outputs)
+    await rejectTargetSymlinks(targetRoot, output.displayPath.split("/"));
 
   const mismatches = [];
   for (const output of outputs) {
