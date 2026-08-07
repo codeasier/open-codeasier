@@ -143,6 +143,23 @@ describe("cross-review configuration", () => {
     });
   });
 
+  it("lets project reviewModels replace global reviewers", async () => {
+    const root = await fixture();
+    await mkdir(join(root, ".config", "opencode"), { recursive: true });
+    await writeFile(
+      globalConfigPath(root),
+      JSON.stringify({ reviewers: [{ model: "a/one" }] }),
+    );
+    await mkdir(join(root, ".opencode"), { recursive: true });
+    await writeFile(
+      projectConfigPath(root),
+      JSON.stringify({ reviewModels: ["b/two"] }),
+    );
+    await expect(loadCrossReviewConfig(root, root)).resolves.toEqual({
+      reviewModels: ["b/two"],
+    });
+  });
+
   it("rejects malformed JSON and invalid config shapes with the file path", async () => {
     const root = await fixture();
     await mkdir(join(root, ".opencode"), { recursive: true });

@@ -18,6 +18,11 @@ const READ_ONLY_TOOLS = {
 
 type ApiResult<T> = { data?: T; error?: unknown };
 
+type PromptResponse = {
+  info?: { error?: unknown };
+  parts: Array<{ type: string; text?: string }>;
+};
+
 export type CrossReviewClient = {
   provider: {
     list(input: {
@@ -46,7 +51,7 @@ export type CrossReviewClient = {
       path: { id: string };
       query: { directory: string };
       signal?: AbortSignal;
-    }): Promise<ApiResult<{ parts: Array<{ type: string; text?: string }> }>>;
+    }): Promise<ApiResult<PromptResponse>>;
     abort(input: {
       path: { id: string };
       query: { directory: string };
@@ -81,6 +86,38 @@ function responseData<T>(result: ApiResult<T>, operation: string): T {
   if (result.error !== undefined || result.data === undefined)
     throw new Error(`${operation} failed`);
   return result.data;
+}
+
+function errorProperty(error: unknown, property: "name" | "message") {
+  if (typeof error !== "object" || error === null) return undefined;
+  const value = (error as Record<string, unknown>)[property];
+  return typeof value === "string" ? value : undefined;
+}
+
+function promptError(error: unknown, operation: string) {
+  const name = errorProperty(error, "name") ?? "MessageError";
+  let message = errorProperty(error, "message");
+  if (message === undefined && typeof error === "object" && error !== null)
+    message = errorProperty((error as Record<string, unknown>).data, "message");
+  const result = new Error(
+    `${operation} failed: ${name}${message === undefined ? "" : `: ${message}`}`,
+  );
+  result.name = name;
+  return result;
+}
+
+function promptOutput(result: ApiResult<PromptResponse>, operation: string) {
+  const response = responseData(result, operation);
+  if (response.info?.error !== undefined)
+    throw promptError(response.info.error, operation);
+  const output = response.parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text ?? "")
+    .join("\n")
+    .trim();
+  if (output.length === 0)
+    throw new Error(`${operation} returned no text output`);
+  return output;
 }
 
 function errorMessage(error: unknown) {
@@ -118,15 +155,26 @@ function resolveReviewers(
         ...(sharedFocus === undefined ? {} : { focus: sharedFocus }),
       };
     });
-  if (config.reviewers !== undefined)
-    return config.reviewers.map((reviewer) => ({
-      model: reviewer.model,
-      ...(reviewer.focus === undefined
-        ? sharedFocus === undefined
-          ? {}
-          : { focus: sharedFocus }
-        : { focus: reviewer.focus }),
-    }));
+  if (config.reviewers !== undefined) {
+    const configuredReviewers = config.reviewers;
+    return Array.from(
+      { length: args.agents ?? configuredReviewers.length },
+      (_, index) => {
+        const reviewer =
+          configuredReviewers[index % configuredReviewers.length];
+        if (reviewer === undefined)
+          throw new Error("Missing configured reviewer");
+        return {
+          model: reviewer.model,
+          ...(reviewer.focus === undefined
+            ? sharedFocus === undefined
+              ? {}
+              : { focus: sharedFocus }
+            : { focus: reviewer.focus }),
+        };
+      },
+    );
+  }
   const configuredModels = config.reviewModels;
   if (configuredModels !== undefined)
     return Array.from({ length: count }, (_, index) => {
@@ -146,12 +194,14 @@ async function runLimited<T>(
   count: number,
   concurrency: number,
   run: (index: number) => Promise<T>,
+  shouldStop: () => boolean,
 ) {
   const results = new Array<T>(count);
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(count, concurrency) }, async () => {
       while (next < count) {
+        if (shouldStop()) return;
         const index = next;
         next += 1;
         results[index] = await run(index);
@@ -181,41 +231,6 @@ export function createCrossReviewTool(
       focus: tool.schema.string().max(2_000).optional(),
     },
     async execute(args, context) {
-      const config = await loadConfig(context.directory);
-      const reviewers = resolveReviewers(args, config);
-      const judgeModel = args.judgeModel ?? config.judgeModel;
-      const maxConcurrency =
-        args.maxConcurrency ?? config.maxConcurrency ?? DEFAULT_CONCURRENCY;
-      const sharedFocus = args.focus ?? config.focus;
-
-      const requestedModels = [
-        ...new Set([
-          ...reviewers.map((reviewer) => reviewer.model),
-          ...(judgeModel === undefined ? [] : [judgeModel]),
-        ]),
-      ];
-      const parsedModels = new Map(
-        requestedModels.map((model) => [model, splitModel(model)]),
-      );
-      const catalog = responseData(
-        await client.provider.list({
-          query: { directory: context.directory },
-          signal: context.abort,
-        }),
-        "Provider discovery",
-      );
-      for (const [model, parsed] of parsedModels) {
-        const provider = catalog.all.find(
-          (candidate) => candidate.id === parsed.providerID,
-        );
-        if (
-          !catalog.connected.includes(parsed.providerID) ||
-          provider === undefined ||
-          !(parsed.modelID in provider.models)
-        )
-          throw new Error(`Unavailable model: ${model}`);
-      }
-
       const sessions = new Set<string>();
       const abortSessions = () => {
         for (const id of sessions)
@@ -228,7 +243,51 @@ export function createCrossReviewTool(
       };
       context.abort.addEventListener("abort", abortSessions, { once: true });
 
+      const throwIfCancelled = () => {
+        if (!context.abort.aborted) return;
+        abortSessions();
+        throw new Error("Cross-review cancelled");
+      };
+
       try {
+        throwIfCancelled();
+        const config = await loadConfig(context.directory);
+        throwIfCancelled();
+        const reviewers = resolveReviewers(args, config);
+        const judgeModel = args.judgeModel ?? config.judgeModel;
+        const maxConcurrency =
+          args.maxConcurrency ?? config.maxConcurrency ?? DEFAULT_CONCURRENCY;
+        const sharedFocus = args.focus ?? config.focus;
+
+        const requestedModels = [
+          ...new Set([
+            ...reviewers.map((reviewer) => reviewer.model),
+            ...(judgeModel === undefined ? [] : [judgeModel]),
+          ]),
+        ];
+        const parsedModels = new Map(
+          requestedModels.map((model) => [model, splitModel(model)]),
+        );
+        const catalog = responseData(
+          await client.provider.list({
+            query: { directory: context.directory },
+            signal: context.abort,
+          }),
+          "Provider discovery",
+        );
+        throwIfCancelled();
+        for (const [model, parsed] of parsedModels) {
+          const provider = catalog.all.find(
+            (candidate) => candidate.id === parsed.providerID,
+          );
+          if (
+            !catalog.connected.includes(parsed.providerID) ||
+            provider === undefined ||
+            !(parsed.modelID in provider.models)
+          )
+            throw new Error(`Unavailable model: ${model}`);
+        }
+
         const brief = reviewBrief(args.target, sharedFocus);
         const reviewerResults = await runLimited(
           reviewers.length,
@@ -242,6 +301,7 @@ export function createCrossReviewTool(
               throw new Error(`Unvalidated reviewer model: ${reviewer.model}`);
             let sessionID: string | undefined;
             try {
+              throwIfCancelled();
               const session = responseData(
                 await client.session.create({
                   body: {
@@ -255,38 +315,41 @@ export function createCrossReviewTool(
               );
               sessionID = session.id;
               sessions.add(session.id);
-              const response = responseData(
-                await client.session.prompt({
-                  body: {
-                    agent: REVIEWER_AGENT,
-                    model: parsedModel,
-                    parts: [
-                      {
-                        type: "text",
-                        text: reviewBrief(args.target, reviewer.focus),
-                      },
-                    ],
-                    tools: READ_ONLY_TOOLS,
-                  },
-                  path: { id: session.id },
-                  query: { directory: context.directory },
-                  signal: context.abort,
-                }),
-                "Reviewer prompt",
-              );
-              return {
-                reviewer: index + 1,
-                model: reviewer.model,
-                ...(reviewer.focus === undefined
-                  ? {}
-                  : { focus: reviewer.focus }),
-                sessionID: session.id,
-                status: "succeeded",
-                output: response.parts
-                  .filter((part) => part.type === "text")
-                  .map((part) => part.text ?? "")
-                  .join("\n"),
-              };
+              try {
+                throwIfCancelled();
+                const output = promptOutput(
+                  await client.session.prompt({
+                    body: {
+                      agent: REVIEWER_AGENT,
+                      model: parsedModel,
+                      parts: [
+                        {
+                          type: "text",
+                          text: reviewBrief(args.target, reviewer.focus),
+                        },
+                      ],
+                      tools: READ_ONLY_TOOLS,
+                    },
+                    path: { id: session.id },
+                    query: { directory: context.directory },
+                    signal: context.abort,
+                  }),
+                  "Reviewer prompt",
+                );
+                throwIfCancelled();
+                return {
+                  reviewer: index + 1,
+                  model: reviewer.model,
+                  ...(reviewer.focus === undefined
+                    ? {}
+                    : { focus: reviewer.focus }),
+                  sessionID: session.id,
+                  status: "succeeded",
+                  output,
+                };
+              } finally {
+                sessions.delete(session.id);
+              }
             } catch (error) {
               return {
                 reviewer: index + 1,
@@ -295,11 +358,17 @@ export function createCrossReviewTool(
                   ? {}
                   : { focus: reviewer.focus }),
                 ...(sessionID === undefined ? {} : { sessionID }),
-                status: context.abort.aborted ? "cancelled" : "failed",
+                status:
+                  context.abort.aborted ||
+                  (error instanceof Error &&
+                    error.name === "MessageAbortedError")
+                    ? "cancelled"
+                    : "failed",
                 error: errorMessage(error),
               };
             }
           },
+          () => context.abort.aborted,
         );
 
         if (context.abort.aborted) throw new Error("Cross-review cancelled");
@@ -336,6 +405,7 @@ export function createCrossReviewTool(
             }
           | undefined;
         if (judgeModel !== undefined) {
+          throwIfCancelled();
           const parsedJudgeModel = parsedModels.get(judgeModel);
           if (parsedJudgeModel === undefined)
             throw new Error(`Unvalidated judge model: ${judgeModel}`);
@@ -351,40 +421,43 @@ export function createCrossReviewTool(
             "Judge session creation",
           );
           sessions.add(session.id);
-          const response = responseData(
-            await client.session.prompt({
-              body: {
-                agent: REVIEWER_AGENT,
-                model: parsedJudgeModel,
-                parts: [
-                  {
-                    type: "text",
-                    text: [
-                      "Act as the read-only cross-review judge.",
-                      `Target: ${args.target}`,
-                      "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
-                      "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
-                      JSON.stringify(successful),
-                    ].join("\n"),
-                  },
-                ],
-                tools: READ_ONLY_TOOLS,
-              },
-              path: { id: session.id },
-              query: { directory: context.directory },
-              signal: context.abort,
-            }),
-            "Judge prompt",
-          );
-          judge = {
-            model: judgeModel,
-            sessionID: session.id,
-            status: "succeeded",
-            output: response.parts
-              .filter((part) => part.type === "text")
-              .map((part) => part.text ?? "")
-              .join("\n"),
-          };
+          try {
+            throwIfCancelled();
+            const output = promptOutput(
+              await client.session.prompt({
+                body: {
+                  agent: REVIEWER_AGENT,
+                  model: parsedJudgeModel,
+                  parts: [
+                    {
+                      type: "text",
+                      text: [
+                        "Act as the read-only cross-review judge.",
+                        `Target: ${args.target}`,
+                        "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
+                        "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
+                        JSON.stringify(successful),
+                      ].join("\n"),
+                    },
+                  ],
+                  tools: READ_ONLY_TOOLS,
+                },
+                path: { id: session.id },
+                query: { directory: context.directory },
+                signal: context.abort,
+              }),
+              "Judge prompt",
+            );
+            throwIfCancelled();
+            judge = {
+              model: judgeModel,
+              sessionID: session.id,
+              status: "succeeded",
+              output,
+            };
+          } finally {
+            sessions.delete(session.id);
+          }
         }
 
         const result = {

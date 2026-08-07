@@ -145,15 +145,18 @@ export async function loadCrossReviewConfig(
   if (global === undefined) return project;
 
   const merged: CrossReviewConfig = { ...global };
-  if (project.reviewers !== undefined) merged.reviewers = project.reviewers;
-  if (project.reviewModels !== undefined)
+  if (project.reviewers !== undefined) {
+    merged.reviewers = project.reviewers;
+    delete merged.reviewModels;
+  }
+  if (project.reviewModels !== undefined) {
     merged.reviewModels = project.reviewModels;
+    delete merged.reviewers;
+  }
   if (project.agents !== undefined) merged.agents = project.agents;
   if (project.maxConcurrency !== undefined)
     merged.maxConcurrency = project.maxConcurrency;
   if (project.judgeModel !== undefined) merged.judgeModel = project.judgeModel;
   if (project.focus !== undefined) merged.focus = project.focus;
-  if (merged.reviewers !== undefined) delete merged.reviewModels;
-  else if (merged.reviewModels !== undefined) delete merged.reviewers;
   return merged;
 }

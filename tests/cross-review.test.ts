@@ -246,6 +246,22 @@ describe("cross_review tool", () => {
     expect(calls[1].body.model.modelID).toBe("judge");
   });
 
+  it("uses an explicit agent count with configured reviewers", async () => {
+    const prompt = vi.fn().mockResolvedValue({
+      data: { parts: [{ type: "text", text: "candidate" }] },
+    });
+    const mock = client(prompt);
+    const config: CrossReviewConfig = {
+      reviewers: [{ model: "a/one" }, { model: "a/two" }],
+    };
+    const result = await createCrossReviewTool(
+      mock,
+      async () => config,
+    ).execute({ target: "HEAD", agents: 1 }, context());
+    expect(prompt).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((result as any).output).reviewers).toHaveLength(1);
+  });
+
   it("isolates failures when quorum survives and runs an explicit judge", async () => {
     let call = 0;
     const prompt = vi.fn().mockImplementation(async () => {
@@ -316,6 +332,114 @@ describe("cross_review tool", () => {
     });
   });
 
+  it("does not count message errors or empty outputs toward quorum", async () => {
+    const prompt = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: {
+          info: {
+            error: {
+              name: "ProviderAuthError",
+              data: { message: "credentials rejected" },
+            },
+          },
+          parts: [],
+        },
+      })
+      .mockResolvedValueOnce({ data: { parts: [] } })
+      .mockResolvedValueOnce({
+        data: { parts: [{ type: "text", text: "candidate" }] },
+      });
+    const result = await createCrossReviewTool(
+      client(prompt),
+      emptyConfig,
+    ).execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 3,
+        maxConcurrency: 1,
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.status).toBe("quorum-not-met");
+    expect(parsed.reviewers).toMatchObject([
+      {
+        status: "failed",
+        error:
+          "Reviewer prompt failed: ProviderAuthError: credentials rejected",
+      },
+      { status: "failed", error: "Reviewer prompt returned no text output" },
+      { status: "succeeded", output: "candidate" },
+    ]);
+  });
+
+  it("marks message-level aborts as cancelled", async () => {
+    const prompt = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: {
+          info: {
+            error: {
+              name: "MessageAbortedError",
+              data: { message: "review stopped" },
+            },
+          },
+          parts: [],
+        },
+      })
+      .mockResolvedValue({
+        data: { parts: [{ type: "text", text: "candidate" }] },
+      });
+    const result = await createCrossReviewTool(
+      client(prompt),
+      emptyConfig,
+    ).execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 3,
+        maxConcurrency: 1,
+      },
+      context(),
+    );
+    expect(JSON.parse((result as any).output).reviewers[0]).toMatchObject({
+      status: "cancelled",
+      error: "Reviewer prompt failed: MessageAbortedError: review stopped",
+    });
+  });
+
+  it("fails closed when the judge returns a message-level error", async () => {
+    const prompt = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: { parts: [{ type: "text", text: "candidate" }] },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          info: {
+            error: {
+              name: "MessageOutputLengthError",
+              data: { message: "output limit reached" },
+            },
+          },
+          parts: [],
+        },
+      });
+    await expect(
+      createCrossReviewTool(client(prompt), emptyConfig).execute(
+        {
+          target: "HEAD",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    ).rejects.toThrow("Judge prompt failed: MessageOutputLengthError");
+  });
+
   it("aborts child sessions when the parent is cancelled", async () => {
     const abort = new AbortController();
     const prompt = vi.fn().mockImplementation(
@@ -337,7 +461,7 @@ describe("cross_review tool", () => {
         {
           target: "HEAD",
           reviewModels: ["a/one"],
-          agents: 1,
+          agents: 3,
           maxConcurrency: 1,
         },
         context(abort),
@@ -347,5 +471,44 @@ describe("cross_review tool", () => {
       path: { id: "child-1" },
       query: { directory: "/repo" },
     });
+    expect(mock.session.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start when cancellation happened before execution", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    const mock = client();
+    await expect(
+      createCrossReviewTool(mock, emptyConfig).execute(
+        { target: "HEAD", reviewModels: ["a/one"] },
+        context(abort),
+      ),
+    ).rejects.toThrow("cancelled");
+    expect(mock.provider.list).not.toHaveBeenCalled();
+    expect(mock.session.create).not.toHaveBeenCalled();
+  });
+
+  it("aborts a session created while cancellation is in flight", async () => {
+    const abort = new AbortController();
+    const mock = client();
+    mock.session.create.mockImplementationOnce(async () => {
+      abort.abort();
+      return { data: { id: "child-in-flight" } };
+    });
+    await expect(
+      createCrossReviewTool(mock, emptyConfig).execute(
+        {
+          target: "HEAD",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(abort),
+      ),
+    ).rejects.toThrow("cancelled");
+    expect(mock.session.abort).toHaveBeenCalledWith({
+      path: { id: "child-in-flight" },
+      query: { directory: "/repo" },
+    });
+    expect(mock.session.prompt).not.toHaveBeenCalled();
   });
 });
