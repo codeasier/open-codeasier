@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 
 const NAME = "[a-z0-9]+(?:-[a-z0-9]+)*";
 const ASSET_PATH = new RegExp(
-  `^(?:skills/${NAME}/SKILL\\.md|commands/${NAME}\\.md)$`,
+  `^(?:skills/${NAME}/SKILL\\.md|commands/${NAME}\\.md|agents/${NAME}\\.md)$`,
 );
 
 export function validateAssetPath(path: string): void {

@@ -12,7 +12,7 @@ describe("distributed workflow assets", () => {
     const skillDirectories = (
       await readdir("skills", { withFileTypes: true })
     ).filter((entry) => entry.isDirectory());
-    expect(skillDirectories).toHaveLength(12);
+    expect(skillDirectories).toHaveLength(13);
     const names: string[] = [];
     for (const directory of skillDirectories) {
       expect(directory.name).not.toMatch(legacyPublicPrefix);
@@ -31,7 +31,7 @@ describe("distributed workflow assets", () => {
     }
     expect(new Set(names).size).toBe(names.length);
     const commands = await readdir("commands");
-    expect(commands).toHaveLength(12);
+    expect(commands).toHaveLength(13);
     expect(commands.join("\n")).not.toMatch(legacyPublicPrefix);
     for (const name of names) {
       const content = await readFile(join("commands", `${name}.md`), "utf8");
@@ -47,6 +47,7 @@ describe("distributed workflow assets", () => {
     const paths = (await discoverAssets()).map((asset) => asset.relativeTarget);
     expect(paths).toContain("skills/handoff/SKILL.md");
     expect(paths).toContain("commands/handoff.md");
+    expect(paths).toContain("agents/cross-reviewer.md");
   });
 
   it("keeps public documentation and runtime registrations prefix-free", async () => {

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Add an OpenCode-only `cross-review` workflow with configurable isolated
+  reviewer models, bounded concurrency, quorum handling, and provenance.
+- Add a read-only reviewer agent and SDK session orchestration with explicit
+  model validation and tool restrictions.
+
 ## [0.2.0] - 2026-07-27
 
 ### Added

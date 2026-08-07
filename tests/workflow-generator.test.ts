@@ -112,7 +112,7 @@ describe("workflow generator", () => {
         { encoding: "utf8" },
       ),
     ).resolves.toMatchObject({
-      stdout: expect.stringContaining("Generated 11 opencode workflows"),
+      stdout: expect.stringContaining("Generated 13 opencode workflows"),
     });
     await expect(
       readFile(join(target, "skills/issue-submit/SKILL.md"), "utf8"),
@@ -124,7 +124,7 @@ describe("workflow generator", () => {
   it("renders OpenCode and Codex wording into platform-native targets", async () => {
     const open = await fixture();
     const openResult = await run(open.source, open.target, "opencode");
-    expect(openResult.stdout).toContain("Generated 11 opencode workflows");
+    expect(openResult.stdout).toContain("Generated 13 opencode workflows");
     const openIssue = await readFile(
       join(open.target, "skills/issue-submit/SKILL.md"),
       "utf8",
@@ -171,6 +171,14 @@ describe("workflow generator", () => {
     expect(openRelease).toContain(
       "Wait for explicit user confirmation before using the recommendation",
     );
+    const openAgent = await readFile(
+      join(open.target, "agents/cross-reviewer.md"),
+      "utf8",
+    );
+    expect(openAgent).toContain("mode: subagent");
+    expect(openAgent).toContain("edit: deny");
+    expect(openAgent).toContain("bash: deny");
+    expect(openAgent).toContain("task: deny");
 
     const codex = await fixture();
     await run(codex.source, codex.target, "codex");
@@ -199,6 +207,15 @@ describe("workflow generator", () => {
     expect(codexRelease).toBe(openRelease);
     expect(codexHandoff).toBe(openHandoff);
     expect(codexHandoff).not.toMatch(/OpenCode|question tool|session_review/);
+    await expect(
+      readFile(
+        join(
+          codex.target,
+          "plugins/codex-codeasier/skills/cross-review/SKILL.md",
+        ),
+        "utf8",
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("reports every stale target in check mode without writing", async () => {
@@ -284,7 +301,11 @@ describe("workflow generator", () => {
     const missing = await fixture();
     await writeFile(
       join(missing.source, "workflow-source/platforms/opencode.json"),
-      JSON.stringify({ RESOLVE_AMBIGUITY: "Resolve ambiguity" }),
+      JSON.stringify({
+        CROSS_REVIEW_ORCHESTRATION: "Orchestrate reviews",
+        MODEL_NAMING: "Validate models",
+        RESOLVE_AMBIGUITY: "Resolve ambiguity",
+      }),
     );
     await expect(
       run(missing.source, missing.target, "opencode"),

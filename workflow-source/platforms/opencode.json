@@ -1,4 +1,6 @@
 {
   "ASK_REQUIRED_FIELDS": "Use the question tool to collect each required field",
+  "CROSS_REVIEW_ORCHESTRATION": "Call `cross_review` with the normalized arguments. The tool validates model availability, creates isolated reviewer sessions, and enforces bounded concurrency.",
+  "MODEL_NAMING": "Use exact OpenCode `provider/model` identifiers from `opencode models`; malformed, disconnected, or unavailable models are errors.",
   "RESOLVE_AMBIGUITY": "Resolve ambiguity with the question tool"
 }

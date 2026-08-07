@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 
 export type PackagedAsset = {
   source: string;
-  relativeTarget: `skills/${string}/SKILL.md` | `commands/${string}.md`;
+  relativeTarget:
+    | `skills/${string}/SKILL.md`
+    | `commands/${string}.md`
+    | `agents/${string}.md`;
   sha256: string;
 };
 
@@ -16,7 +19,7 @@ export async function discoverAssets(
   packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../.."),
 ) {
   const assets: PackagedAsset[] = [];
-  for (const directory of ["skills", "commands"] as const) {
+  for (const directory of ["skills", "commands", "agents"] as const) {
     const root = join(packageRoot, directory);
     const entries = await readdir(root, {
       recursive: true,
@@ -26,7 +29,11 @@ export async function discoverAssets(
       if (!entry.isFile()) continue;
       const source = join(entry.parentPath, entry.name);
       const target = relative(packageRoot, source).replaceAll("\\", "/");
-      if (!/^skills\/[^/]+\/SKILL\.md$|^commands\/[^/]+\.md$/.test(target))
+      if (
+        !/^skills\/[^/]+\/SKILL\.md$|^commands\/[^/]+\.md$|^agents\/[^/]+\.md$/.test(
+          target,
+        )
+      )
         continue;
       assets.push({
         source,

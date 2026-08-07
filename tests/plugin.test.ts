@@ -41,7 +41,10 @@ describe("plugin module", () => {
       worktree: "/repo",
       serverUrl: new URL("http://localhost"),
     } as any);
-    expect(Object.keys(hooks.tool ?? {})).toEqual(["session_review"]);
+    expect(Object.keys(hooks.tool ?? {})).toEqual([
+      "cross_review",
+      "session_review",
+    ]);
     expect(hooks.tool).toHaveProperty("session_review");
     const output = await hooks.tool?.session_review?.execute(
       { sessionID: "ses_123", mode: "summary" },
