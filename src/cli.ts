@@ -3,6 +3,10 @@ import { readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  CrossReviewConfigConflictError,
+  initializeCrossReviewConfig,
+} from "./cross-review/init.js";
 import { discoverAssets } from "./installer/assets.js";
 import {
   AssetConflictError,
@@ -13,6 +17,45 @@ import { resolveTarget } from "./installer/paths.js";
 
 export async function run(argv: string[]): Promise<number> {
   const command = argv.shift();
+  if (command === "init") {
+    let requestedScope: "local" | "global" | undefined;
+    let project: string | undefined;
+    let dryRun = false;
+    while (argv.length) {
+      const option = argv.shift();
+      if (option === "--dry-run") dryRun = true;
+      else if (option === "--global" && requestedScope === undefined)
+        requestedScope = "global";
+      else if (option === "--local" && requestedScope === undefined)
+        requestedScope = "local";
+      else if (
+        option !== undefined &&
+        !option.startsWith("--") &&
+        project === undefined
+      )
+        project = option;
+      else return 2;
+    }
+    const scope = requestedScope ?? "local";
+    if (scope === "global" && project !== undefined) return 2;
+    const target =
+      scope === "global"
+        ? resolveTarget({})
+        : resolveTarget({ project: project ?? "." });
+    try {
+      const result = await initializeCrossReviewConfig({ target, dryRun });
+      console.log(
+        `${dryRun ? "would-initialize" : "initialized"}: ${result.path}`,
+      );
+      return 0;
+    } catch (error) {
+      if (error instanceof CrossReviewConfigConflictError) {
+        console.error(error.message);
+        return 1;
+      }
+      throw error;
+    }
+  }
   if (command !== "install" && command !== "uninstall") return 2;
   let project: string | undefined;
   let dryRun = false;

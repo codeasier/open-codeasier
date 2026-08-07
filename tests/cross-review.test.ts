@@ -4,6 +4,9 @@ import {
   createCrossReviewTool,
   type CrossReviewClient,
 } from "../src/cross-review/tool.js";
+import type { CrossReviewConfig } from "../src/cross-review/config.js";
+
+const emptyConfig = async (): Promise<CrossReviewConfig> => ({});
 
 function context(abort = new AbortController()) {
   return {
@@ -49,14 +52,12 @@ function client(prompt?: CrossReviewClient["session"]["prompt"]) {
 describe("cross_review tool", () => {
   it("validates model identifiers, availability, and reviewer bounds", async () => {
     const mock = client();
-    const definition = createCrossReviewTool(mock);
+    const definition = createCrossReviewTool(mock, emptyConfig);
     await expect(
       definition.execute(
         {
           target: "HEAD",
           reviewModels: ["malformed"],
-          agents: 3,
-          maxConcurrency: 3,
         },
         context(),
       ),
@@ -66,13 +67,22 @@ describe("cross_review tool", () => {
         {
           target: "HEAD",
           reviewModels: ["a/missing"],
-          agents: 3,
-          maxConcurrency: 3,
         },
         context(),
       ),
     ).rejects.toThrow("Unavailable model");
     expect(definition.args.agents.safeParse(9).success).toBe(false);
+    expect(mock.session.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects invocations without any configured or explicit reviewers", async () => {
+    const mock = client();
+    await expect(
+      createCrossReviewTool(mock, emptyConfig).execute(
+        { target: "HEAD" },
+        context(),
+      ),
+    ).rejects.toThrow("No review models configured");
     expect(mock.session.create).not.toHaveBeenCalled();
   });
 
@@ -87,7 +97,7 @@ describe("cross_review tool", () => {
       return { data: { parts: [{ type: "text", text: "review" }] } };
     });
     const mock = client(prompt);
-    const output = await createCrossReviewTool(mock).execute(
+    const output = await createCrossReviewTool(mock, emptyConfig).execute(
       {
         target: "main...HEAD",
         reviewModels: ["a/one", "a/two"],
@@ -119,6 +129,123 @@ describe("cross_review tool", () => {
     });
   });
 
+  it("runs configured reviewers with per-reviewer focus and a configured judge", async () => {
+    const prompt = vi.fn().mockImplementation(async (input) => ({
+      data: {
+        parts: [
+          {
+            type: "text",
+            text: input.body.parts[0].text.includes("Judge")
+              ? "judged"
+              : "candidate",
+          },
+        ],
+      },
+    }));
+    const mock = client(prompt);
+    const config: CrossReviewConfig = {
+      reviewers: [
+        { model: "a/one", focus: "security and auth" },
+        { model: "a/two", focus: "performance regressions" },
+      ],
+      judgeModel: "b/judge",
+      maxConcurrency: 2,
+    };
+    const output = await createCrossReviewTool(
+      mock,
+      async () => config,
+    ).execute({ target: "main...HEAD" }, context());
+    const calls = prompt.mock.calls.map((call) => call[0]);
+    expect(calls).toHaveLength(3);
+    expect(calls.slice(0, 2).map((call) => call.body.model.modelID)).toEqual([
+      "one",
+      "two",
+    ]);
+    expect(calls[0].body.parts[0].text).toContain("Focus: security and auth");
+    expect(calls[1].body.parts[0].text).toContain(
+      "Focus: performance regressions",
+    );
+    expect(calls[2].body.model.modelID).toBe("judge");
+    const parsed = JSON.parse((output as any).output);
+    expect(parsed.judge).toMatchObject({
+      model: "b/judge",
+      status: "succeeded",
+    });
+    expect(parsed.reviewers.map((reviewer: any) => reviewer.focus)).toEqual([
+      "security and auth",
+      "performance regressions",
+    ]);
+  });
+
+  it("applies the shared configured focus to reviewers without their own focus", async () => {
+    const prompt = vi.fn().mockResolvedValue({
+      data: { parts: [{ type: "text", text: "candidate" }] },
+    });
+    const mock = client(prompt);
+    const config: CrossReviewConfig = {
+      reviewers: [{ model: "a/one" }, { model: "a/two" }],
+      focus: "security and regressions",
+    };
+    await createCrossReviewTool(mock, async () => config).execute(
+      { target: "HEAD" },
+      context(),
+    );
+    const calls = prompt.mock.calls.map((call) => call[0]);
+    expect(calls).toHaveLength(2);
+    expect(
+      calls.every((call) =>
+        call.body.parts[0].text.includes("Focus: security and regressions"),
+      ),
+    ).toBe(true);
+  });
+
+  it("resolves configured reviewModels round-robin across configured agents", async () => {
+    const prompt = vi.fn().mockResolvedValue({
+      data: { parts: [{ type: "text", text: "candidate" }] },
+    });
+    const mock = client(prompt);
+    const config: CrossReviewConfig = {
+      reviewModels: ["a/one"],
+      agents: 4,
+    };
+    await createCrossReviewTool(mock, async () => config).execute(
+      { target: "HEAD" },
+      context(),
+    );
+    const calls = prompt.mock.calls.map((call) => call[0]);
+    expect(calls).toHaveLength(4);
+    expect(calls.every((call) => call.body.model.modelID === "one")).toBe(true);
+  });
+
+  it("lets explicit arguments override configuration", async () => {
+    const prompt = vi.fn().mockResolvedValue({
+      data: { parts: [{ type: "text", text: "candidate" }] },
+    });
+    const mock = client(prompt);
+    const config: CrossReviewConfig = {
+      reviewers: [
+        { model: "a/one", focus: "configured focus" },
+        { model: "a/two", focus: "configured focus" },
+      ],
+      judgeModel: "b/judge",
+      maxConcurrency: 1,
+    };
+    await createCrossReviewTool(mock, async () => config).execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/two"],
+        agents: 1,
+        focus: "override focus",
+      },
+      context(),
+    );
+    const calls = prompt.mock.calls.map((call) => call[0]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].body.model.modelID).toBe("two");
+    expect(calls[0].body.parts[0].text).toContain("Focus: override focus");
+    expect(calls[1].body.model.modelID).toBe("judge");
+  });
+
   it("isolates failures when quorum survives and runs an explicit judge", async () => {
     let call = 0;
     const prompt = vi.fn().mockImplementation(async () => {
@@ -130,7 +257,10 @@ describe("cross_review tool", () => {
         },
       };
     });
-    const result = await createCrossReviewTool(client(prompt)).execute(
+    const result = await createCrossReviewTool(
+      client(prompt),
+      emptyConfig,
+    ).execute(
       {
         target: "HEAD",
         reviewModels: ["a/one"],
@@ -163,7 +293,7 @@ describe("cross_review tool", () => {
     const mock = client(
       vi.fn().mockRejectedValue(new Error("provider request failed")),
     );
-    const result = await createCrossReviewTool(mock).execute(
+    const result = await createCrossReviewTool(mock, emptyConfig).execute(
       {
         target: "HEAD",
         reviewModels: ["a/one"],
@@ -203,7 +333,7 @@ describe("cross_review tool", () => {
     );
     const mock = client(prompt);
     await expect(
-      createCrossReviewTool(mock).execute(
+      createCrossReviewTool(mock, emptyConfig).execute(
         {
           target: "HEAD",
           reviewModels: ["a/one"],

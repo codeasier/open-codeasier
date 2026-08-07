@@ -1,7 +1,13 @@
 import { tool } from "@opencode-ai/plugin";
+import {
+  loadCrossReviewConfig,
+  MODEL_ID,
+  type CrossReviewConfig,
+} from "./config.js";
 
 const REVIEWER_AGENT = "cross-reviewer";
-const MODEL_ID = /^[^/\s]+\/[^/\s]+$/;
+const DEFAULT_AGENTS = 3;
+const DEFAULT_CONCURRENCY = 3;
 const READ_ONLY_TOOLS = {
   bash: false,
   edit: false,
@@ -48,9 +54,16 @@ export type CrossReviewClient = {
   };
 };
 
+export type CrossReviewConfigLoader = (
+  directory: string,
+) => Promise<CrossReviewConfig>;
+
+type ReviewerTarget = { model: string; focus?: string };
+
 type ReviewerResult = {
   reviewer: number;
   model: string;
+  focus?: string;
   sessionID?: string;
   status: "succeeded" | "failed" | "cancelled";
   output?: string;
@@ -85,6 +98,50 @@ function reviewBrief(target: string, focus?: string) {
   ].join("\n");
 }
 
+function resolveReviewers(
+  args: {
+    reviewModels?: string[] | undefined;
+    agents?: number | undefined;
+    focus?: string | undefined;
+  },
+  config: CrossReviewConfig,
+): ReviewerTarget[] {
+  const sharedFocus = args.focus ?? config.focus;
+  const count = args.agents ?? config.agents ?? DEFAULT_AGENTS;
+  const explicitModels = args.reviewModels;
+  if (explicitModels !== undefined)
+    return Array.from({ length: count }, (_, index) => {
+      const model = explicitModels[index % explicitModels.length];
+      if (model === undefined) throw new Error("Missing reviewer model");
+      return {
+        model,
+        ...(sharedFocus === undefined ? {} : { focus: sharedFocus }),
+      };
+    });
+  if (config.reviewers !== undefined)
+    return config.reviewers.map((reviewer) => ({
+      model: reviewer.model,
+      ...(reviewer.focus === undefined
+        ? sharedFocus === undefined
+          ? {}
+          : { focus: sharedFocus }
+        : { focus: reviewer.focus }),
+    }));
+  const configuredModels = config.reviewModels;
+  if (configuredModels !== undefined)
+    return Array.from({ length: count }, (_, index) => {
+      const model = configuredModels[index % configuredModels.length];
+      if (model === undefined) throw new Error("Missing reviewer model");
+      return {
+        model,
+        ...(sharedFocus === undefined ? {} : { focus: sharedFocus }),
+      };
+    });
+  throw new Error(
+    "No review models configured: pass --review-models or create .opencode/cross-review.json",
+  );
+}
+
 async function runLimited<T>(
   count: number,
   concurrency: number,
@@ -104,22 +161,38 @@ async function runLimited<T>(
   return results;
 }
 
-export function createCrossReviewTool(client: CrossReviewClient) {
+export function createCrossReviewTool(
+  client: CrossReviewClient,
+  loadConfig: CrossReviewConfigLoader = loadCrossReviewConfig,
+) {
   return tool({
     description:
-      "Run isolated read-only code reviewers with explicit models and bounded concurrency",
+      "Run isolated read-only code reviewers with configured models and bounded concurrency",
     args: {
       target: tool.schema.string().min(1).max(4_000),
-      reviewModels: tool.schema.array(tool.schema.string()).min(1).max(8),
-      agents: tool.schema.number().int().min(1).max(8).default(3),
-      maxConcurrency: tool.schema.number().int().min(1).max(8).default(3),
+      reviewModels: tool.schema
+        .array(tool.schema.string())
+        .min(1)
+        .max(8)
+        .optional(),
+      agents: tool.schema.number().int().min(1).max(8).optional(),
+      maxConcurrency: tool.schema.number().int().min(1).max(8).optional(),
       judgeModel: tool.schema.string().optional(),
       focus: tool.schema.string().max(2_000).optional(),
     },
     async execute(args, context) {
+      const config = await loadConfig(context.directory);
+      const reviewers = resolveReviewers(args, config);
+      const judgeModel = args.judgeModel ?? config.judgeModel;
+      const maxConcurrency =
+        args.maxConcurrency ?? config.maxConcurrency ?? DEFAULT_CONCURRENCY;
+      const sharedFocus = args.focus ?? config.focus;
+
       const requestedModels = [
-        ...args.reviewModels,
-        ...(args.judgeModel === undefined ? [] : [args.judgeModel]),
+        ...new Set([
+          ...reviewers.map((reviewer) => reviewer.model),
+          ...(judgeModel === undefined ? [] : [judgeModel]),
+        ]),
       ];
       const parsedModels = new Map(
         requestedModels.map((model) => [model, splitModel(model)]),
@@ -156,16 +229,17 @@ export function createCrossReviewTool(client: CrossReviewClient) {
       context.abort.addEventListener("abort", abortSessions, { once: true });
 
       try {
-        const brief = reviewBrief(args.target, args.focus);
-        const reviewers = await runLimited(
-          args.agents,
-          args.maxConcurrency,
+        const brief = reviewBrief(args.target, sharedFocus);
+        const reviewerResults = await runLimited(
+          reviewers.length,
+          maxConcurrency,
           async (index): Promise<ReviewerResult> => {
-            const model = args.reviewModels[index % args.reviewModels.length];
-            if (model === undefined) throw new Error("Missing reviewer model");
-            const parsedModel = parsedModels.get(model);
+            const reviewer = reviewers[index];
+            if (reviewer === undefined)
+              throw new Error(`Missing reviewer ${index + 1}`);
+            const parsedModel = parsedModels.get(reviewer.model);
             if (parsedModel === undefined)
-              throw new Error(`Unvalidated reviewer model: ${model}`);
+              throw new Error(`Unvalidated reviewer model: ${reviewer.model}`);
             let sessionID: string | undefined;
             try {
               const session = responseData(
@@ -186,7 +260,12 @@ export function createCrossReviewTool(client: CrossReviewClient) {
                   body: {
                     agent: REVIEWER_AGENT,
                     model: parsedModel,
-                    parts: [{ type: "text", text: brief }],
+                    parts: [
+                      {
+                        type: "text",
+                        text: reviewBrief(args.target, reviewer.focus),
+                      },
+                    ],
                     tools: READ_ONLY_TOOLS,
                   },
                   path: { id: session.id },
@@ -197,7 +276,10 @@ export function createCrossReviewTool(client: CrossReviewClient) {
               );
               return {
                 reviewer: index + 1,
-                model,
+                model: reviewer.model,
+                ...(reviewer.focus === undefined
+                  ? {}
+                  : { focus: reviewer.focus }),
                 sessionID: session.id,
                 status: "succeeded",
                 output: response.parts
@@ -208,7 +290,10 @@ export function createCrossReviewTool(client: CrossReviewClient) {
             } catch (error) {
               return {
                 reviewer: index + 1,
-                model,
+                model: reviewer.model,
+                ...(reviewer.focus === undefined
+                  ? {}
+                  : { focus: reviewer.focus }),
                 ...(sessionID === undefined ? {} : { sessionID }),
                 status: context.abort.aborted ? "cancelled" : "failed",
                 error: errorMessage(error),
@@ -218,10 +303,10 @@ export function createCrossReviewTool(client: CrossReviewClient) {
         );
 
         if (context.abort.aborted) throw new Error("Cross-review cancelled");
-        const successful = reviewers.filter(
+        const successful = reviewerResults.filter(
           (reviewer) => reviewer.status === "succeeded",
         );
-        const quorum = Math.floor(args.agents / 2) + 1;
+        const quorum = Math.floor(reviewers.length / 2) + 1;
         if (successful.length < quorum) {
           return {
             title: `Cross-review failed: ${args.target}`,
@@ -230,12 +315,12 @@ export function createCrossReviewTool(client: CrossReviewClient) {
               brief,
               quorum,
               status: "quorum-not-met",
-              reviewers,
+              reviewers: reviewerResults,
             }),
             metadata: {
-              requestedReviewers: args.agents,
+              requestedReviewers: reviewers.length,
               successfulReviewers: successful.length,
-              failedReviewers: args.agents - successful.length,
+              failedReviewers: reviewers.length - successful.length,
               quorum,
               error: "quorum-not-met",
             },
@@ -250,10 +335,10 @@ export function createCrossReviewTool(client: CrossReviewClient) {
               output: string;
             }
           | undefined;
-        if (args.judgeModel !== undefined) {
-          const parsedJudgeModel = parsedModels.get(args.judgeModel);
+        if (judgeModel !== undefined) {
+          const parsedJudgeModel = parsedModels.get(judgeModel);
           if (parsedJudgeModel === undefined)
-            throw new Error(`Unvalidated judge model: ${args.judgeModel}`);
+            throw new Error(`Unvalidated judge model: ${judgeModel}`);
           const session = responseData(
             await client.session.create({
               body: {
@@ -292,7 +377,7 @@ export function createCrossReviewTool(client: CrossReviewClient) {
             "Judge prompt",
           );
           judge = {
-            model: args.judgeModel,
+            model: judgeModel,
             sessionID: session.id,
             status: "succeeded",
             output: response.parts
@@ -306,7 +391,7 @@ export function createCrossReviewTool(client: CrossReviewClient) {
           target: args.target,
           brief,
           quorum,
-          reviewers,
+          reviewers: reviewerResults,
           judge: judge ?? {
             model: "parent-session",
             status: "pending-parent-consolidation",
@@ -316,11 +401,11 @@ export function createCrossReviewTool(client: CrossReviewClient) {
           title: `Cross-review: ${args.target}`,
           output: JSON.stringify(result),
           metadata: {
-            requestedReviewers: args.agents,
+            requestedReviewers: reviewers.length,
             successfulReviewers: successful.length,
-            failedReviewers: args.agents - successful.length,
+            failedReviewers: reviewers.length - successful.length,
             quorum,
-            judgeModel: args.judgeModel ?? "parent-session",
+            judgeModel: judgeModel ?? "parent-session",
           },
         };
       } finally {

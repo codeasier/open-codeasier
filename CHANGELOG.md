@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reviewer models, bounded concurrency, quorum handling, and provenance.
 - Add a read-only reviewer agent and SDK session orchestration with explicit
   model validation and tool restrictions.
+- Read `cross-review` configuration from project `.opencode/cross-review.json`
+  and global `~/.config/opencode/cross-review.json` so sessions only pass a
+  target, with per-reviewer `focus` support and optional per-invocation
+  overrides.
+- Add `init [--local|--global] [project]` scaffolding (local/current-directory
+  defaults) and guided OpenCode-session setup for role-oriented cross-review
+  configuration without overwriting existing user files.
 
 ## [0.2.0] - 2026-07-27
 

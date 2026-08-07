@@ -171,6 +171,14 @@ describe("workflow generator", () => {
     expect(openRelease).toContain(
       "Wait for explicit user confirmation before using the recommendation",
     );
+    const openCrossReview = await readFile(
+      join(open.target, "skills/cross-review/SKILL.md"),
+      "utf8",
+    );
+    expect(openCrossReview).toContain(
+      "Treat a first argument of `init` or `setup`, or a natural-language request",
+    );
+    expect(openCrossReview).toContain("Run `opencode models`");
     const openAgent = await readFile(
       join(open.target, "agents/cross-reviewer.md"),
       "utf8",
@@ -302,6 +310,7 @@ describe("workflow generator", () => {
     await writeFile(
       join(missing.source, "workflow-source/platforms/opencode.json"),
       JSON.stringify({
+        CROSS_REVIEW_CONFIG: "Read cross-review configuration",
         CROSS_REVIEW_ORCHESTRATION: "Orchestrate reviews",
         MODEL_NAMING: "Validate models",
         RESOLVE_AMBIGUITY: "Resolve ambiguity",
@@ -548,7 +557,7 @@ describe("workflow generator", () => {
 
       await expect(run(source, target, "opencode")).rejects.toMatchObject({
         stderr: expect.stringContaining(
-          "issue-submit: malformed or unresolved placeholder",
+          "cross-review: malformed or unresolved placeholder",
         ),
       });
     }
