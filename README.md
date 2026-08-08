@@ -71,27 +71,29 @@ npx open-codeasier init --local /path/to/project
 npx open-codeasier init --global
 ```
 
-The initializer writes three role-oriented reviewers plus a judge and refuses to overwrite an existing configuration. Replace its `provider/...` placeholders with exact identifiers from `opencode models`. Add `--dry-run` to preview the destination without writing.
+The CLI initializer writes an empty, model-free configuration and refuses to overwrite an existing file. It never guesses which providers or models you can use. Add `--dry-run` to preview the destination without writing.
 
-OpenCode can guide the same setup interactively. Run `/cross-review init` (local by default), `/cross-review init --global`, or ask the session to "set up cross-review". It discovers identifiers with `opencode models`, asks for each reviewer model and responsibility plus the judge, and writes the selected scope after confirmation.
+OpenCode can guide the same setup interactively. Run `/cross-review init` (local by default), `/cross-review init --global`, or ask the session to "set up cross-review". It treats `opencode models` as the authoritative source, shows the complete connected model list, and recommends reviewers and an optional judge only from that list. The recommendations favor code-review strength, complementary model families, and strong evidence synthesis, but you can choose any listed models. Nothing is written until you confirm the full selection.
+
+Configuration shape after guided setup (model values are schematic, not defaults):
 
 ```json
 {
   "reviewers": [
     {
-      "model": "anthropic/claude-sonnet-4",
+      "model": "<provider>/<reviewer-model>",
       "focus": "correctness and behavior"
     },
     {
-      "model": "deepseek/deepseek-chat",
+      "model": "<provider>/<reviewer-model>",
       "focus": "security and authentication"
     },
     {
-      "model": "openai/gpt-5",
+      "model": "<provider>/<reviewer-model>",
       "focus": "performance and behavioral regressions"
     }
   ],
-  "judgeModel": "openai/gpt-5",
+  "judgeModel": "<provider>/<judge-model>",
   "maxConcurrency": 3
 }
 ```
@@ -106,9 +108,9 @@ A `reviewers` array defines the exact reviewer set and gives each reviewer its o
 
 ```json
 {
-  "reviewModels": ["anthropic/claude-sonnet-4", "deepseek/deepseek-chat"],
+  "reviewModels": ["<provider>/<model>", "<provider>/<model>"],
   "agents": 4,
-  "judgeModel": "openai/gpt-5",
+  "judgeModel": "<provider>/<judge-model>",
   "focus": "security and regressions"
 }
 ```

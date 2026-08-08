@@ -9,9 +9,13 @@ description: Initialize or run configurable independent code reviewers and conso
 
 Treat a first argument of `init` or `setup`, or a natural-language request to set up cross-review, as setup mode rather than a review target. Accept an optional `--local` or `--global` scope and optional local project path; default to local scope and the current directory. Do not call `cross_review` in setup mode.
 
-Run `opencode models` to discover exact connected model identifiers; if it is unavailable, ask the user to provide them. Use the question tool to collect each required field. Collect the reviewer model and focus for each reviewer, an optional judge model, and max concurrency. Use `.opencode/cross-review.json` for local scope and `~/.config/opencode/cross-review.json` for global scope.
+Run `opencode models` before proposing any configuration and treat its output as the authoritative list of connected, exact model identifiers. If it is unavailable or empty, ask the user to provide the available identifiers and do not write a configuration until they do. Do not infer choices from `opencode.json`, hard-code model identifiers, invent placeholders, or limit the user to a predefined provider or model family.
 
-If the destination exists, read it and require explicit confirmation before changing it. If it does not exist, run `npx open-codeasier init` with the selected scope and optional path, then replace every `provider/...` placeholder with the user's choices. Validate the completed JSON and report the path plus the short `/cross-review <target>` invocation.
+Show the complete discovered list, grouped by provider, before asking the user to choose. Then recommend a reviewer set and an optional judge drawn only from that list. Explain each recommendation briefly: favor strong code reasoning, complementary model families or providers, and distinct review perspectives; avoid selecting aliases of the same underlying model when diverse alternatives exist. Recommend the strongest available evidence-synthesis model for judging, or the parent session when no separate judge is clearly better. Make clear that these are suggestions and that any discovered models may be selected. Mention the token-cost and concurrency tradeoff.
+
+Use the question tool to collect each required field only after presenting the list and recommendations. Ask the user to accept or modify the exact reviewer and judge identifiers, then collect an optional focus for each reviewer and max concurrency. Use `.opencode/cross-review.json` for local scope and `~/.config/opencode/cross-review.json` for global scope. Do not write until the user confirms the complete selection.
+
+If the destination exists, read it and require explicit confirmation before changing it. If it does not exist, run `npx open-codeasier init` with the selected scope and optional path after confirmation; this creates an empty, model-free configuration. Write only the user's confirmed exact identifiers, omit `judgeModel` when the parent session should judge, validate the completed JSON, and report the path plus the short `/cross-review <target>` invocation.
 
 ## Review Mode
 

@@ -179,6 +179,14 @@ describe("workflow generator", () => {
       "Treat a first argument of `init` or `setup`, or a natural-language request",
     );
     expect(openCrossReview).toContain("Run `opencode models`");
+    expect(openCrossReview).toContain(
+      "treat its output as the authoritative list",
+    );
+    expect(openCrossReview).toContain("Show the complete discovered list");
+    expect(openCrossReview).toContain(
+      "recommend a reviewer set and an optional judge drawn only from that list",
+    );
+    expect(openCrossReview).not.toContain("provider/...` placeholder");
     const openAgent = await readFile(
       join(open.target, "agents/cross-reviewer.md"),
       "utf8",

@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   defaults) and guided OpenCode-session setup for role-oriented cross-review
   configuration without overwriting existing user files.
 
+### Changed
+
+- Make the cross-review initializer model-free. Guided setup now lists the
+  user's connected models and recommends reviewers and a judge only from that
+  discovered list before asking for confirmation.
+
 ## [0.2.0] - 2026-07-27
 
 ### Added
