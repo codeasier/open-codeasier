@@ -43,10 +43,18 @@ describe("cross-review configuration", () => {
 
   it("parses a reviewers array with optional per-reviewer focus", () => {
     const config = parseCrossReviewConfig("test", {
-      reviewers: [{ model: "a/one", focus: "security" }, { model: "b/two" }],
+      reviewers: [
+        { model: "unraid-wg/wb/kimi-k3", focus: "security" },
+        { model: "b/two" },
+      ],
+      judgeModel: "unraid-wg-resp/cx/gpt-5.6-sol",
     });
     expect(config).toEqual({
-      reviewers: [{ model: "a/one", focus: "security" }, { model: "b/two" }],
+      reviewers: [
+        { model: "unraid-wg/wb/kimi-k3", focus: "security" },
+        { model: "b/two" },
+      ],
+      judgeModel: "unraid-wg-resp/cx/gpt-5.6-sol",
     });
   });
 
@@ -65,6 +73,9 @@ describe("cross-review configuration", () => {
     );
     expect(() =>
       parseCrossReviewConfig("test", { reviewModels: ["not-a-model"] }),
+    ).toThrow(/`reviewModels` must be 1-8/);
+    expect(() =>
+      parseCrossReviewConfig("test", { reviewModels: ["a//one"] }),
     ).toThrow(/`reviewModels` must be 1-8/);
     expect(() =>
       parseCrossReviewConfig("test", { reviewModels: ["a/one"], agents: 9 }),
