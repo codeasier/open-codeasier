@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-08
+
 ### Added
 
 - Add an OpenCode-only `cross-review` workflow with configurable isolated
@@ -58,7 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/codeasier/open-codeasier/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/codeasier/open-codeasier/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/codeasier/open-codeasier/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/codeasier/open-codeasier/releases/tag/v0.1.0
