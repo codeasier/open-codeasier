@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const MODEL_ID = /^[^/\s]+\/[^/\s]+$/;
+export const MODEL_ID = /^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$/;
 
 export type CrossReviewReviewer = {
   model: string;

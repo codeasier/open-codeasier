@@ -30,8 +30,12 @@ function client(prompt?: CrossReviewClient["session"]["prompt"]) {
           all: [
             { id: "a", models: { one: {}, two: {} } },
             { id: "b", models: { judge: {} } },
+            {
+              id: "unraid-wg",
+              models: { "wb/kimi-k3": {}, "cx/gpt-5.6-sol": {} },
+            },
           ],
-          connected: ["a", "b"],
+          connected: ["a", "b", "unraid-wg"],
         },
       }),
     },
@@ -84,6 +88,26 @@ describe("cross_review tool", () => {
       ),
     ).rejects.toThrow("No review models configured");
     expect(mock.session.create).not.toHaveBeenCalled();
+  });
+
+  it("preserves nested model paths after the provider identifier", async () => {
+    const prompt = vi.fn().mockResolvedValue({
+      data: { parts: [{ type: "text", text: "candidate" }] },
+    });
+    const mock = client(prompt);
+    await createCrossReviewTool(mock, emptyConfig).execute(
+      {
+        target: "HEAD",
+        reviewModels: ["unraid-wg/wb/kimi-k3"],
+        agents: 1,
+        judgeModel: "unraid-wg/cx/gpt-5.6-sol",
+      },
+      context(),
+    );
+    expect(prompt.mock.calls.map((call) => call[0].body.model)).toEqual([
+      { providerID: "unraid-wg", modelID: "wb/kimi-k3" },
+      { providerID: "unraid-wg", modelID: "cx/gpt-5.6-sol" },
+    ]);
   });
 
   it("uses round-robin models, identical briefs, and bounded concurrency", async () => {
