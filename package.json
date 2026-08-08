@@ -1,6 +1,6 @@
 {
   "name": "open-codeasier",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "OpenCode-native workflow skills and review orchestration tools",
   "type": "module",
   "license": "MIT",
@@ -31,6 +31,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
+    "prepack": "npm run build",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "workflows:generate": "node scripts/generate-workflows.mjs --platform opencode --target .",
