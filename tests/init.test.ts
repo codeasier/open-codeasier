@@ -36,21 +36,14 @@ afterEach(async () => {
 });
 
 describe("cross-review initializer", () => {
-  it("ships a valid role-oriented starter configuration", () => {
+  it("ships a valid model-free starter configuration", () => {
     expect(
       parseCrossReviewConfig(
         "template",
         JSON.parse(CROSS_REVIEW_CONFIG_TEMPLATE),
       ),
-    ).toMatchObject({
-      reviewers: [
-        { model: "provider/reviewer-model-1" },
-        { model: "provider/reviewer-model-2" },
-        { model: "provider/reviewer-model-3" },
-      ],
-      judgeModel: "provider/judge-model",
-      maxConcurrency: 3,
-    });
+    ).toEqual({});
+    expect(CROSS_REVIEW_CONFIG_TEMPLATE).not.toContain("model");
   });
 
   it("initializes local and global configuration paths", async () => {

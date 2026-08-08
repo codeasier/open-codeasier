@@ -2,28 +2,7 @@ import { lstat, mkdir, open, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { InstallTarget } from "../installer/paths.js";
 
-export const CROSS_REVIEW_CONFIG_TEMPLATE = `${JSON.stringify(
-  {
-    reviewers: [
-      {
-        model: "provider/reviewer-model-1",
-        focus: "correctness, behavioral regressions, and missing tests",
-      },
-      {
-        model: "provider/reviewer-model-2",
-        focus: "security, permissions, and abuse cases",
-      },
-      {
-        model: "provider/reviewer-model-3",
-        focus: "performance, concurrency, and maintainability",
-      },
-    ],
-    judgeModel: "provider/judge-model",
-    maxConcurrency: 3,
-  },
-  null,
-  2,
-)}\n`;
+export const CROSS_REVIEW_CONFIG_TEMPLATE = "{}\n";
 
 export class CrossReviewConfigConflictError extends Error {
   constructor(path: string) {
