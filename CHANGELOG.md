@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Accept nested cross-review model IDs with multiple `/` segments (e.g.
+  `unraid-wg/wb/kimi-k3`) in `reviewers`, `reviewModels`, and `judgeModel`
+  instead of rejecting them as malformed `provider/model` identifiers.
+
 ## [0.2.2] - 2026-08-08
 
 ### Fixed
