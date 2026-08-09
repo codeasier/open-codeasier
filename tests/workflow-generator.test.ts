@@ -191,6 +191,18 @@ describe("workflow generator", () => {
       join(open.target, "agents/cross-reviewer.md"),
       "utf8",
     );
+    expect(openAgent).toContain(
+      "description: Code/change review and cross-review judging only.",
+    );
+    expect(openAgent).toContain(
+      "Invoke proactively only for explicit review intent or cross-review orchestration; never use for routine self-checks, reports, or documentation verification.",
+    );
+    expect(openAgent).toContain(
+      "Accept only code/change review or cross-review judging tasks with explicit review intent.",
+    );
+    expect(openAgent).toContain(
+      "Do not act as a general-purpose verifier for reports, documentation, analysis, or routine self-checks.",
+    );
     expect(openAgent).toContain("mode: subagent");
     expect(openAgent).toContain("edit: deny");
     expect(openAgent).toContain("bash: deny");
