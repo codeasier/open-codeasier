@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-08-09
+
 ### Fixed
 
 - Restrict the `cross-reviewer` subagent to explicit code/change review and
@@ -84,7 +86,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/codeasier/open-codeasier/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/codeasier/open-codeasier/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/codeasier/open-codeasier/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/codeasier/open-codeasier/compare/v0.1.1...v0.2.0
