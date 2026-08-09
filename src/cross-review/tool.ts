@@ -3,6 +3,7 @@ import {
   loadCrossReviewConfig,
   MODEL_ID,
   type CrossReviewConfig,
+  type LoadedCrossReviewConfig,
 } from "./config.js";
 
 const REVIEWER_AGENT = "cross-reviewer";
@@ -61,7 +62,7 @@ export type CrossReviewClient = {
 
 export type CrossReviewConfigLoader = (
   directory: string,
-) => Promise<CrossReviewConfig>;
+) => Promise<LoadedCrossReviewConfig>;
 
 type ReviewerTarget = { model: string; focus?: string };
 
@@ -74,6 +75,16 @@ type ReviewerResult = {
   output?: string;
   error?: string;
 };
+
+function configWarning(loaded: LoadedCrossReviewConfig): string | undefined {
+  if (loaded.sources.project === "loaded") return undefined;
+  const projectPath = loaded.projectPath ?? "<no enclosing git repository>";
+  if (loaded.sources.global === "loaded")
+    return `warning: project config not found at ${projectPath}; using global config at ${loaded.globalPath}`;
+  if (loaded.sources.global === "invalid")
+    return `warning: project config not found at ${projectPath}; global config at ${loaded.globalPath} is invalid`;
+  return `warning: no cross-review config found at ${projectPath} or ${loaded.globalPath}`;
+}
 
 function splitModel(value: string) {
   if (!MODEL_ID.test(value))
@@ -251,8 +262,10 @@ export function createCrossReviewTool(
 
       try {
         throwIfCancelled();
-        const config = await loadConfig(context.directory);
+        const loaded = await loadConfig(context.directory);
         throwIfCancelled();
+        const config = loaded.config;
+        const warning = configWarning(loaded);
         const reviewers = resolveReviewers(args, config);
         const judgeModel = args.judgeModel ?? config.judgeModel;
         const maxConcurrency =
@@ -380,6 +393,7 @@ export function createCrossReviewTool(
           return {
             title: `Cross-review failed: ${args.target}`,
             output: JSON.stringify({
+              ...(warning === undefined ? {} : { warning }),
               target: args.target,
               brief,
               quorum,
@@ -392,6 +406,9 @@ export function createCrossReviewTool(
               failedReviewers: reviewers.length - successful.length,
               quorum,
               error: "quorum-not-met",
+              configSources: loaded.sources,
+              projectConfigPath: loaded.projectPath,
+              globalConfigPath: loaded.globalPath,
             },
           };
         }
@@ -461,6 +478,7 @@ export function createCrossReviewTool(
         }
 
         const result = {
+          ...(warning === undefined ? {} : { warning }),
           target: args.target,
           brief,
           quorum,
@@ -479,6 +497,9 @@ export function createCrossReviewTool(
             failedReviewers: reviewers.length - successful.length,
             quorum,
             judgeModel: judgeModel ?? "parent-session",
+            configSources: loaded.sources,
+            projectConfigPath: loaded.projectPath,
+            globalConfigPath: loaded.globalPath,
           },
         };
       } finally {

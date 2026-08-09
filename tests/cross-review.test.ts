@@ -4,9 +4,28 @@ import {
   createCrossReviewTool,
   type CrossReviewClient,
 } from "../src/cross-review/tool.js";
-import type { CrossReviewConfig } from "../src/cross-review/config.js";
+import type {
+  CrossReviewConfig,
+  LoadedCrossReviewConfig,
+} from "../src/cross-review/config.js";
 
-const emptyConfig = async (): Promise<CrossReviewConfig> => ({});
+function wrapConfig(
+  config: CrossReviewConfig,
+  sources: LoadedCrossReviewConfig["sources"] = {
+    project: "loaded",
+    global: "absent",
+  },
+): Promise<LoadedCrossReviewConfig> {
+  return Promise.resolve({
+    config,
+    sources,
+    projectPath: "/repo/.opencode/cross-review.json",
+    globalPath: "/home/.config/opencode/cross-review.json",
+  });
+}
+
+const emptyConfig = (): Promise<LoadedCrossReviewConfig> =>
+  wrapConfig({}, { project: "absent", global: "absent" });
 
 function context(abort = new AbortController()) {
   return {
@@ -175,9 +194,8 @@ describe("cross_review tool", () => {
       judgeModel: "b/judge",
       maxConcurrency: 2,
     };
-    const output = await createCrossReviewTool(
-      mock,
-      async () => config,
+    const output = await createCrossReviewTool(mock, () =>
+      wrapConfig(config),
     ).execute({ target: "main...HEAD" }, context());
     const calls = prompt.mock.calls.map((call) => call[0]);
     expect(calls).toHaveLength(3);
@@ -210,7 +228,7 @@ describe("cross_review tool", () => {
       reviewers: [{ model: "a/one" }, { model: "a/two" }],
       focus: "security and regressions",
     };
-    await createCrossReviewTool(mock, async () => config).execute(
+    await createCrossReviewTool(mock, () => wrapConfig(config)).execute(
       { target: "HEAD" },
       context(),
     );
@@ -232,7 +250,7 @@ describe("cross_review tool", () => {
       reviewModels: ["a/one"],
       agents: 4,
     };
-    await createCrossReviewTool(mock, async () => config).execute(
+    await createCrossReviewTool(mock, () => wrapConfig(config)).execute(
       { target: "HEAD" },
       context(),
     );
@@ -254,7 +272,7 @@ describe("cross_review tool", () => {
       judgeModel: "b/judge",
       maxConcurrency: 1,
     };
-    await createCrossReviewTool(mock, async () => config).execute(
+    await createCrossReviewTool(mock, () => wrapConfig(config)).execute(
       {
         target: "HEAD",
         reviewModels: ["a/two"],
@@ -278,9 +296,8 @@ describe("cross_review tool", () => {
     const config: CrossReviewConfig = {
       reviewers: [{ model: "a/one" }, { model: "a/two" }],
     };
-    const result = await createCrossReviewTool(
-      mock,
-      async () => config,
+    const result = await createCrossReviewTool(mock, () =>
+      wrapConfig(config),
     ).execute({ target: "HEAD", agents: 1 }, context());
     expect(prompt).toHaveBeenCalledTimes(1);
     expect(JSON.parse((result as any).output).reviewers).toHaveLength(1);
@@ -534,5 +551,69 @@ describe("cross_review tool", () => {
       query: { directory: "/repo" },
     });
     expect(mock.session.prompt).not.toHaveBeenCalled();
+  });
+
+  it("warns when the project config is absent and global config is used", async () => {
+    const mock = client();
+    const result = await createCrossReviewTool(
+      mock,
+      wrapConfig.bind(
+        null,
+        { reviewers: [{ model: "a/one" }] },
+        {
+          project: "absent",
+          global: "loaded",
+        },
+      ),
+    ).execute({ target: "HEAD", agents: 1 }, context());
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.warning).toContain(
+      "project config not found at /repo/.opencode/cross-review.json",
+    );
+    expect(parsed.warning).toContain(
+      "using global config at /home/.config/opencode/cross-review.json",
+    );
+    expect(parsed.target).toBe("HEAD");
+    expect(parsed.judge).toMatchObject({ model: "parent-session" });
+    expect((result as any).metadata.configSources).toEqual({
+      project: "absent",
+      global: "loaded",
+    });
+    expect((result as any).metadata.projectConfigPath).toBe(
+      "/repo/.opencode/cross-review.json",
+    );
+    expect((result as any).metadata.globalConfigPath).toBe(
+      "/home/.config/opencode/cross-review.json",
+    );
+  });
+
+  it("warns when both project and global configs are absent", async () => {
+    const mock = client();
+    const result = await createCrossReviewTool(mock, emptyConfig).execute(
+      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.warning).toContain(
+      "no cross-review config found at /repo/.opencode/cross-review.json",
+    );
+    expect((result as any).metadata.configSources).toEqual({
+      project: "absent",
+      global: "absent",
+    });
+  });
+
+  it("omits the warning and structured sources from output when the project config loads", async () => {
+    const mock = client();
+    const result = await createCrossReviewTool(mock, () =>
+      wrapConfig({ reviewers: [{ model: "a/one" }] }),
+    ).execute({ target: "HEAD", agents: 1 }, context());
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.warning).toBeUndefined();
+    expect(parsed.target).toBe("HEAD");
+    expect((result as any).metadata.configSources).toEqual({
+      project: "loaded",
+      global: "absent",
+    });
   });
 });

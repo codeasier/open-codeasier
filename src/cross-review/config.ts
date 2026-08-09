@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export const MODEL_ID = /^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$/;
 
@@ -16,6 +16,20 @@ export type CrossReviewConfig = {
   maxConcurrency?: number;
   judgeModel?: string;
   focus?: string;
+};
+
+export type CrossReviewConfigSource = "loaded" | "absent" | "invalid";
+
+export type CrossReviewConfigSources = {
+  project: CrossReviewConfigSource;
+  global: CrossReviewConfigSource;
+};
+
+export type LoadedCrossReviewConfig = {
+  config: CrossReviewConfig;
+  sources: CrossReviewConfigSources;
+  projectPath: string | undefined;
+  globalPath: string;
 };
 
 const CONFIG_KEYS = [
@@ -114,6 +128,30 @@ export const projectConfigPath = (directory: string) =>
 export const globalConfigPath = (home: string) =>
   join(home, ".config", "opencode", "cross-review.json");
 
+/**
+ * Locate the nearest ancestor of `directory` that contains a `.git` entry
+ * (either a directory for normal repositories or a file for worktrees and
+ * submodules that point at the shared git dir). Returns `undefined` when no
+ * enclosing repository can be located, so callers can decide how to treat
+ * directories outside any project.
+ */
+export async function findGitRoot(
+  directory: string,
+): Promise<string | undefined> {
+  let current = directory;
+  while (true) {
+    try {
+      const status = await stat(join(current, ".git"));
+      if (status.isDirectory() || status.isFile()) return current;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
 async function readConfigContent(path: string): Promise<unknown | undefined> {
   try {
     return JSON.parse(await readFile(path, "utf8"));
@@ -128,35 +166,56 @@ async function readConfigContent(path: string): Promise<unknown | undefined> {
 export async function loadCrossReviewConfig(
   directory: string,
   home = homedir(),
-): Promise<CrossReviewConfig> {
-  const projectPath = projectConfigPath(directory);
+): Promise<LoadedCrossReviewConfig> {
+  const gitRoot = (await findGitRoot(directory)) ?? directory;
+  const projectPath = projectConfigPath(gitRoot);
   const globalPath = globalConfigPath(home);
+
   const projectRaw = await readConfigContent(projectPath);
-  const project =
+  const globalRaw = await readConfigContent(globalPath);
+
+  const project: CrossReviewConfig | undefined =
     projectRaw === undefined
       ? undefined
       : parseCrossReviewConfig(projectPath, projectRaw);
-  const globalRaw = await readConfigContent(globalPath);
-  const global =
+  const global: CrossReviewConfig | undefined =
     globalRaw === undefined
       ? undefined
       : parseCrossReviewConfig(globalPath, globalRaw);
-  if (project === undefined) return global ?? {};
-  if (global === undefined) return project;
 
-  const merged: CrossReviewConfig = { ...global };
-  if (project.reviewers !== undefined) {
-    merged.reviewers = project.reviewers;
-    delete merged.reviewModels;
+  let config: CrossReviewConfig;
+  if (project !== undefined && global !== undefined) {
+    const merged: CrossReviewConfig = { ...global };
+    if (project.reviewers !== undefined) {
+      merged.reviewers = project.reviewers;
+      delete merged.reviewModels;
+    }
+    if (project.reviewModels !== undefined) {
+      merged.reviewModels = project.reviewModels;
+      delete merged.reviewers;
+    }
+    if (project.agents !== undefined) merged.agents = project.agents;
+    if (project.maxConcurrency !== undefined)
+      merged.maxConcurrency = project.maxConcurrency;
+    if (project.judgeModel !== undefined)
+      merged.judgeModel = project.judgeModel;
+    if (project.focus !== undefined) merged.focus = project.focus;
+    config = merged;
+  } else if (project !== undefined) {
+    config = project;
+  } else if (global !== undefined) {
+    config = global;
+  } else {
+    config = {};
   }
-  if (project.reviewModels !== undefined) {
-    merged.reviewModels = project.reviewModels;
-    delete merged.reviewers;
-  }
-  if (project.agents !== undefined) merged.agents = project.agents;
-  if (project.maxConcurrency !== undefined)
-    merged.maxConcurrency = project.maxConcurrency;
-  if (project.judgeModel !== undefined) merged.judgeModel = project.judgeModel;
-  if (project.focus !== undefined) merged.focus = project.focus;
-  return merged;
+
+  return {
+    config,
+    sources: {
+      project: projectRaw === undefined ? "absent" : "loaded",
+      global: globalRaw === undefined ? "absent" : "loaded",
+    },
+    projectPath,
+    globalPath,
+  };
 }
