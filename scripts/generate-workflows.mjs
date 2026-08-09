@@ -41,7 +41,7 @@ function renderAgent(instructions) {
   if (body.includes("{{") || body.includes("}}")) {
     throw new Error("cross-reviewer: placeholders are not supported");
   }
-  return `---\ndescription: Read-only isolated code reviewer and cross-review judge\nmode: subagent\npermission:\n  edit: deny\n  bash: deny\n  task: deny\n---\n\n${body}`;
+  return `---\ndescription: Code/change review and cross-review judging only. Invoke proactively only for explicit review intent or cross-review orchestration; never use for routine self-checks, reports, or documentation verification.\nmode: subagent\npermission:\n  edit: deny\n  bash: deny\n  task: deny\n---\n\n${body}`;
 }
 
 function validatePlaceholderStructure(skill, template) {
