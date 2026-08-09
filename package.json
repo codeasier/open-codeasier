@@ -1,6 +1,6 @@
 {
   "name": "open-codeasier",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "OpenCode-native workflow skills and review orchestration tools",
   "type": "module",
   "license": "MIT",
