@@ -99,7 +99,11 @@ describe("cross-review configuration", () => {
 
   it("loads an empty config when no files exist", async () => {
     const root = await fixture();
-    await expect(loadCrossReviewConfig(root, root)).resolves.toEqual({});
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({});
+    expect(loaded.sources).toEqual({ project: "absent", global: "absent" });
+    expect(loaded.projectPath).toBe(projectConfigPath(root));
+    expect(loaded.globalPath).toBe(globalConfigPath(root));
   });
 
   it("loads only the project config when the global file is absent", async () => {
@@ -109,9 +113,9 @@ describe("cross-review configuration", () => {
       projectConfigPath(root),
       JSON.stringify({ reviewers: [{ model: "a/one" }] }),
     );
-    await expect(loadCrossReviewConfig(root, root)).resolves.toEqual({
-      reviewers: [{ model: "a/one" }],
-    });
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({ reviewers: [{ model: "a/one" }] });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
   });
 
   it("lets project keys override global defaults", async () => {
@@ -130,11 +134,13 @@ describe("cross-review configuration", () => {
       projectConfigPath(root),
       JSON.stringify({ agents: 5, judgeModel: "b/two" }),
     );
-    await expect(loadCrossReviewConfig(root, root)).resolves.toEqual({
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({
       reviewModels: ["a/one", "b/two"],
       agents: 5,
       judgeModel: "b/two",
     });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
   });
 
   it("replaces the global reviewer source when the project overrides it", async () => {
@@ -149,9 +155,11 @@ describe("cross-review configuration", () => {
       projectConfigPath(root),
       JSON.stringify({ reviewers: [{ model: "b/two", focus: "security" }] }),
     );
-    await expect(loadCrossReviewConfig(root, root)).resolves.toEqual({
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({
       reviewers: [{ model: "b/two", focus: "security" }],
     });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
   });
 
   it("lets project reviewModels replace global reviewers", async () => {
@@ -166,9 +174,9 @@ describe("cross-review configuration", () => {
       projectConfigPath(root),
       JSON.stringify({ reviewModels: ["b/two"] }),
     );
-    await expect(loadCrossReviewConfig(root, root)).resolves.toEqual({
-      reviewModels: ["b/two"],
-    });
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({ reviewModels: ["b/two"] });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
   });
 
   it("rejects malformed JSON and invalid config shapes with the file path", async () => {
@@ -183,5 +191,99 @@ describe("cross-review configuration", () => {
     await expect(loadCrossReviewConfig(root, root)).rejects.toThrow(
       /Invalid cross-review config .*cross-review\.json/,
     );
+  });
+
+  it("resolves the project config from the enclosing git repository root", async () => {
+    const repoRoot = await fixture();
+    const subDir = join(repoRoot, "packages", "nested", "deeper");
+    await mkdir(join(repoRoot, ".git"), { recursive: true });
+    await mkdir(subDir, { recursive: true });
+    await mkdir(join(repoRoot, ".opencode"), { recursive: true });
+    await writeFile(
+      projectConfigPath(repoRoot),
+      JSON.stringify({ reviewers: [{ model: "a/one" }] }),
+    );
+    await mkdir(join(repoRoot, ".config", "opencode"), { recursive: true });
+    await writeFile(
+      globalConfigPath(repoRoot),
+      JSON.stringify({ reviewers: [{ model: "b/global" }] }),
+    );
+    const loaded = await loadCrossReviewConfig(subDir, repoRoot);
+    expect(loaded.config).toEqual({ reviewers: [{ model: "a/one" }] });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
+    expect(loaded.projectPath).toBe(projectConfigPath(repoRoot));
+  });
+
+  it("reports the project config as absent when the git root has no config file", async () => {
+    const repoRoot = await fixture();
+    const subDir = join(repoRoot, "packages", "nested");
+    await mkdir(join(repoRoot, ".git"), { recursive: true });
+    await mkdir(subDir, { recursive: true });
+    await mkdir(join(repoRoot, ".config", "opencode"), { recursive: true });
+    await writeFile(
+      globalConfigPath(repoRoot),
+      JSON.stringify({ reviewers: [{ model: "b/global" }] }),
+    );
+    const loaded = await loadCrossReviewConfig(subDir, repoRoot);
+    expect(loaded.config).toEqual({ reviewers: [{ model: "b/global" }] });
+    expect(loaded.sources).toEqual({ project: "absent", global: "loaded" });
+    expect(loaded.projectPath).toBe(projectConfigPath(repoRoot));
+  });
+
+  it("treats directories outside any git repository as project-absent", async () => {
+    const outside = await fixture();
+    const home = await fixture();
+    await mkdir(join(home, ".config", "opencode"), { recursive: true });
+    await writeFile(
+      globalConfigPath(home),
+      JSON.stringify({ reviewers: [{ model: "b/global" }] }),
+    );
+    const loaded = await loadCrossReviewConfig(outside, home);
+    expect(loaded.config).toEqual({ reviewers: [{ model: "b/global" }] });
+    expect(loaded.sources).toEqual({ project: "absent", global: "loaded" });
+    expect(loaded.projectPath).toBe(projectConfigPath(outside));
+    expect(loaded.globalPath).toBe(globalConfigPath(home));
+  });
+
+  it("resolves linked worktrees through the shared git directory", async () => {
+    const mainRoot = await fixture();
+    const worktreeRoot = await fixture();
+    const gitDirectory = join(mainRoot, ".git", "worktrees", "linked");
+    const subDir = join(worktreeRoot, "packages", "nested");
+    await mkdir(gitDirectory, { recursive: true });
+    await writeFile(join(gitDirectory, "commondir"), "../..\n");
+    await writeFile(join(worktreeRoot, ".git"), `gitdir: ${gitDirectory}\n`);
+    await mkdir(subDir, { recursive: true });
+    await mkdir(join(mainRoot, ".opencode"), { recursive: true });
+    await writeFile(
+      projectConfigPath(mainRoot),
+      JSON.stringify({ reviewers: [{ model: "a/one" }] }),
+    );
+    const loaded = await loadCrossReviewConfig(subDir, mainRoot);
+    expect(loaded.config).toEqual({ reviewers: [{ model: "a/one" }] });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
+    expect(loaded.projectPath).toBe(projectConfigPath(mainRoot));
+  });
+
+  it("prefers a linked worktree's own project config", async () => {
+    const mainRoot = await fixture();
+    const worktreeRoot = await fixture();
+    const gitDirectory = join(mainRoot, ".git", "worktrees", "linked");
+    await mkdir(gitDirectory, { recursive: true });
+    await writeFile(join(gitDirectory, "commondir"), "../..\n");
+    await writeFile(join(worktreeRoot, ".git"), `gitdir: ${gitDirectory}\n`);
+    await mkdir(join(mainRoot, ".opencode"), { recursive: true });
+    await writeFile(
+      projectConfigPath(mainRoot),
+      JSON.stringify({ reviewers: [{ model: "a/main" }] }),
+    );
+    await mkdir(join(worktreeRoot, ".opencode"), { recursive: true });
+    await writeFile(
+      projectConfigPath(worktreeRoot),
+      JSON.stringify({ reviewers: [{ model: "a/worktree" }] }),
+    );
+    const loaded = await loadCrossReviewConfig(worktreeRoot, mainRoot);
+    expect(loaded.config).toEqual({ reviewers: [{ model: "a/worktree" }] });
+    expect(loaded.projectPath).toBe(projectConfigPath(worktreeRoot));
   });
 });

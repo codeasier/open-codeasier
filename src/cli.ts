@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findGitRoot } from "./cross-review/config.js";
 import {
   CrossReviewConfigConflictError,
   initializeCrossReviewConfig,
@@ -38,10 +39,13 @@ export async function run(argv: string[]): Promise<number> {
     }
     const scope = requestedScope ?? "local";
     if (scope === "global" && project !== undefined) return 2;
+    const requestedProject = resolve(project ?? ".");
     const target =
       scope === "global"
         ? resolveTarget({})
-        : resolveTarget({ project: project ?? "." });
+        : resolveTarget({
+            project: (await findGitRoot(requestedProject)) ?? requestedProject,
+          });
     try {
       const result = await initializeCrossReviewConfig({ target, dryRun });
       console.log(
