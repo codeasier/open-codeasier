@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Restrict the `cross-reviewer` subagent to explicit code/change review and
+  cross-review judging instead of routine self-checks or report verification.
 - Accept nested cross-review model IDs with multiple `/` segments (e.g.
   `unraid-wg/wb/kimi-k3`) in `reviewers`, `reviewModels`, and `judgeModel`
   instead of rejecting them as malformed `provider/model` identifiers.
