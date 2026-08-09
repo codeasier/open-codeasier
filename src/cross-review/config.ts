@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 export const MODEL_ID = /^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$/;
 
@@ -18,7 +18,7 @@ export type CrossReviewConfig = {
   focus?: string;
 };
 
-export type CrossReviewConfigSource = "loaded" | "absent" | "invalid";
+export type CrossReviewConfigSource = "loaded" | "absent";
 
 export type CrossReviewConfigSources = {
   project: CrossReviewConfigSource;
@@ -28,7 +28,7 @@ export type CrossReviewConfigSources = {
 export type LoadedCrossReviewConfig = {
   config: CrossReviewConfig;
   sources: CrossReviewConfigSources;
-  projectPath: string | undefined;
+  projectPath: string;
   globalPath: string;
 };
 
@@ -129,11 +129,8 @@ export const globalConfigPath = (home: string) =>
   join(home, ".config", "opencode", "cross-review.json");
 
 /**
- * Locate the nearest ancestor of `directory` that contains a `.git` entry
- * (either a directory for normal repositories or a file for worktrees and
- * submodules that point at the shared git dir). Returns `undefined` when no
- * enclosing repository can be located, so callers can decide how to treat
- * directories outside any project.
+ * Locate the nearest enclosing repository or linked-worktree root.
+ * Returns `undefined` outside a repository.
  */
 export async function findGitRoot(
   directory: string,
@@ -152,6 +149,27 @@ export async function findGitRoot(
   }
 }
 
+async function findSharedGitRoot(repositoryRoot: string): Promise<string> {
+  const gitEntry = join(repositoryRoot, ".git");
+  if (!(await stat(gitEntry)).isFile()) return repositoryRoot;
+  const match = /^gitdir:\s*(.+)\s*$/m.exec(await readFile(gitEntry, "utf8"));
+  if (match?.[1] === undefined) return repositoryRoot;
+  const gitDirectory = resolve(repositoryRoot, match[1]);
+  try {
+    const commonDirectory = resolve(
+      gitDirectory,
+      (await readFile(join(gitDirectory, "commondir"), "utf8")).trim(),
+    );
+    return basename(commonDirectory) === ".git"
+      ? dirname(commonDirectory)
+      : repositoryRoot;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return repositoryRoot;
+    throw error;
+  }
+}
+
 async function readConfigContent(path: string): Promise<unknown | undefined> {
   try {
     return JSON.parse(await readFile(path, "utf8"));
@@ -167,11 +185,19 @@ export async function loadCrossReviewConfig(
   directory: string,
   home = homedir(),
 ): Promise<LoadedCrossReviewConfig> {
-  const gitRoot = (await findGitRoot(directory)) ?? directory;
-  const projectPath = projectConfigPath(gitRoot);
+  const enclosingGitRoot = await findGitRoot(directory);
+  const gitRoot = enclosingGitRoot ?? directory;
+  let projectPath = projectConfigPath(gitRoot);
   const globalPath = globalConfigPath(home);
 
-  const projectRaw = await readConfigContent(projectPath);
+  let projectRaw = await readConfigContent(projectPath);
+  if (projectRaw === undefined && enclosingGitRoot !== undefined) {
+    const sharedGitRoot = await findSharedGitRoot(gitRoot);
+    if (sharedGitRoot !== gitRoot) {
+      projectPath = projectConfigPath(sharedGitRoot);
+      projectRaw = await readConfigContent(projectPath);
+    }
+  }
   const globalRaw = await readConfigContent(globalPath);
 
   const project: CrossReviewConfig | undefined =

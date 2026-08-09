@@ -2,6 +2,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -123,10 +124,17 @@ describe("cross-review initializer", () => {
 describe("init CLI", () => {
   it("defaults to the current local project and rejects invalid scope combinations", async () => {
     const { run } = await import("../src/cli.js");
+    const root = await fixture();
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    expect(await run(["init", "--dry-run"])).toBe(0);
+    const previousDirectory = process.cwd();
+    try {
+      process.chdir(root);
+      expect(await run(["init", "--dry-run"])).toBe(0);
+    } finally {
+      process.chdir(previousDirectory);
+    }
     expect(log).toHaveBeenCalledWith(
-      `would-initialize: ${projectConfigPath(process.cwd())}`,
+      `would-initialize: ${projectConfigPath(await realpath(root))}`,
     );
     expect(await run(["init", "--local", "--global"])).toBe(2);
     expect(await run(["init", "--global", "unexpected"])).toBe(2);
@@ -152,6 +160,25 @@ describe("init CLI", () => {
     expect(await run(["init", "--local", project])).toBe(1);
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining("Refusing to overwrite"),
+    );
+  });
+
+  it("defaults local initialization to the enclosing repository root", async () => {
+    const { run } = await import("../src/cli.js");
+    const root = await fixture();
+    const subDir = join(root, "packages", "nested");
+    await mkdir(join(root, ".git"), { recursive: true });
+    await mkdir(subDir, { recursive: true });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const previousDirectory = process.cwd();
+    try {
+      process.chdir(subDir);
+      expect(await run(["init", "--dry-run"])).toBe(0);
+    } finally {
+      process.chdir(previousDirectory);
+    }
+    expect(log).toHaveBeenCalledWith(
+      `would-initialize: ${projectConfigPath(await realpath(root))}`,
     );
   });
 });

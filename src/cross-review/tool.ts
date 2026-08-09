@@ -78,12 +78,9 @@ type ReviewerResult = {
 
 function configWarning(loaded: LoadedCrossReviewConfig): string | undefined {
   if (loaded.sources.project === "loaded") return undefined;
-  const projectPath = loaded.projectPath ?? "<no enclosing git repository>";
   if (loaded.sources.global === "loaded")
-    return `warning: project config not found at ${projectPath}; using global config at ${loaded.globalPath}`;
-  if (loaded.sources.global === "invalid")
-    return `warning: project config not found at ${projectPath}; global config at ${loaded.globalPath} is invalid`;
-  return `warning: no cross-review config found at ${projectPath} or ${loaded.globalPath}`;
+    return `warning: project config not found at ${loaded.projectPath}; using global config at ${loaded.globalPath}`;
+  return `warning: no cross-review config found at ${loaded.projectPath} or ${loaded.globalPath}`;
 }
 
 function splitModel(value: string) {

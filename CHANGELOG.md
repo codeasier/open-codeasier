@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `.opencode/cross-review.json` is honored when a session is launched from a
   subdirectory or worktree that does not carry its own config.
 - Surface a structured `configSources` (`project` and `global`, each
-  `loaded` / `absent` / `invalid`) plus the resolved project and global paths
+  `loaded` or `absent`) plus the resolved project and global paths
   in cross-review tool metadata, and prepend a `warning` field to the tool
   output when the project config was not loaded so callers can detect a
   silent fallback to the global config.
