@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep runtime plugin and workflow asset upgrades on the same exact package
+  version and scope, and print the matching runtime command after asset installs.
+- Stop cross-review with versioned recovery guidance when its runtime tool is
+  unavailable instead of improvising a fallback.
+
 ## [0.2.3] - 2026-08-09
 
 ### Fixed
