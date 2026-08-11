@@ -255,9 +255,12 @@ describe("cross_review tool", () => {
       judgeModel: "b/judge",
       maxConcurrency: 2,
     };
+    const metadata = vi.fn();
+    const toolContext = context();
+    toolContext.metadata = metadata;
     const output = await createCrossReviewTool(mock, () =>
       wrapConfig(config),
-    ).execute({ target: "main...HEAD" }, context());
+    ).execute({ target: "main...HEAD" }, toolContext);
     const calls = prompt.mock.calls.map((call) => call[0]);
     expect(calls).toHaveLength(3);
     expect(calls.slice(0, 2).map((call) => call.body.model.modelID)).toEqual([
@@ -274,6 +277,20 @@ describe("cross_review tool", () => {
       model: "b/judge",
       status: "succeeded",
     });
+    const judgeUpdates = metadata.mock.calls
+      .map(([update]) => update.metadata.judge)
+      .filter((judge) => judge !== undefined);
+    expect(judgeUpdates).toContainEqual({
+      model: "b/judge",
+      sessionID: "child-3",
+      status: "running",
+    });
+    expect(judgeUpdates).toContainEqual({
+      model: "b/judge",
+      sessionID: "child-3",
+      status: "succeeded",
+    });
+    expect(judgeUpdates.every((judge) => !("output" in judge))).toBe(true);
     expect(parsed.reviewers.map((reviewer: any) => reviewer.focus)).toEqual([
       "security and auth",
       "performance regressions",

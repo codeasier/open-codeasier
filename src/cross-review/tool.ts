@@ -568,7 +568,11 @@ export function createCrossReviewTool(
                 status: "succeeded",
                 output,
               };
-              judgeProgress = judge;
+              judgeProgress = {
+                model: judge.model,
+                sessionID: judge.sessionID,
+                status: judge.status,
+              };
               publishProgress("judging");
             } finally {
               sessions.delete(session.id);
