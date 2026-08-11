@@ -186,6 +186,16 @@ describe("workflow generator", () => {
     expect(openCrossReview).toContain(
       "recommend a reviewer set and an optional judge drawn only from that list",
     );
+    expect(openCrossReview).toContain(
+      "If it is unavailable, stop immediately; do not substitute task agents",
+    );
+    expect(openCrossReview).toContain(
+      ".opencode/.open-codeasier/installed-assets.json",
+    );
+    expect(openCrossReview).toContain(
+      "opencode plugin open-codeasier@<packageVersion> --global --force",
+    );
+    expect(openCrossReview).toContain("restart OpenCode afterward");
     expect(openCrossReview).not.toContain("provider/...` placeholder");
     const openAgent = await readFile(
       join(open.target, "agents/cross-reviewer.md"),
