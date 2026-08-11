@@ -113,7 +113,10 @@ const TERMINAL_PHASES = new Set<CrossReviewRunPhase>([
 ]);
 const STALE_LOCK_MS = 60_000;
 const LOCK_UPDATE_MS = 10_000;
-const LOCK_RETRIES = 800;
+// The lock holder can perform several SDK requests (status plus per-active
+// reviewer messages and aborts, each up to 15s). Wait long enough that a
+// concurrent poll after reload does not give up before the holder finishes.
+const LOCK_RETRIES = 4_800;
 const TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const LOCAL_LOCKS = new Map<string, Promise<void>>();
 

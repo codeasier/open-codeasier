@@ -410,6 +410,97 @@ describe("asynchronous cross-review protocol", () => {
     expect(second).toBe(first);
   });
 
+  it("times out an ambiguous dispatch instead of retrying forever", async () => {
+    let timestamp = 1_000;
+    const { client } = mockClient();
+    client.session.promptAsync
+      .mockRejectedValueOnce(new Error("response lost"))
+      .mockResolvedValue({ data: undefined });
+    client.session.abort.mockRejectedValueOnce(new Error("abort unavailable"));
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        reviewerTimeoutMs: 30_000,
+      },
+      context(),
+    );
+    // Redispatch within the grace window, then advance well past the original
+    // deadline. The reviewer must time out rather than keep re-dispatching with
+    // a fresh deadline each poll.
+    timestamp += 15_001;
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+    const callsAfterRedispatch = client.session.promptAsync.mock.calls.length;
+    expect(callsAfterRedispatch).toBe(2);
+    timestamp += 100_000;
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+    const callsAfterDeadline = client.session.promptAsync.mock.calls.length;
+
+    const status = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+    expect(status.reviewers[0]).toMatchObject({
+      status: "timed_out",
+      error: expect.stringContaining("timed out"),
+    });
+    expect(callsAfterDeadline).toBe(callsAfterRedispatch);
+  });
+
+  it("collects a completed busy reviewer before timing it out", async () => {
+    let timestamp = 1_000;
+    const { client, statuses, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    statuses["child-1"] = { type: "busy" };
+    messages.set("child-1", completed("output ready at deadline"));
+    timestamp = 6_001;
+
+    const status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, includeOutputs: true },
+        context(),
+      ),
+    );
+
+    expect(status.reviewers[0]).toMatchObject({
+      status: "succeeded",
+      output: "output ready at deadline",
+    });
+    expect(client.session.abort).not.toHaveBeenCalled();
+  });
+
+  it("finalizes terminal reviewers even when the status API fails", async () => {
+    const { client, messages } = mockClient();
+    client.session.status.mockRejectedValue(new Error("status unavailable"));
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+    messages.set("child-1", completed("candidate despite status failure"));
+
+    const finalized = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+
+    expect(finalized).toMatchObject({
+      phase: "completed",
+      reviewers: [
+        { status: "succeeded", output: "candidate despite status failure" },
+      ],
+    });
+  });
+
   it("isolates child message lookup failures from other reviewer progress", async () => {
     const { client, messages } = mockClient();
     const tools = protocol(client, new MemoryRunStore());

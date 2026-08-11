@@ -430,8 +430,13 @@ export function createCrossReviewProtocolTools(
       const startedAt = now();
       for (const reviewer of reviewers) {
         reviewer.status = "starting";
-        reviewer.startedAt = startedAt;
-        reviewer.deadlineAt = startedAt + run.reviewerTimeoutMs;
+        // Preserve the original deadline for a reviewer redispatch so an
+        // ambiguous async prompt cannot retry forever. Only assign a fresh
+        // start/deadline when dispatching for the first time.
+        if (reviewer.startedAt === undefined) {
+          reviewer.startedAt = startedAt;
+          reviewer.deadlineAt = startedAt + run.reviewerTimeoutMs;
+        }
         delete reviewer.error;
       }
       await save();
@@ -490,27 +495,16 @@ export function createCrossReviewProtocolTools(
     if (!ACTIVE_REVIEWER_STATUSES.has(reviewer.status)) return;
     const timestamp = now();
     const status = statuses[reviewer.sessionID];
-    if (status?.type === "busy") {
-      if (
-        reviewer.deadlineAt !== undefined &&
-        timestamp >= reviewer.deadlineAt
-      ) {
-        await timeoutReviewer(run, reviewer, timestamp);
-        return;
-      }
+    const deadlineReached =
+      reviewer.deadlineAt !== undefined && timestamp >= reviewer.deadlineAt;
+
+    if (status?.type === "busy" && !deadlineReached) {
       reviewer.status = "running";
       delete reviewer.retry;
       delete reviewer.error;
       return;
     }
-    if (status?.type === "retry") {
-      if (
-        reviewer.deadlineAt !== undefined &&
-        timestamp >= reviewer.deadlineAt
-      ) {
-        await timeoutReviewer(run, reviewer, timestamp);
-        return;
-      }
+    if (status?.type === "retry" && !deadlineReached) {
       reviewer.status = "retrying";
       reviewer.retry = {
         attempt: status.attempt,
@@ -520,19 +514,19 @@ export function createCrossReviewProtocolTools(
       return;
     }
 
+    // OpenCode persists the completed assistant message before publishing
+    // idle, so a deadline-boundary poll can still find valid output. Read it
+    // before timing out so quorum is not discarded.
     let messages: SessionMessage[];
     try {
       messages = await sessionMessages(reviewer.sessionID, run, context);
     } catch (error) {
-      if (
-        reviewer.deadlineAt !== undefined &&
-        timestamp >= reviewer.deadlineAt
-      ) {
+      if (deadlineReached) {
         await timeoutReviewer(run, reviewer, timestamp);
         reviewer.error = `${reviewer.error}; status unavailable: ${errorMessage(error)}`;
-        return;
+      } else {
+        reviewer.error = `Reviewer status unavailable: ${errorMessage(error)}`;
       }
-      reviewer.error = `Reviewer status unavailable: ${errorMessage(error)}`;
       return;
     }
     const outcome = terminalOutcome(
@@ -549,22 +543,24 @@ export function createCrossReviewProtocolTools(
       delete reviewer.retry;
       return;
     }
-    if (reviewer.deadlineAt !== undefined && timestamp >= reviewer.deadlineAt) {
+    if (deadlineReached) {
       await timeoutReviewer(run, reviewer, timestamp);
       return;
     }
     const latest = messages.at(-1);
     if (latest !== undefined) reviewer.latestActivityAt = activityAt(latest);
-    reviewer.status = "starting";
     if (
       messages.length === 0 &&
       reviewer.startedAt !== undefined &&
       timestamp - reviewer.startedAt >= STARTING_GRACE_MS
     ) {
+      // Re-queue an ambiguous dispatch (no visible message yet) so the same
+      // message ID is re-submitted, but keep the original deadline so a truly
+      // missing agent eventually times out instead of retrying forever.
       reviewer.status = "queued";
-      delete reviewer.startedAt;
-      delete reviewer.deadlineAt;
+      return;
     }
+    reviewer.status = "starting";
   }
 
   async function reconcileJudge(
@@ -578,8 +574,12 @@ export function createCrossReviewProtocolTools(
     if (judge.status === "queued") {
       const startedAt = now();
       judge.status = "starting";
-      judge.startedAt = startedAt;
-      judge.deadlineAt = startedAt + run.reviewerTimeoutMs;
+      // Preserve the original deadline on redispatch so an ambiguous judge
+      // prompt cannot retry forever.
+      if (judge.startedAt === undefined) {
+        judge.startedAt = startedAt;
+        judge.deadlineAt = startedAt + run.reviewerTimeoutMs;
+      }
       delete judge.error;
       await save();
       try {
@@ -614,6 +614,8 @@ export function createCrossReviewProtocolTools(
     )
       return;
     const timestamp = now();
+    const deadlineReached =
+      judge.deadlineAt !== undefined && timestamp >= judge.deadlineAt;
     const timeoutJudge = async () => {
       let abortWarning: string | undefined;
       try {
@@ -627,21 +629,13 @@ export function createCrossReviewProtocolTools(
       delete judge.retry;
     };
     const status = statuses[judge.sessionID];
-    if (status?.type === "busy") {
-      if (judge.deadlineAt !== undefined && timestamp >= judge.deadlineAt) {
-        await timeoutJudge();
-        return;
-      }
+    if (status?.type === "busy" && !deadlineReached) {
       judge.status = "running";
       delete judge.retry;
       delete judge.error;
       return;
     }
-    if (status?.type === "retry") {
-      if (judge.deadlineAt !== undefined && timestamp >= judge.deadlineAt) {
-        await timeoutJudge();
-        return;
-      }
+    if (status?.type === "retry" && !deadlineReached) {
       judge.status = "retrying";
       judge.retry = {
         attempt: status.attempt,
@@ -650,45 +644,47 @@ export function createCrossReviewProtocolTools(
       };
       return;
     }
+
     let messages: SessionMessage[];
     try {
       messages = await sessionMessages(judge.sessionID, run, context);
     } catch (error) {
-      if (judge.deadlineAt !== undefined && timestamp >= judge.deadlineAt) {
+      if (deadlineReached) {
         await timeoutJudge();
         judge.error = `${judge.error}; status unavailable: ${errorMessage(error)}`;
-        return;
+      } else {
+        judge.error = `Judge status unavailable: ${errorMessage(error)}`;
       }
-      judge.error = `Judge status unavailable: ${errorMessage(error)}`;
       return;
     }
     const outcome = terminalOutcome(messages, "Judge prompt");
-    if (outcome === undefined) {
-      if (judge.deadlineAt !== undefined && timestamp >= judge.deadlineAt) {
-        await timeoutJudge();
-        return;
-      }
-      const latest = messages.at(-1);
-      if (latest !== undefined) judge.latestActivityAt = activityAt(latest);
-      judge.status = "starting";
-      if (
-        messages.length === 0 &&
-        judge.startedAt !== undefined &&
-        timestamp - judge.startedAt >= STARTING_GRACE_MS
-      ) {
-        judge.status = "queued";
-        delete judge.startedAt;
-        delete judge.deadlineAt;
-      }
+    if (outcome !== undefined) {
+      judge.status = outcome.status;
+      judge.completedAt = timestamp;
+      judge.latestActivityAt = outcome.latestActivityAt;
+      if (outcome.output !== undefined) judge.output = outcome.output;
+      if (outcome.error !== undefined) judge.error = outcome.error;
+      else delete judge.error;
+      delete judge.retry;
       return;
     }
-    judge.status = outcome.status;
-    judge.completedAt = timestamp;
-    judge.latestActivityAt = outcome.latestActivityAt;
-    if (outcome.output !== undefined) judge.output = outcome.output;
-    if (outcome.error !== undefined) judge.error = outcome.error;
-    else delete judge.error;
-    delete judge.retry;
+    if (deadlineReached) {
+      await timeoutJudge();
+      return;
+    }
+    const latest = messages.at(-1);
+    if (latest !== undefined) judge.latestActivityAt = activityAt(latest);
+    if (
+      messages.length === 0 &&
+      judge.startedAt !== undefined &&
+      timestamp - judge.startedAt >= STARTING_GRACE_MS
+    ) {
+      // Re-queue an ambiguous judge dispatch so the same message ID is
+      // re-submitted, but keep the original deadline so it eventually times out.
+      judge.status = "queued";
+      return;
+    }
+    judge.status = "starting";
   }
 
   async function statuses(run: CrossReviewRun, context: ProtocolContext) {
@@ -713,17 +709,41 @@ export function createCrossReviewProtocolTools(
       run.phase === "cancelled"
     )
       return;
-    const currentStatuses = await statuses(run, context);
+
+    // Only query global session status when something can still be running.
+    // A fully-terminal run only needs local finalization; requiring the status
+    // API here would let one unavailable project directory block otherwise
+    // recoverable local finalization.
+    const hasActive =
+      (run.phase === "reviewing" &&
+        run.reviewers.some((reviewer) =>
+          ACTIVE_REVIEWER_STATUSES.has(reviewer.status),
+        )) ||
+      (run.phase === "judging" &&
+        run.judge !== undefined &&
+        ACTIVE_REVIEWER_STATUSES.has(run.judge.status as ReviewerRunStatus));
+    let currentStatuses: Record<string, SessionStatus> | undefined;
+    if (hasActive) {
+      try {
+        currentStatuses = await statuses(run, context);
+      } catch {
+        // A transient status failure must not block local finalization of
+        // reviewers that are already terminal. Reconcilers treat a missing
+        // status map as "no busy signal" and fall back to reading messages.
+        currentStatuses = {};
+      }
+    }
+
     if (run.phase === "reviewing") {
       await Promise.all(
         run.reviewers.map((reviewer) =>
-          reconcileReviewer(run, reviewer, currentStatuses, context),
+          reconcileReviewer(run, reviewer, currentStatuses ?? {}, context),
         ),
       );
       await dispatchAvailable(run, save, context);
     }
     if (run.phase === "judging")
-      await reconcileJudge(run, currentStatuses, save, context);
+      await reconcileJudge(run, currentStatuses ?? {}, save, context);
   }
 
   async function withAuthorizedRun<T>(
