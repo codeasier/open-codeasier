@@ -76,6 +76,16 @@ type ReviewerResult = {
   error?: string;
 };
 
+type ReviewerProgress = Omit<ReviewerResult, "output" | "error" | "status"> & {
+  status: "queued" | "running" | ReviewerResult["status"];
+};
+
+type JudgeProgress = {
+  model: string;
+  sessionID?: string;
+  status: "starting" | "running" | "succeeded" | "failed" | "cancelled";
+};
+
 function configWarning(loaded: LoadedCrossReviewConfig): string | undefined {
   if (loaded.sources.project === "loaded") return undefined;
   if (loaded.sources.global === "loaded")
@@ -259,15 +269,62 @@ export function createCrossReviewTool(
 
       try {
         throwIfCancelled();
+        context.metadata({
+          title: "Cross-review: preparing",
+          metadata: { target: args.target, stage: "preparing" },
+        });
         const loaded = await loadConfig(context.directory);
         throwIfCancelled();
         const config = loaded.config;
         const warning = configWarning(loaded);
         const reviewers = resolveReviewers(args, config);
-        const judgeModel = args.judgeModel ?? config.judgeModel;
+        const judgeModel =
+          args.judgeModel === undefined
+            ? config.judgeModel
+            : args.judgeModel.trim() || undefined;
         const maxConcurrency =
           args.maxConcurrency ?? config.maxConcurrency ?? DEFAULT_CONCURRENCY;
         const sharedFocus = args.focus ?? config.focus;
+        const progress: ReviewerProgress[] = reviewers.map(
+          (reviewer, index) => ({
+            reviewer: index + 1,
+            model: reviewer.model,
+            ...(reviewer.focus === undefined ? {} : { focus: reviewer.focus }),
+            status: "queued",
+          }),
+        );
+        let judgeProgress: JudgeProgress | undefined;
+        const publishProgress = (
+          stage: "preparing" | "reviewing" | "judging" | "completed" | "failed",
+        ) => {
+          const completed = progress.filter(
+            (reviewer) =>
+              reviewer.status !== "queued" && reviewer.status !== "running",
+          ).length;
+          context.metadata({
+            title:
+              stage === "reviewing"
+                ? `Cross-review: ${completed}/${reviewers.length} reviewers complete`
+                : stage === "judging"
+                  ? "Cross-review: judge running"
+                  : stage === "completed"
+                    ? "Cross-review: complete"
+                    : stage === "failed"
+                      ? "Cross-review: failed"
+                      : "Cross-review: preparing",
+            metadata: {
+              target: args.target,
+              stage,
+              requestedReviewers: reviewers.length,
+              completedReviewers: completed,
+              reviewers: progress.map((reviewer) => ({ ...reviewer })),
+              ...(judgeProgress === undefined
+                ? {}
+                : { judge: { ...judgeProgress } }),
+            },
+          });
+        };
+        publishProgress("preparing");
 
         const requestedModels = [
           ...new Set([
@@ -325,6 +382,16 @@ export function createCrossReviewTool(
               );
               sessionID = session.id;
               sessions.add(session.id);
+              progress[index] = {
+                reviewer: index + 1,
+                model: reviewer.model,
+                ...(reviewer.focus === undefined
+                  ? {}
+                  : { focus: reviewer.focus }),
+                sessionID: session.id,
+                status: "running",
+              };
+              publishProgress("reviewing");
               try {
                 throwIfCancelled();
                 const output = promptOutput(
@@ -347,7 +414,7 @@ export function createCrossReviewTool(
                   "Reviewer prompt",
                 );
                 throwIfCancelled();
-                return {
+                const result: ReviewerResult = {
                   reviewer: index + 1,
                   model: reviewer.model,
                   ...(reviewer.focus === undefined
@@ -357,11 +424,22 @@ export function createCrossReviewTool(
                   status: "succeeded",
                   output,
                 };
+                progress[index] = {
+                  reviewer: result.reviewer,
+                  model: result.model,
+                  ...(result.focus === undefined
+                    ? {}
+                    : { focus: result.focus }),
+                  sessionID: session.id,
+                  status: result.status,
+                };
+                publishProgress("reviewing");
+                return result;
               } finally {
                 sessions.delete(session.id);
               }
             } catch (error) {
-              return {
+              const result: ReviewerResult = {
                 reviewer: index + 1,
                 model: reviewer.model,
                 ...(reviewer.focus === undefined
@@ -376,6 +454,17 @@ export function createCrossReviewTool(
                     : "failed",
                 error: errorMessage(error),
               };
+              progress[index] = {
+                reviewer: result.reviewer,
+                model: result.model,
+                ...(result.focus === undefined ? {} : { focus: result.focus }),
+                ...(result.sessionID === undefined
+                  ? {}
+                  : { sessionID: result.sessionID }),
+                status: result.status,
+              };
+              publishProgress("reviewing");
+              return result;
             }
           },
           () => context.abort.aborted,
@@ -387,6 +476,7 @@ export function createCrossReviewTool(
         );
         const quorum = Math.floor(reviewers.length / 2) + 1;
         if (successful.length < quorum) {
+          publishProgress("failed");
           return {
             title: `Cross-review failed: ${args.target}`,
             output: JSON.stringify({
@@ -423,54 +513,82 @@ export function createCrossReviewTool(
           const parsedJudgeModel = parsedModels.get(judgeModel);
           if (parsedJudgeModel === undefined)
             throw new Error(`Unvalidated judge model: ${judgeModel}`);
-          const session = responseData(
-            await client.session.create({
-              body: {
-                parentID: context.sessionID,
-                title: `Cross-review judge: ${args.target}`,
-              },
-              query: { directory: context.directory },
-              signal: context.abort,
-            }),
-            "Judge session creation",
-          );
-          sessions.add(session.id);
+          judgeProgress = { model: judgeModel, status: "starting" };
+          publishProgress("judging");
           try {
-            throwIfCancelled();
-            const output = promptOutput(
-              await client.session.prompt({
+            const session = responseData(
+              await client.session.create({
                 body: {
-                  agent: REVIEWER_AGENT,
-                  model: parsedJudgeModel,
-                  parts: [
-                    {
-                      type: "text",
-                      text: [
-                        "Act as the read-only cross-review judge.",
-                        `Target: ${args.target}`,
-                        "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
-                        "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
-                        JSON.stringify(successful),
-                      ].join("\n"),
-                    },
-                  ],
-                  tools: READ_ONLY_TOOLS,
+                  parentID: context.sessionID,
+                  title: `Cross-review judge: ${args.target}`,
                 },
-                path: { id: session.id },
                 query: { directory: context.directory },
                 signal: context.abort,
               }),
-              "Judge prompt",
+              "Judge session creation",
             );
-            throwIfCancelled();
-            judge = {
+            sessions.add(session.id);
+            judgeProgress = {
               model: judgeModel,
               sessionID: session.id,
-              status: "succeeded",
-              output,
+              status: "running",
             };
-          } finally {
-            sessions.delete(session.id);
+            publishProgress("judging");
+            throwIfCancelled();
+            try {
+              const output = promptOutput(
+                await client.session.prompt({
+                  body: {
+                    agent: REVIEWER_AGENT,
+                    model: parsedJudgeModel,
+                    parts: [
+                      {
+                        type: "text",
+                        text: [
+                          "Act as the read-only cross-review judge.",
+                          `Target: ${args.target}`,
+                          "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
+                          "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
+                          JSON.stringify(successful),
+                        ].join("\n"),
+                      },
+                    ],
+                    tools: READ_ONLY_TOOLS,
+                  },
+                  path: { id: session.id },
+                  query: { directory: context.directory },
+                  signal: context.abort,
+                }),
+                "Judge prompt",
+              );
+              throwIfCancelled();
+              judge = {
+                model: judgeModel,
+                sessionID: session.id,
+                status: "succeeded",
+                output,
+              };
+              judgeProgress = {
+                model: judge.model,
+                sessionID: judge.sessionID,
+                status: judge.status,
+              };
+              publishProgress("judging");
+            } finally {
+              sessions.delete(session.id);
+            }
+          } catch (error) {
+            judgeProgress = {
+              ...judgeProgress,
+              model: judgeModel,
+              status:
+                context.abort.aborted ||
+                (error instanceof Error && error.name === "MessageAbortedError")
+                  ? "cancelled"
+                  : "failed",
+            };
+            publishProgress("failed");
+            throw error;
           }
         }
 
@@ -485,6 +603,7 @@ export function createCrossReviewTool(
             status: "pending-parent-consolidation",
           },
         };
+        publishProgress("completed");
         return {
           title: `Cross-review: ${args.target}`,
           output: JSON.stringify(result),
