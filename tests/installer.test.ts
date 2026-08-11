@@ -233,12 +233,20 @@ describe("CLI parser", () => {
           "utf8",
         ),
       ) as { packageVersion: string };
+      expect(log).toHaveBeenCalledWith(`runtime-plugin-cwd: ${project}`);
       expect(log).toHaveBeenCalledWith(
         `runtime-plugin: ${runtimePluginInstallCommand(manifest.packageVersion, "project")}`,
       );
       expect(runtimePluginInstallCommand("1.2.3", "global")).toBe(
         "opencode plugin open-codeasier@1.2.3 --global --force",
       );
+      log.mockClear();
+      expect(await run(["uninstall", "--project", project])).toBe(0);
+      expect(
+        log.mock.calls.some(([message]) =>
+          String(message).startsWith("runtime-plugin"),
+        ),
+      ).toBe(false);
     } finally {
       log.mockRestore();
     }
