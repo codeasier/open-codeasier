@@ -9,25 +9,23 @@ OpenCode-native workflow skills, configurable cross-review orchestration, cross-
 
 ## Install
 
-Install the runtime plugin with OpenCode:
+Resolve the published version once, then install the runtime plugin and workflow assets at the same exact version and scope. For a global install:
 
 ```bash
-opencode plugin open-codeasier
+VERSION="$(npm view open-codeasier version)"
+opencode plugin "open-codeasier@$VERSION" --global --force
+npx "open-codeasier@$VERSION" install
 ```
 
-Install skills and commands globally:
+For an install limited to the current project:
 
 ```bash
-npx open-codeasier install
+VERSION="$(npm view open-codeasier version)"
+opencode plugin "open-codeasier@$VERSION" --force
+npx "open-codeasier@$VERSION" install --project .
 ```
 
-Install them only for the current project:
-
-```bash
-npx open-codeasier install --project .
-```
-
-Assets are installed under `~/.config/opencode/` or `<project>/.opencode/`. Preview operations with `--dry-run`. Upgrade by rerunning `install`; files changed after installation are never overwritten. Remove only package-owned assets with:
+Use the same paired commands to upgrade, then restart OpenCode. An exact version avoids OpenCode reusing a stale runtime for a floating npm tag. Pair the plugin's `--global` scope with the asset installer's global default; for project scope, omit the plugin's `--global` flag and pass `--project` to the asset installer. The asset installer also prints the matching exact-version runtime command. Assets are installed under `~/.config/opencode/` or `<project>/.opencode/`. Preview asset operations with `--dry-run`; files changed after installation are never overwritten. Remove only package-owned assets with:
 
 ```bash
 npx open-codeasier uninstall

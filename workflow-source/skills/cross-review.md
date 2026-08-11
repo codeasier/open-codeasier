@@ -19,6 +19,8 @@ If the destination exists, read it and require explicit confirmation before chan
 
 ## Review Mode
 
+Before parsing or reviewing the target, confirm that `cross_review` is available in the current session. If it is unavailable, stop immediately; do not substitute task agents, manual parallel reviews, or another tool. Look first for a project `.opencode/.open-codeasier/installed-assets.json` that owns `skills/cross-review/SKILL.md`, then for the global `~/.config/opencode/.open-codeasier/installed-assets.json`. Read `packageVersion` from the first matching package-owned manifest and report the exact matching runtime command: `opencode plugin open-codeasier@<packageVersion> --force` for project assets or `opencode plugin open-codeasier@<packageVersion> --global --force` for global assets. Tell the user to restart OpenCode afterward. If neither manifest supplies a valid package version, tell the user to reinstall the runtime plugin and workflow assets at the same exact version and scope. Do not inspect OpenCode's private cache layout.
+
 {{CROSS_REVIEW_CONFIG}} Accept one target plus optional `--review-models`, `--agents`, `--max-concurrency`, `--judge-model`, and `--focus` overrides. Reject unknown flags, missing values, duplicate flags, or more than one target. `--agents` and `--max-concurrency` accept 1-8. {{MODEL_NAMING}}
 
 Normalize the target and focus once. Every reviewer must receive that exact brief, run read-only, and remain isolated from every other reviewer's output. {{CROSS_REVIEW_ORCHESTRATION}}

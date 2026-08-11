@@ -16,6 +16,13 @@ import {
 } from "./installer/install.js";
 import { resolveTarget } from "./installer/paths.js";
 
+export function runtimePluginInstallCommand(
+  packageVersion: string,
+  scope: "global" | "project",
+): string {
+  return `opencode plugin open-codeasier@${packageVersion}${scope === "global" ? " --global" : ""} --force`;
+}
+
 export async function run(argv: string[]): Promise<number> {
   const command = argv.shift();
   if (command === "init") {
@@ -72,26 +79,33 @@ export async function run(argv: string[]): Promise<number> {
   }
   const target = resolveTarget(project === undefined ? {} : { project });
   try {
-    const result =
-      command === "install"
-        ? await installAssets({
-            target,
-            assets: await discoverAssets(),
-            packageVersion: JSON.parse(
-              await readFile(
-                resolve(
-                  dirname(fileURLToPath(import.meta.url)),
-                  "../package.json",
-                ),
-                "utf8",
-              ),
-            ).version as string,
-            dryRun,
-          })
-        : await uninstallAssets({ target, dryRun });
-    for (const [operation, paths] of Object.entries(result))
-      for (const path of paths)
-        console.log(`${dryRun ? "would-" : ""}${operation}: ${path}`);
+    if (command === "install") {
+      const packageVersion = JSON.parse(
+        await readFile(
+          resolve(dirname(fileURLToPath(import.meta.url)), "../package.json"),
+          "utf8",
+        ),
+      ).version as string;
+      const result = await installAssets({
+        target,
+        assets: await discoverAssets(),
+        packageVersion,
+        dryRun,
+      });
+      for (const [operation, paths] of Object.entries(result))
+        for (const path of paths)
+          console.log(`${dryRun ? "would-" : ""}${operation}: ${path}`);
+      if (target.scope === "project")
+        console.log(`runtime-plugin-cwd: ${dirname(target.root)}`);
+      console.log(
+        `runtime-plugin: ${runtimePluginInstallCommand(packageVersion, target.scope)}`,
+      );
+    } else {
+      const result = await uninstallAssets({ target, dryRun });
+      for (const [operation, paths] of Object.entries(result))
+        for (const path of paths)
+          console.log(`${dryRun ? "would-" : ""}${operation}: ${path}`);
+    }
     return 0;
   } catch (error) {
     if (error instanceof AssetConflictError) {

@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { sha256 } from "../src/installer/assets.js";
 import {
   AssetConflictError,
@@ -217,6 +217,41 @@ describe("asset installer", () => {
 });
 
 describe("CLI parser", () => {
+  it("prints exact-version runtime guidance for the matching scope", async () => {
+    const f = await fixture();
+    const project = join(f.root, "project");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const { run, runtimePluginInstallCommand } = await import(
+        "../src/cli.js"
+      );
+      expect(await run(["install", "--project", project])).toBe(0);
+      const target = resolveTarget({ project });
+      const manifest = JSON.parse(
+        await readFile(
+          join(target.root, ".open-codeasier", "installed-assets.json"),
+          "utf8",
+        ),
+      ) as { packageVersion: string };
+      expect(log).toHaveBeenCalledWith(`runtime-plugin-cwd: ${project}`);
+      expect(log).toHaveBeenCalledWith(
+        `runtime-plugin: ${runtimePluginInstallCommand(manifest.packageVersion, "project")}`,
+      );
+      expect(runtimePluginInstallCommand("1.2.3", "global")).toBe(
+        "opencode plugin open-codeasier@1.2.3 --global --force",
+      );
+      log.mockClear();
+      expect(await run(["uninstall", "--project", project])).toBe(0);
+      expect(
+        log.mock.calls.some(([message]) =>
+          String(message).startsWith("runtime-plugin"),
+        ),
+      ).toBe(false);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("rejects unknown commands and options", async () => {
     const { run } = await import("../src/cli.js");
     expect(await run(["unknown"])).toBe(2);
