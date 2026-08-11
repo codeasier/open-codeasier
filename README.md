@@ -115,10 +115,10 @@ A `reviewers` array defines the exact reviewer set and gives each reviewer its o
 
 Optional per-invocation overrides keep working: `--review-models`, `--agents`, `--max-concurrency`, `--judge-model`, and `--focus`; any explicit argument wins over configuration. Model names are exact OpenCode `provider/model` identifiers reported by `opencode models`.
 
-The `cross_review` plugin tool creates isolated OpenCode SDK sessions. Each reviewer uses the installed `cross-reviewer` agent, receives the same normalized target, and cannot access another reviewer's output. The agent denies edit, shell, and delegation permissions, while each SDK prompt also disables mutating and delegation tools.
+The `cross_review` plugin tool creates isolated OpenCode SDK sessions. While a review runs, tool metadata reports queued, running, and completed reviewers plus each created child session ID. Each reviewer uses the installed `cross-reviewer` agent, receives the same normalized target, and cannot access another reviewer's output. The agent denies edit, shell, and delegation permissions, while each SDK prompt also disables mutating and delegation tools.
 
 - `--agents` and `--max-concurrency` accept 1-8 and default to 3.
-- `--judge-model` and the configured `judgeModel` are optional. Without one, the parent session verifies, deduplicates, calibrates, and consolidates findings; a configured `judgeModel` launches a read-only judge session with that explicit model. Setting `--judge-model` overrides the configured value.
+- `--judge-model` and the configured `judgeModel` are optional. Without one, or when an invocation supplies a blank value, the parent session verifies, deduplicates, calibrates, and consolidates findings; a configured `judgeModel` launches a read-only judge session with that explicit model. Setting `--judge-model` overrides the configured value.
 - Malformed or unavailable models fail explicitly. Reviewer failures are isolated, but a majority quorum is required; cancellation stops outstanding OpenCode reviewer sessions.
 
 Each reviewer and judge consumes model tokens. Increasing reviewers or selecting more expensive models raises cost approximately with the number of sessions; no model silently falls back to another provider or model.

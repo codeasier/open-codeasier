@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   version and scope, and print the matching runtime command after asset installs.
 - Stop cross-review with versioned recovery guidance when its runtime tool is
   unavailable instead of improvising a fallback.
+- Report live cross-review progress and child-session provenance through tool
+  metadata so long-running reviewers and judges remain observable.
+- Treat an explicitly blank `judgeModel` as parent-session judging instead of
+  rejecting it as an invalid model identifier.
 
 ## [0.2.3] - 2026-08-09
 

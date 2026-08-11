@@ -129,6 +129,67 @@ describe("cross_review tool", () => {
     ]);
   });
 
+  it("treats a blank explicit judge model as parent-session judging", async () => {
+    const mock = client();
+    const result = await createCrossReviewTool(mock, () =>
+      wrapConfig({
+        reviewers: [{ model: "a/one" }],
+        judgeModel: "b/judge",
+      }),
+    ).execute({ target: "HEAD", judgeModel: "  " }, context());
+
+    expect(mock.session.prompt).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((result as any).output).judge).toMatchObject({
+      model: "parent-session",
+      status: "pending-parent-consolidation",
+    });
+  });
+
+  it("publishes reviewer progress and child session provenance", async () => {
+    const metadata = vi.fn();
+    const toolContext = context();
+    toolContext.metadata = metadata;
+
+    await createCrossReviewTool(client(), emptyConfig).execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 2,
+      },
+      toolContext,
+    );
+
+    expect(metadata).toHaveBeenCalledWith({
+      title: "Cross-review: 0/2 reviewers complete",
+      metadata: expect.objectContaining({
+        stage: "reviewing",
+        reviewers: expect.arrayContaining([
+          expect.objectContaining({
+            sessionID: "child-1",
+            status: "running",
+          }),
+        ]),
+      }),
+    });
+    expect(metadata).toHaveBeenLastCalledWith({
+      title: "Cross-review: complete",
+      metadata: expect.objectContaining({
+        stage: "completed",
+        completedReviewers: 2,
+        reviewers: [
+          expect.objectContaining({
+            sessionID: "child-1",
+            status: "succeeded",
+          }),
+          expect.objectContaining({
+            sessionID: "child-2",
+            status: "succeeded",
+          }),
+        ],
+      }),
+    });
+  });
+
   it("uses round-robin models, identical briefs, and bounded concurrency", async () => {
     let active = 0;
     let peak = 0;
