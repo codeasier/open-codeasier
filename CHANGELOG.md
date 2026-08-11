@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Replace metadata-only cross-review progress with resumable asynchronous
+  start, status, cancel, and finalize tools, including bounded reviewer
+  execution, persisted child-session provenance, timeout handling, and
+  two-phase explicit judging.
+
 ## [0.2.4] - 2026-08-11
 
 ### Fixed

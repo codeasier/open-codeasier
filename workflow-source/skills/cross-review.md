@@ -7,7 +7,7 @@ description: Initialize or run configurable independent code reviewers and conso
 
 ## Setup Mode
 
-Treat a first argument of `init` or `setup`, or a natural-language request to set up cross-review, as setup mode rather than a review target. Accept an optional `--local` or `--global` scope and optional local project path; default to local scope and the current directory. Do not call `cross_review` in setup mode.
+Treat a first argument of `init` or `setup`, or a natural-language request to set up cross-review, as setup mode rather than a review target. Accept an optional `--local` or `--global` scope and optional local project path; default to local scope and the current directory. Do not call any `cross_review_*` tool in setup mode.
 
 Run `opencode models` before proposing any configuration and treat its output as the authoritative list of connected, exact model identifiers. If it is unavailable or empty, ask the user to provide the available identifiers and do not write a configuration until they do. Do not infer choices from `opencode.json`, hard-code model identifiers, invent placeholders, or limit the user to a predefined provider or model family.
 
@@ -19,15 +19,17 @@ If the destination exists, read it and require explicit confirmation before chan
 
 ## Review Mode
 
-Before parsing or reviewing the target, confirm that `cross_review` is available in the current session. If it is unavailable, stop immediately; do not substitute task agents, manual parallel reviews, or another tool. Look first for a project `.opencode/.open-codeasier/installed-assets.json` that owns `skills/cross-review/SKILL.md`, then for the global `~/.config/opencode/.open-codeasier/installed-assets.json`. Read `packageVersion` from the first matching package-owned manifest and report the exact matching runtime command: `opencode plugin open-codeasier@<packageVersion> --force` for project assets or `opencode plugin open-codeasier@<packageVersion> --global --force` for global assets. Tell the user to restart OpenCode afterward. If neither manifest supplies a valid package version, tell the user to reinstall the runtime plugin and workflow assets at the same exact version and scope. Do not inspect OpenCode's private cache layout.
+Before parsing or reviewing the target, confirm that `cross_review_start`, `cross_review_status`, `cross_review_cancel`, and `cross_review_finalize` are all available in the current session. If any are unavailable, stop immediately; do not use the legacy blocking `cross_review`, substitute task agents, run manual parallel reviews, or use another tool. Look first for a project `.opencode/.open-codeasier/installed-assets.json` that owns `skills/cross-review/SKILL.md`, then for the global `~/.config/opencode/.open-codeasier/installed-assets.json`. Read `packageVersion` from the first matching package-owned manifest and report the exact matching runtime command: `opencode plugin open-codeasier@<packageVersion> --force` for project assets or `opencode plugin open-codeasier@<packageVersion> --global --force` for global assets. Tell the user to restart OpenCode afterward. If neither manifest supplies a valid package version, tell the user to reinstall the runtime plugin and workflow assets at the same exact version and scope. Do not inspect OpenCode's private cache layout.
 
-{{CROSS_REVIEW_CONFIG}} Accept one target plus optional `--review-models`, `--agents`, `--max-concurrency`, `--judge-model`, and `--focus` overrides. Reject unknown flags, missing values, duplicate flags, or more than one target. `--agents` and `--max-concurrency` accept 1-8. {{MODEL_NAMING}}
+{{CROSS_REVIEW_CONFIG}} Accept one target plus optional `--review-models`, `--agents`, `--max-concurrency`, `--judge-model`, `--focus`, and `--reviewer-timeout-ms` overrides. Reject unknown flags, missing values, duplicate flags, or more than one target. `--agents` and `--max-concurrency` accept 1-8; `--reviewer-timeout-ms` accepts 5000-3600000. {{MODEL_NAMING}}
 
 Normalize the target and focus once. Every reviewer must receive that exact brief, run read-only, and remain isolated from every other reviewer's output. {{CROSS_REVIEW_ORCHESTRATION}}
 
 When no reviewer configuration exists and no `--review-models` override is given, ask the user which models to use and write a project `.opencode/cross-review.json` before calling the tool.
 
 Require a majority quorum. Preserve each reviewer's model, status, and session provenance. Isolate individual failures; never replace an invalid or failed model silently. On cancellation, stop outstanding work and do not report a partial review as complete.
+
+Treat each finite `status` or `finalize` result as visible progress. Continue polling while reviewers or an explicit judge are active, using the returned `pollAfterMs` as the minimum interval and avoiding a tight loop. Call `finalize` when reviewers are terminal; when it starts an explicit judge, resume status polling and call `finalize` again after the judge becomes terminal. If the parent request is cancelled after a run starts, call `cross_review_cancel` with its `runID` when execution resumes. Never start a second run to replace a slow reviewer.
 
 When `--judge-model` or a configured judge model is omitted, use the parent session to judge. Otherwise launch a read-only OpenCode judge session with that explicit model. Independently verify each candidate against the target, reject unsupported claims, deduplicate overlapping findings, and calibrate severity by impact and likelihood. Do not decide by reviewer vote alone.
 

@@ -6,10 +6,10 @@ import {
   type LoadedCrossReviewConfig,
 } from "./config.js";
 
-const REVIEWER_AGENT = "cross-reviewer";
+export const REVIEWER_AGENT = "cross-reviewer";
 const DEFAULT_AGENTS = 3;
 const DEFAULT_CONCURRENCY = 3;
-const READ_ONLY_TOOLS = {
+export const READ_ONLY_TOOLS = {
   bash: false,
   edit: false,
   patch: false,
@@ -17,7 +17,7 @@ const READ_ONLY_TOOLS = {
   write: false,
 } as const;
 
-type ApiResult<T> = { data?: T; error?: unknown };
+export type ApiResult<T> = { data?: T; error?: unknown };
 
 type PromptResponse = {
   info?: { error?: unknown };
@@ -64,7 +64,7 @@ export type CrossReviewConfigLoader = (
   directory: string,
 ) => Promise<LoadedCrossReviewConfig>;
 
-type ReviewerTarget = { model: string; focus?: string };
+export type ReviewerTarget = { model: string; focus?: string };
 
 type ReviewerResult = {
   reviewer: number;
@@ -86,21 +86,23 @@ type JudgeProgress = {
   status: "starting" | "running" | "succeeded" | "failed" | "cancelled";
 };
 
-function configWarning(loaded: LoadedCrossReviewConfig): string | undefined {
+export function configWarning(
+  loaded: LoadedCrossReviewConfig,
+): string | undefined {
   if (loaded.sources.project === "loaded") return undefined;
   if (loaded.sources.global === "loaded")
     return `warning: project config not found at ${loaded.projectPath}; using global config at ${loaded.globalPath}`;
   return `warning: no cross-review config found at ${loaded.projectPath} or ${loaded.globalPath}`;
 }
 
-function splitModel(value: string) {
+export function splitModel(value: string) {
   if (!MODEL_ID.test(value))
     throw new Error(`Invalid model identifier: ${value}`);
   const slash = value.indexOf("/");
   return { providerID: value.slice(0, slash), modelID: value.slice(slash + 1) };
 }
 
-function responseData<T>(result: ApiResult<T>, operation: string): T {
+export function responseData<T>(result: ApiResult<T>, operation: string): T {
   if (result.error !== undefined || result.data === undefined)
     throw new Error(`${operation} failed`);
   return result.data;
@@ -112,7 +114,7 @@ function errorProperty(error: unknown, property: "name" | "message") {
   return typeof value === "string" ? value : undefined;
 }
 
-function promptError(error: unknown, operation: string) {
+export function promptError(error: unknown, operation: string) {
   const name = errorProperty(error, "name") ?? "MessageError";
   let message = errorProperty(error, "message");
   if (message === undefined && typeof error === "object" && error !== null)
@@ -138,11 +140,11 @@ function promptOutput(result: ApiResult<PromptResponse>, operation: string) {
   return output;
 }
 
-function errorMessage(error: unknown) {
+export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function reviewBrief(target: string, focus?: string) {
+export function reviewBrief(target: string, focus?: string) {
   return [
     "Independently review the specified target. Remain read-only.",
     `Target: ${target}`,
@@ -153,7 +155,7 @@ function reviewBrief(target: string, focus?: string) {
   ].join("\n");
 }
 
-function resolveReviewers(
+export function resolveReviewers(
   args: {
     reviewModels?: string[] | undefined;
     agents?: number | undefined;
@@ -235,7 +237,7 @@ export function createCrossReviewTool(
 ) {
   return tool({
     description:
-      "Run isolated read-only code reviewers with configured models and bounded concurrency",
+      "Legacy blocking cross-review entry point; prefer cross_review_start/status/finalize",
     args: {
       target: tool.schema.string().min(1).max(4_000),
       reviewModels: tool.schema
