@@ -179,6 +179,7 @@ describe("asynchronous cross-review protocol", () => {
     expect(client.session.promptAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.objectContaining({
+          messageID: expect.stringMatching(/^msg_[0-9a-f-]+$/),
           agent: "cross-reviewer",
           model: { providerID: "a", modelID: "one" },
           tools: expect.objectContaining({
@@ -408,6 +409,34 @@ describe("asynchronous cross-review protocol", () => {
       client.session.promptAsync.mock.calls.at(1)?.[0].body.messageID;
     expect(first).toBeDefined();
     expect(second).toBe(first);
+  });
+
+  it("migrates legacy message IDs before reviewer redispatch", async () => {
+    let timestamp = 1_000;
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store, () => timestamp);
+    await tools.cross_review_start.execute(
+      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+
+    const run = store.runs.get(RUN_ID);
+    if (run === undefined) throw new Error("test run was not created");
+    const reviewer = run.reviewers[0];
+    if (reviewer === undefined)
+      throw new Error("test reviewer was not created");
+    reviewer.messageID = "00000000-0000-4000-8000-000000000002";
+    timestamp += 15_001;
+
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+
+    expect(
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.messageID,
+    ).toBe("msg_00000000-0000-4000-8000-000000000002");
+    expect(store.runs.get(RUN_ID)?.reviewers[0]?.messageID).toBe(
+      "msg_00000000-0000-4000-8000-000000000002",
+    );
   });
 
   it("times out an ambiguous dispatch instead of retrying forever", async () => {
@@ -683,6 +712,11 @@ describe("asynchronous cross-review protocol", () => {
     });
     expect(client.session.create).toHaveBeenCalledTimes(2);
     expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+    expect(
+      client.session.promptAsync.mock.calls.every(([input]) =>
+        /^msg_[0-9a-f-]+$/.test(input.body.messageID),
+      ),
+    ).toBe(true);
     messages.set("child-2", completed("verified finding"));
 
     const finalized = output(
@@ -699,6 +733,58 @@ describe("asynchronous cross-review protocol", () => {
     expect(repeated).toEqual(finalized);
     expect(client.session.create).toHaveBeenCalledTimes(2);
     expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("migrates legacy message IDs before judge dispatch", async () => {
+    const { client, messages } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const run = store.runs.get(RUN_ID);
+    if (run === undefined || run.judge === undefined)
+      throw new Error("test judge run was not created");
+    run.judge.messageID = "00000000-0000-4000-8000-000000000003";
+    messages.set("child-1", completed("candidate"));
+
+    await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
+
+    expect(
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.messageID,
+    ).toBe("msg_00000000-0000-4000-8000-000000000003");
+    expect(store.runs.get(RUN_ID)?.judge?.messageID).toBe(
+      "msg_00000000-0000-4000-8000-000000000003",
+    );
+  });
+
+  it("preserves async prompt validation errors", async () => {
+    const { client } = mockClient();
+    client.session.promptAsync.mockResolvedValueOnce({
+      error: {
+        name: "BadRequestError",
+        data: { message: "Invalid message ID" },
+      },
+    });
+    const tools = protocol(client, new MemoryRunStore());
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      ),
+    );
+
+    expect(started.reviewers[0]).toMatchObject({
+      status: "failed",
+      error: "Reviewer 1 prompt failed: BadRequestError: Invalid message ID",
+    });
   });
 
   it("reports quorum failure after all reviewers become terminal", async () => {
