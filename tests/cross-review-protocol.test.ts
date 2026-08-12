@@ -411,6 +411,34 @@ describe("asynchronous cross-review protocol", () => {
     expect(second).toBe(first);
   });
 
+  it("migrates legacy message IDs before reviewer redispatch", async () => {
+    let timestamp = 1_000;
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store, () => timestamp);
+    await tools.cross_review_start.execute(
+      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+
+    const run = store.runs.get(RUN_ID);
+    if (run === undefined) throw new Error("test run was not created");
+    const reviewer = run.reviewers[0];
+    if (reviewer === undefined)
+      throw new Error("test reviewer was not created");
+    reviewer.messageID = "00000000-0000-4000-8000-000000000002";
+    timestamp += 15_001;
+
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+
+    expect(
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.messageID,
+    ).toBe("msg_00000000-0000-4000-8000-000000000002");
+    expect(store.runs.get(RUN_ID)?.reviewers[0]?.messageID).toBe(
+      "msg_00000000-0000-4000-8000-000000000002",
+    );
+  });
+
   it("times out an ambiguous dispatch instead of retrying forever", async () => {
     let timestamp = 1_000;
     const { client } = mockClient();
@@ -705,6 +733,35 @@ describe("asynchronous cross-review protocol", () => {
     expect(repeated).toEqual(finalized);
     expect(client.session.create).toHaveBeenCalledTimes(2);
     expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("migrates legacy message IDs before judge dispatch", async () => {
+    const { client, messages } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const run = store.runs.get(RUN_ID);
+    if (run === undefined || run.judge === undefined)
+      throw new Error("test judge run was not created");
+    run.judge.messageID = "00000000-0000-4000-8000-000000000003";
+    messages.set("child-1", completed("candidate"));
+
+    await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
+
+    expect(
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.messageID,
+    ).toBe("msg_00000000-0000-4000-8000-000000000003");
+    expect(store.runs.get(RUN_ID)?.judge?.messageID).toBe(
+      "msg_00000000-0000-4000-8000-000000000003",
+    );
   });
 
   it("preserves async prompt validation errors", async () => {

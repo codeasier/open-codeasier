@@ -149,6 +149,18 @@ function createMessageID() {
   return `msg_${randomUUID()}`;
 }
 
+function migrateMessageIDs(run: CrossReviewRun) {
+  let migrated = false;
+  const migrate = (entry: ReviewerRun | JudgeRun) => {
+    if (entry.messageID.startsWith("msg_")) return;
+    entry.messageID = `msg_${entry.messageID}`;
+    migrated = true;
+  };
+  for (const reviewer of run.reviewers) migrate(reviewer);
+  if (run.judge !== undefined) migrate(run.judge);
+  return migrated;
+}
+
 function errorProperty(error: unknown, property: "name" | "message") {
   if (typeof error !== "object" || error === null) return undefined;
   const value = (error as Record<string, unknown>)[property];
@@ -426,6 +438,7 @@ export function createCrossReviewProtocolTools(
     save: SaveRun,
     context: ProtocolContext,
   ) {
+    if (migrateMessageIDs(run)) await save();
     while (activeReviewerCount(run) < run.maxConcurrency) {
       const available = run.maxConcurrency - activeReviewerCount(run);
       const reviewers = run.reviewers
@@ -577,6 +590,7 @@ export function createCrossReviewProtocolTools(
     const judge = run.judge;
     if (judge === undefined) return;
     if (judge.status === "queued") {
+      if (migrateMessageIDs(run)) await save();
       const startedAt = now();
       judge.status = "starting";
       // Preserve the original deadline on redispatch so an ambiguous judge
