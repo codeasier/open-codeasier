@@ -39,11 +39,13 @@
   },
   "dependencies": {
     "@opencode-ai/plugin": "1.14.49",
-    "@opencode-ai/sdk": "1.14.49"
+    "@opencode-ai/sdk": "1.14.49",
+    "proper-lockfile": "^4.1.2"
   },
   "devDependencies": {
     "@eslint/js": "9.30.1",
     "@types/node": "22.15.32",
+    "@types/proper-lockfile": "^4.1.4",
     "eslint": "9.30.1",
     "prettier": "3.6.2",
     "typescript": "5.8.3",

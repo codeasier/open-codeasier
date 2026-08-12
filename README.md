@@ -113,11 +113,16 @@ A `reviewers` array defines the exact reviewer set and gives each reviewer its o
 }
 ```
 
-Optional per-invocation overrides keep working: `--review-models`, `--agents`, `--max-concurrency`, `--judge-model`, and `--focus`; any explicit argument wins over configuration. Model names are exact OpenCode `provider/model` identifiers reported by `opencode models`.
+Optional per-invocation overrides keep working: `--review-models`, `--agents`, `--max-concurrency`, `--judge-model`, `--focus`, and `--reviewer-timeout-ms`; any explicit argument wins over configuration. Model names are exact OpenCode `provider/model` identifiers reported by `opencode models`.
 
-The `cross_review` plugin tool creates isolated OpenCode SDK sessions. While a review runs, tool metadata reports queued, running, and completed reviewers plus each created child session ID. Each reviewer uses the installed `cross-reviewer` agent, receives the same normalized target, and cannot access another reviewer's output. The agent denies edit, shell, and delegation permissions, while each SDK prompt also disables mutating and delegation tools.
+Cross-review uses a finite asynchronous protocol instead of waiting inside one custom tool call. `cross_review_start` validates models, creates isolated reviewer sessions, dispatches up to the concurrency limit with the OpenCode asynchronous prompt API, and immediately returns a persistent `runID` plus child session provenance. `cross_review_status` reports visible progress, times out overdue work, and dispatches queued reviewers. `cross_review_cancel` stops unfinished sessions, and `cross_review_finalize` applies quorum and returns candidates for parent judging or starts and later collects an explicit judge.
+
+Run manifests are stored outside the repository in the platform state directory, scoped to the parent session and canonical project directory. This lets a restarted plugin inspect, cancel, or finalize existing runs without dirtying the worktree. Normal status polling omits completed review text to avoid repeatedly adding it to parent context; finalization returns the complete candidates once.
+
+Each reviewer uses the installed `cross-reviewer` agent, receives the same normalized target, and cannot access another reviewer's output. The agent denies edit, shell, and delegation permissions, while each SDK prompt also disables mutating and delegation tools. The original blocking `cross_review` tool remains available for one compatibility release, but the bundled skill does not call it.
 
 - `--agents` and `--max-concurrency` accept 1-8 and default to 3.
+- `--reviewer-timeout-ms` accepts 5000-3600000 and defaults to 600000. A timeout is enforced by the next status or finalize reconciliation, which aborts the overdue child and allows queued work and quorum evaluation to proceed.
 - `--judge-model` and the configured `judgeModel` are optional. Without one, or when an invocation supplies a blank value, the parent session verifies, deduplicates, calibrates, and consolidates findings; a configured `judgeModel` launches a read-only judge session with that explicit model. Setting `--judge-model` overrides the configured value.
 - Malformed or unavailable models fail explicitly. Reviewer failures are isolated, but a majority quorum is required; cancellation stops outstanding OpenCode reviewer sessions.
 

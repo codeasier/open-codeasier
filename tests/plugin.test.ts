@@ -43,6 +43,10 @@ describe("plugin module", () => {
     } as any);
     expect(Object.keys(hooks.tool ?? {})).toEqual([
       "cross_review",
+      "cross_review_start",
+      "cross_review_status",
+      "cross_review_cancel",
+      "cross_review_finalize",
       "session_review",
     ]);
     expect(hooks.tool).toHaveProperty("session_review");

@@ -187,8 +187,13 @@ describe("workflow generator", () => {
       "recommend a reviewer set and an optional judge drawn only from that list",
     );
     expect(openCrossReview).toContain(
-      "If it is unavailable, stop immediately; do not substitute task agents",
+      "If any are unavailable, stop immediately; do not use the legacy blocking",
     );
+    expect(openCrossReview).toContain("Call `cross_review_start` once");
+    expect(openCrossReview).toContain("Poll with `cross_review_status`");
+    expect(openCrossReview).toContain("Call `cross_review_finalize`");
+    expect(openCrossReview).toContain("Use `cross_review_cancel`");
+    expect(openCrossReview).toContain("`--reviewer-timeout-ms`");
     expect(openCrossReview).toContain(
       ".opencode/.open-codeasier/installed-assets.json",
     );
