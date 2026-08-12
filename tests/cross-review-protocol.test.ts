@@ -179,6 +179,7 @@ describe("asynchronous cross-review protocol", () => {
     expect(client.session.promptAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         body: expect.objectContaining({
+          messageID: expect.stringMatching(/^msg_[0-9a-f-]+$/),
           agent: "cross-reviewer",
           model: { providerID: "a", modelID: "one" },
           tools: expect.objectContaining({
@@ -683,6 +684,11 @@ describe("asynchronous cross-review protocol", () => {
     });
     expect(client.session.create).toHaveBeenCalledTimes(2);
     expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+    expect(
+      client.session.promptAsync.mock.calls.every(([input]) =>
+        /^msg_[0-9a-f-]+$/.test(input.body.messageID),
+      ),
+    ).toBe(true);
     messages.set("child-2", completed("verified finding"));
 
     const finalized = output(
@@ -699,6 +705,29 @@ describe("asynchronous cross-review protocol", () => {
     expect(repeated).toEqual(finalized);
     expect(client.session.create).toHaveBeenCalledTimes(2);
     expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves async prompt validation errors", async () => {
+    const { client } = mockClient();
+    client.session.promptAsync.mockResolvedValueOnce({
+      error: {
+        name: "BadRequestError",
+        data: { message: "Invalid message ID" },
+      },
+    });
+    const tools = protocol(client, new MemoryRunStore());
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      ),
+    );
+
+    expect(started.reviewers[0]).toMatchObject({
+      status: "failed",
+      error: "Reviewer 1 prompt failed: BadRequestError: Invalid message ID",
+    });
   });
 
   it("reports quorum failure after all reviewers become terminal", async () => {

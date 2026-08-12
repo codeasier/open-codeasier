@@ -141,7 +141,12 @@ async function canonicalizeDirectory(directory: string) {
 }
 
 function asyncResponse(result: ApiResult<void>, operation: string) {
-  if (result.error !== undefined) throw new Error(`${operation} failed`);
+  if (result.error !== undefined)
+    throw new Error(messageError(result.error, operation));
+}
+
+function createMessageID() {
+  return `msg_${randomUUID()}`;
 }
 
 function errorProperty(error: unknown, property: "name" | "message") {
@@ -879,7 +884,7 @@ export function createCrossReviewProtocolTools(
             model: reviewer.model,
             ...(reviewer.focus === undefined ? {} : { focus: reviewer.focus }),
             sessionID: childSessions[index] as string,
-            messageID: randomUUID(),
+            messageID: createMessageID(),
             status: "queued",
           })),
           ...(judgeModel === undefined || judgeSessionID === undefined
@@ -888,7 +893,7 @@ export function createCrossReviewProtocolTools(
                 judge: {
                   model: judgeModel,
                   sessionID: judgeSessionID,
-                  messageID: randomUUID(),
+                  messageID: createMessageID(),
                   status: "queued" as const,
                 },
               }),
