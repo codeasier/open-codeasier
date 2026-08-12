@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-08-13
+
+### Fixed
+
+- Fix cross-review failing all reviewers because `promptAsync` received an
+  invalid message ID, and migrate legacy cross-review message IDs to valid
+  ones so existing runs keep working.
+
 ## [0.2.5] - 2026-08-13
 
 ### Fixed
@@ -108,7 +116,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/codeasier/open-codeasier/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/codeasier/open-codeasier/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/codeasier/open-codeasier/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/codeasier/open-codeasier/compare/v0.2.2...v0.2.3
