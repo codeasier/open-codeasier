@@ -206,10 +206,13 @@ describe("workflow generator", () => {
       "read it first and detect its reviewer format",
     );
     expect(openCrossReview).toContain(
-      "an existing `reviewers` array, a flat `reviewModels` list, a model-free `{}` created by `init`",
+      "an existing `reviewers` array, a flat `reviewModels` list, a config without any reviewer key",
     );
     expect(openCrossReview).toContain(
-      "For a new destination, a model-free `{}`, or an existing `reviewers` destination, collect an optional focus for each reviewer",
+      "the model-free `{}` created by `init`, or only non-reviewer keys such as `agents`, `judgeModel`, or `maxConcurrency`",
+    );
+    expect(openCrossReview).toContain(
+      "For a new destination, an existing config without a reviewer key, or an existing `reviewers` destination, collect an optional focus for each reviewer",
     );
     expect(openCrossReview).toContain(
       "preserve its detected `reviewers` or `reviewModels` format",
@@ -218,7 +221,7 @@ describe("workflow generator", () => {
       "never write `reviewers` alongside an existing `reviewModels`",
     );
     expect(openCrossReview).toContain(
-      "ask the user which format to retain and rewrite it with only that key, removing the other",
+      "ask the user which of `reviewers` and `reviewModels` to retain, then write that key only, dropping the other while keeping every remaining key such as `agents`, `judgeModel`, and `focus`",
     );
     expect(openCrossReview).toContain(
       "for an existing `reviewModels` destination, collect the flat model list plus one optional shared `focus`",
