@@ -202,6 +202,24 @@ describe("workflow generator", () => {
     );
     expect(openCrossReview).toContain("restart OpenCode afterward");
     expect(openCrossReview).not.toContain("provider/...` placeholder");
+    expect(openCrossReview).toContain(
+      "read it first and detect its reviewer format",
+    );
+    expect(openCrossReview).toContain(
+      "a `reviewers` array or a flat `reviewModels` list",
+    );
+    expect(openCrossReview).toContain(
+      "preserve its detected `reviewers` or `reviewModels` format",
+    );
+    expect(openCrossReview).toContain(
+      "never write `reviewers` alongside an existing `reviewModels`",
+    );
+    expect(openCrossReview).toContain(
+      "for an existing `reviewModels` destination, collect the flat model list plus one optional shared `focus`",
+    );
+    expect(openCrossReview).not.toContain(
+      "then collect an optional focus for each reviewer and max concurrency",
+    );
     const openAgent = await readFile(
       join(open.target, "agents/cross-reviewer.md"),
       "utf8",
