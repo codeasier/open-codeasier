@@ -16,6 +16,7 @@ export type CrossReviewConfig = {
   maxConcurrency?: number;
   judgeModel?: string;
   focus?: string;
+  reviewerTimeoutMs?: number;
 };
 
 export type CrossReviewConfigSource = "loaded" | "absent";
@@ -39,6 +40,7 @@ const CONFIG_KEYS = [
   "maxConcurrency",
   "judgeModel",
   "focus",
+  "reviewerTimeoutMs",
 ] as const;
 
 function invalid(source: string, message: string): never {
@@ -55,6 +57,15 @@ function isBound(value: unknown): value is number {
     Number.isInteger(value) &&
     value >= 1 &&
     value <= 8
+  );
+}
+
+function isReviewerTimeoutMs(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 5_000 &&
+    value <= 3_600_000
   );
 }
 
@@ -109,6 +120,14 @@ export function parseCrossReviewConfig(
     invalid(source, "`judgeModel` must be a `provider/model` identifier");
   if (config.focus !== undefined && typeof config.focus !== "string")
     invalid(source, "`focus` must be a string");
+  if (
+    config.reviewerTimeoutMs !== undefined &&
+    !isReviewerTimeoutMs(config.reviewerTimeoutMs)
+  )
+    invalid(
+      source,
+      "`reviewerTimeoutMs` must be an integer from 5000 to 3600000",
+    );
 
   const parsed: CrossReviewConfig = {};
   if (config.reviewers !== undefined) parsed.reviewers = config.reviewers;
@@ -119,6 +138,8 @@ export function parseCrossReviewConfig(
     parsed.maxConcurrency = config.maxConcurrency;
   if (config.judgeModel !== undefined) parsed.judgeModel = config.judgeModel;
   if (config.focus !== undefined) parsed.focus = config.focus;
+  if (config.reviewerTimeoutMs !== undefined)
+    parsed.reviewerTimeoutMs = config.reviewerTimeoutMs;
   return parsed;
 }
 
@@ -226,6 +247,8 @@ export async function loadCrossReviewConfig(
     if (project.judgeModel !== undefined)
       merged.judgeModel = project.judgeModel;
     if (project.focus !== undefined) merged.focus = project.focus;
+    if (project.reviewerTimeoutMs !== undefined)
+      merged.reviewerTimeoutMs = project.reviewerTimeoutMs;
     config = merged;
   } else if (project !== undefined) {
     config = project;

@@ -31,6 +31,7 @@ describe("cross-review configuration", () => {
       maxConcurrency: 2,
       judgeModel: "a/one",
       focus: "security",
+      reviewerTimeoutMs: 900_000,
     });
     expect(config).toEqual({
       reviewModels: ["a/one", "b/two"],
@@ -38,6 +39,7 @@ describe("cross-review configuration", () => {
       maxConcurrency: 2,
       judgeModel: "a/one",
       focus: "security",
+      reviewerTimeoutMs: 900_000,
     });
   });
 
@@ -95,6 +97,36 @@ describe("cross-review configuration", () => {
     expect(() =>
       parseCrossReviewConfig("test", { reviewModels: ["a/one"], focus: 1 }),
     ).toThrow(/`focus` must be a string/);
+    expect(() =>
+      parseCrossReviewConfig("test", {
+        reviewModels: ["a/one"],
+        reviewerTimeoutMs: 4_999,
+      }),
+    ).toThrow(/`reviewerTimeoutMs` must be an integer from 5000 to 3600000/);
+    expect(() =>
+      parseCrossReviewConfig("test", {
+        reviewModels: ["a/one"],
+        reviewerTimeoutMs: 3_600_001,
+      }),
+    ).toThrow(/`reviewerTimeoutMs` must be an integer from 5000 to 3600000/);
+    expect(() =>
+      parseCrossReviewConfig("test", {
+        reviewModels: ["a/one"],
+        reviewerTimeoutMs: 600_000.5,
+      }),
+    ).toThrow(/`reviewerTimeoutMs` must be an integer from 5000 to 3600000/);
+    expect(() =>
+      parseCrossReviewConfig("test", {
+        reviewModels: ["a/one"],
+        reviewerTimeoutMs: "600000",
+      }),
+    ).toThrow(/`reviewerTimeoutMs` must be an integer from 5000 to 3600000/);
+    expect(() =>
+      parseCrossReviewConfig("test", {
+        reviewModels: ["a/one"],
+        reviewerTimeoutMs: 5_000,
+      }),
+    ).not.toThrow();
   });
 
   it("loads an empty config when no files exist", async () => {
@@ -127,6 +159,7 @@ describe("cross-review configuration", () => {
         reviewModels: ["a/one", "b/two"],
         agents: 3,
         judgeModel: "a/one",
+        reviewerTimeoutMs: 900_000,
       }),
     );
     await mkdir(join(root, ".opencode"), { recursive: true });
@@ -139,6 +172,30 @@ describe("cross-review configuration", () => {
       reviewModels: ["a/one", "b/two"],
       agents: 5,
       judgeModel: "b/two",
+      reviewerTimeoutMs: 900_000,
+    });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
+  });
+
+  it("lets a project reviewerTimeoutMs override the global value", async () => {
+    const root = await fixture();
+    await mkdir(join(root, ".config", "opencode"), { recursive: true });
+    await writeFile(
+      globalConfigPath(root),
+      JSON.stringify({
+        reviewModels: ["a/one"],
+        reviewerTimeoutMs: 900_000,
+      }),
+    );
+    await mkdir(join(root, ".opencode"), { recursive: true });
+    await writeFile(
+      projectConfigPath(root),
+      JSON.stringify({ reviewerTimeoutMs: 1_200_000 }),
+    );
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({
+      reviewModels: ["a/one"],
+      reviewerTimeoutMs: 1_200_000,
     });
     expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
   });

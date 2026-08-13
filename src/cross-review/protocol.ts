@@ -888,7 +888,9 @@ export function createCrossReviewProtocolTools(
           quorum: Math.floor(reviewers.length / 2) + 1,
           maxConcurrency,
           reviewerTimeoutMs:
-            args.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS,
+            args.reviewerTimeoutMs ??
+            loaded.config.reviewerTimeoutMs ??
+            DEFAULT_REVIEWER_TIMEOUT_MS,
           ...(judgeModel === undefined ? {} : { judgeModel }),
           configSources: loaded.sources,
           projectConfigPath: loaded.projectPath,
