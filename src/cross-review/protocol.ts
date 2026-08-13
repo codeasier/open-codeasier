@@ -29,10 +29,6 @@ import {
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1_000;
 const DEFAULT_POLL_AFTER_MS = 3_000;
-// The `pollAfterMs` value returned to the parent is a suggestion for how long
-// to wait before polling `cross_review_status` again. Keep it bounded so a
-// poll never degrades to a multi-minute fallback.
-const MAX_POLL_AFTER_MS = 60_000;
 const SDK_REQUEST_TIMEOUT_MS = 15_000;
 const STARTING_GRACE_MS = 15_000;
 
@@ -316,7 +312,7 @@ function progress(run: CrossReviewRun, includeOutputs = false) {
     counts[reviewer.status] = (counts[reviewer.status] ?? 0) + 1;
   const pollAfterMs =
     run.phase === "reviewing" || run.phase === "judging"
-      ? Math.min(DEFAULT_POLL_AFTER_MS, MAX_POLL_AFTER_MS)
+      ? DEFAULT_POLL_AFTER_MS
       : undefined;
   return {
     runID: run.runID,
