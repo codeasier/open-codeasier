@@ -29,6 +29,10 @@ import {
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1_000;
 const DEFAULT_POLL_AFTER_MS = 3_000;
+// The `pollAfterMs` value returned to the parent is a suggestion for how long
+// to wait before polling `cross_review_status` again. Keep it bounded so a
+// poll never degrades to a multi-minute fallback.
+const MAX_POLL_AFTER_MS = 60_000;
 const SDK_REQUEST_TIMEOUT_MS = 15_000;
 const STARTING_GRACE_MS = 15_000;
 
@@ -310,6 +314,10 @@ function progress(run: CrossReviewRun, includeOutputs = false) {
   const counts: Record<string, number> = {};
   for (const reviewer of run.reviewers)
     counts[reviewer.status] = (counts[reviewer.status] ?? 0) + 1;
+  const pollAfterMs =
+    run.phase === "reviewing" || run.phase === "judging"
+      ? Math.min(DEFAULT_POLL_AFTER_MS, MAX_POLL_AFTER_MS)
+      : undefined;
   return {
     runID: run.runID,
     phase: run.phase,
@@ -317,17 +325,63 @@ function progress(run: CrossReviewRun, includeOutputs = false) {
     quorum: run.quorum,
     counts,
     readyToFinalize: run.phase === "reviewing" && reviewersTerminal(run),
-    pollAfterMs:
-      run.phase === "reviewing" || run.phase === "judging"
-        ? DEFAULT_POLL_AFTER_MS
-        : undefined,
+    pollAfterMs,
     reviewers: run.reviewers.map((reviewer) =>
       publicReviewer(reviewer, includeOutputs),
     ),
     ...(run.judge === undefined
       ? {}
       : { judge: publicJudge(run.judge, includeOutputs) }),
+    summary: progressSummary(run, counts, pollAfterMs),
   };
+}
+
+function progressSummary(
+  run: CrossReviewRun,
+  counts: Record<string, number>,
+  pollAfterMs: number | undefined,
+): string {
+  const lines: string[] = [];
+  lines.push(`Cross-review ${run.phase} for ${run.target}`);
+  const total = run.reviewers.length;
+  const ordered = [
+    "succeeded",
+    "running",
+    "starting",
+    "retrying",
+    "queued",
+    "timed_out",
+    "failed",
+    "cancelled",
+  ] as const;
+  const present = ordered.filter((status) => (counts[status] ?? 0) > 0);
+  if (present.length === 0) {
+    lines.push(`- ${total} reviewer(s) pending`);
+  } else {
+    for (const status of present)
+      lines.push(`- ${counts[status]} ${status} of ${total}`);
+  }
+  for (const reviewer of run.reviewers) {
+    const label = [reviewer.reviewer, reviewer.model]
+      .filter(Boolean)
+      .join(": ");
+    let detail = `${label} — ${reviewer.status}`;
+    if (reviewer.retry !== undefined)
+      detail += ` (retry ${reviewer.retry.attempt}: ${reviewer.retry.message})`;
+    if (reviewer.error !== undefined) detail += ` — ${reviewer.error}`;
+    lines.push(`  ${detail}`);
+  }
+  if (run.judge !== undefined) {
+    const judge = run.judge;
+    let detail = `judge (${judge.model}) — ${judge.status}`;
+    if (judge.retry !== undefined)
+      detail += ` (retry ${judge.retry.attempt}: ${judge.retry.message})`;
+    if (judge.error !== undefined) detail += ` — ${judge.error}`;
+    lines.push(`  ${detail}`);
+  }
+  if (pollAfterMs !== undefined)
+    lines.push(`poll again after ${Math.round(pollAfterMs / 1000)}s`);
+  return lines.join("\n");
 }
 
 function result(title: string, output: Record<string, unknown>) {

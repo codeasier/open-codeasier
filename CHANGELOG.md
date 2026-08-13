@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Surface each reviewer's own progress in `cross_review_status` through a
+  readable per-reviewer `summary`, and cap the returned `pollAfterMs` hint at
+  60 seconds so polling never degrades to a multi-minute fallback.
+
 ## [0.2.6] - 2026-08-13
 
 ### Fixed
