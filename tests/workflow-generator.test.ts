@@ -206,13 +206,19 @@ describe("workflow generator", () => {
       "read it first and detect its reviewer format",
     );
     expect(openCrossReview).toContain(
-      "a `reviewers` array or a flat `reviewModels` list",
+      "an existing `reviewers` array, a flat `reviewModels` list, a model-free `{}` created by `init`",
+    );
+    expect(openCrossReview).toContain(
+      "For a new destination, a model-free `{}`, or an existing `reviewers` destination, collect an optional focus for each reviewer",
     );
     expect(openCrossReview).toContain(
       "preserve its detected `reviewers` or `reviewModels` format",
     );
     expect(openCrossReview).toContain(
       "never write `reviewers` alongside an existing `reviewModels`",
+    );
+    expect(openCrossReview).toContain(
+      "ask the user which format to retain and rewrite it with only that key, removing the other",
     );
     expect(openCrossReview).toContain(
       "for an existing `reviewModels` destination, collect the flat model list plus one optional shared `focus`",
