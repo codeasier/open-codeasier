@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 import {
   configWarning,
+  embeddedContext,
   errorMessage,
   gatherBrief,
   type ApiResult,
@@ -40,9 +41,9 @@ type SessionStatus =
   | { type: "retry"; attempt: number; message: string; next: number };
 
 type SessionMessage = {
-  id?: string;
-  parentID?: string;
   info: {
+    id?: string;
+    parentID?: string;
     role: "user" | "assistant";
     time: { created: number; completed?: number };
     error?: unknown;
@@ -208,12 +209,12 @@ function terminalOutcome(
     (message) => message.info.role === "assistant",
   );
   const hasParentData = assistantMessages.some(
-    (message) => message.parentID !== undefined,
+    (message) => message.info.parentID !== undefined,
   );
   const candidates =
     expectedParentID !== undefined && hasParentData
       ? assistantMessages.filter(
-          (message) => message.parentID === expectedParentID,
+          (message) => message.info.parentID === expectedParentID,
         )
       : assistantMessages;
   let assistant: SessionMessage | undefined;
@@ -508,7 +509,7 @@ function judgePrompt(run: CrossReviewRun): AsyncPrompt["body"] {
             ? []
             : [
                 "Shared target context (already gathered; verify findings against it):",
-                run.context,
+                embeddedContext(run.context) ?? "",
               ]),
           "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
           "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
@@ -843,7 +844,7 @@ export function createCrossReviewProtocolTools(
     // but keep the original deadline so it eventually times out.
     const judgePromptVisible = messages.some(
       (message) =>
-        message.info.role === "user" && message.id === judge.messageID,
+        message.info.role === "user" && message.info.id === judge.messageID,
     );
     if (
       !judgePromptVisible &&

@@ -144,6 +144,15 @@ export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+export const MAX_EMBEDDED_CONTEXT_LENGTH = 100_000;
+
+export function embeddedContext(context: string): string | undefined {
+  if (context.length === 0) return undefined;
+  if (context.length <= MAX_EMBEDDED_CONTEXT_LENGTH) return context;
+  const omitted = context.length - MAX_EMBEDDED_CONTEXT_LENGTH;
+  return `${context.slice(0, MAX_EMBEDDED_CONTEXT_LENGTH)}\n[...context truncated: ${omitted} chars omitted...]`;
+}
+
 export function reviewBrief(target: string, focus?: string, context?: string) {
   return [
     "Independently review the specified target. Remain read-only.",
@@ -153,7 +162,7 @@ export function reviewBrief(target: string, focus?: string, context?: string) {
       ? []
       : [
           "Shared target context (already gathered; verify findings against it):",
-          context,
+          embeddedContext(context) ?? "",
         ]),
     "Prioritize correctness defects, security risks, behavioral regressions, and missing tests.",
     "Verify each finding against repository evidence. Report only actionable findings with severity and file/line references; state explicitly when there are no findings.",
@@ -645,7 +654,7 @@ export function createCrossReviewTool(
                             ? []
                             : [
                                 "Shared target context (already gathered; verify findings against it):",
-                                providedContext,
+                                embeddedContext(providedContext) ?? "",
                               ]),
                           "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
                           "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",

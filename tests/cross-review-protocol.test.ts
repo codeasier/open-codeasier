@@ -63,9 +63,9 @@ function context(sessionID = "parent", abort = new AbortController()) {
 }
 
 type TestMessage = {
-  id?: string;
-  parentID?: string;
   info: {
+    id?: string;
+    parentID?: string;
     role: "user" | "assistant";
     time: { created: number; completed?: number };
     error?: unknown;
@@ -76,8 +76,7 @@ type TestMessage = {
 
 function userMessage(id: string, created = 1): TestMessage {
   return {
-    id,
-    info: { role: "user", time: { created } },
+    info: { id, role: "user", time: { created } },
     parts: [],
   };
 }
@@ -88,8 +87,8 @@ function assistantMessage(
   created = 10,
 ): TestMessage {
   return {
-    parentID,
     info: {
+      parentID,
       role: "assistant",
       time: { created, completed: created + 1 },
       finish: "stop",
@@ -1041,6 +1040,32 @@ describe("asynchronous cross-review protocol", () => {
     expect(
       client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text,
     ).toContain("context gatherer");
+  });
+
+  it("truncates an oversized gathered context in reviewer briefs", async () => {
+    const { client, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const oversized = `start-${"x".repeat(100_100)}-end`;
+    messages.set("child-2", completed(oversized));
+
+    const status = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+    expect(status.phase).toBe("reviewing");
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("start-");
+    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("-end");
   });
 
   it("rejects an empty context through the argument schema", async () => {
