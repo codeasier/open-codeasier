@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-08-14
+
 ### Added
 
 - Support an optional `reviewerTimeoutMs` key (5000-3600000, default 600000)
