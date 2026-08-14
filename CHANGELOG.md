@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Surface each reviewer's own progress in `cross_review_status` through a
+  readable per-reviewer `summary` of every reviewer's and the judge's status.
 - Keep cross-review setup on the destination's existing `reviewers` or
   `reviewModels` format instead of writing a conflicting `reviewers` array
   into a flat `reviewModels` config.

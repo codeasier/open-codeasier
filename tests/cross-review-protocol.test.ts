@@ -245,6 +245,12 @@ describe("asynchronous cross-review protocol", () => {
 
     expect(status.counts).toEqual({ succeeded: 1, running: 1, starting: 1 });
     expect(status.reviewers[0]).not.toHaveProperty("output");
+    expect(status.pollAfterMs).toBe(3_000);
+    expect(status.summary).toContain("1 succeeded of 3");
+    expect(status.summary).toContain("1 running of 3");
+    expect(status.summary).toContain("1 starting of 3");
+    expect(status.summary).toContain("a/one — succeeded");
+    expect(status.summary).toContain("poll again after");
     expect(client.session.promptAsync).toHaveBeenCalledTimes(3);
     expect(client.session.promptAsync).toHaveBeenLastCalledWith(
       expect.objectContaining({ path: { id: "child-3" } }),
@@ -596,6 +602,7 @@ describe("asynchronous cross-review protocol", () => {
         { status: "succeeded", output: "candidate despite status failure" },
       ],
     });
+    expect(finalized.pollAfterMs).toBeUndefined();
   });
 
   it("isolates child message lookup failures from other reviewer progress", async () => {
