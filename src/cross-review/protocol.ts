@@ -5,6 +5,7 @@ import { tool } from "@opencode-ai/plugin";
 import {
   configWarning,
   errorMessage,
+  gatherBrief,
   type ApiResult,
   READ_ONLY_TOOLS,
   responseData,
@@ -20,6 +21,7 @@ import {
   RUN_SCHEMA_VERSION,
   type CrossReviewRun,
   type CrossReviewRunStore,
+  type GathererRun,
   type JudgeRun,
   type ReviewerRun,
   type ReviewerRunStatus,
@@ -151,12 +153,13 @@ function createMessageID() {
 
 function migrateMessageIDs(run: CrossReviewRun) {
   let migrated = false;
-  const migrate = (entry: ReviewerRun | JudgeRun) => {
+  const migrate = (entry: ReviewerRun | GathererRun | JudgeRun) => {
     if (entry.messageID.startsWith("msg_")) return;
     entry.messageID = `msg_${entry.messageID}`;
     migrated = true;
   };
   for (const reviewer of run.reviewers) migrate(reviewer);
+  if (run.gatherer !== undefined) migrate(run.gatherer);
   if (run.judge !== undefined) migrate(run.judge);
   return migrated;
 }
@@ -284,6 +287,35 @@ function publicReviewer(reviewer: ReviewerRun, includeOutputs: boolean) {
   };
 }
 
+function publicGatherer(
+  gatherer: GathererRun | undefined,
+  includeOutput: boolean,
+) {
+  if (gatherer === undefined) return undefined;
+  return {
+    model: gatherer.model,
+    sessionID: gatherer.sessionID,
+    status: gatherer.status,
+    ...(gatherer.startedAt === undefined
+      ? {}
+      : { startedAt: gatherer.startedAt }),
+    ...(gatherer.deadlineAt === undefined
+      ? {}
+      : { deadlineAt: gatherer.deadlineAt }),
+    ...(gatherer.latestActivityAt === undefined
+      ? {}
+      : { latestActivityAt: gatherer.latestActivityAt }),
+    ...(gatherer.completedAt === undefined
+      ? {}
+      : { completedAt: gatherer.completedAt }),
+    ...(gatherer.retry === undefined ? {} : { retry: gatherer.retry }),
+    ...(gatherer.error === undefined ? {} : { error: gatherer.error }),
+    ...(!includeOutput || gatherer.output === undefined
+      ? {}
+      : { output: gatherer.output }),
+  };
+}
+
 function publicJudge(judge: JudgeRun | undefined, includeOutput: boolean) {
   if (judge === undefined) return undefined;
   return {
@@ -311,7 +343,9 @@ function progress(run: CrossReviewRun, includeOutputs = false) {
   for (const reviewer of run.reviewers)
     counts[reviewer.status] = (counts[reviewer.status] ?? 0) + 1;
   const pollAfterMs =
-    run.phase === "reviewing" || run.phase === "judging"
+    run.phase === "gathering" ||
+    run.phase === "reviewing" ||
+    run.phase === "judging"
       ? DEFAULT_POLL_AFTER_MS
       : undefined;
   return {
@@ -325,6 +359,9 @@ function progress(run: CrossReviewRun, includeOutputs = false) {
     reviewers: run.reviewers.map((reviewer) =>
       publicReviewer(reviewer, includeOutputs),
     ),
+    ...(run.gatherer === undefined
+      ? {}
+      : { gatherer: publicGatherer(run.gatherer, includeOutputs) }),
     ...(run.judge === undefined
       ? {}
       : { judge: publicJudge(run.judge, includeOutputs) }),
@@ -367,6 +404,14 @@ function progressSummary(
     if (reviewer.error !== undefined) detail += ` — ${reviewer.error}`;
     lines.push(`  ${detail}`);
   }
+  if (run.gatherer !== undefined) {
+    const gatherer = run.gatherer;
+    let detail = `gatherer (${gatherer.model}) — ${gatherer.status}`;
+    if (gatherer.retry !== undefined)
+      detail += ` (retry ${gatherer.retry.attempt}: ${gatherer.retry.message})`;
+    if (gatherer.error !== undefined) detail += ` — ${gatherer.error}`;
+    lines.push(`  ${detail}`);
+  }
   if (run.judge !== undefined) {
     const judge = run.judge;
     let detail = `judge (${judge.model}) — ${judge.status}`;
@@ -399,7 +444,29 @@ function reviewerPrompt(
     messageID: reviewer.messageID,
     agent: REVIEWER_AGENT,
     model: splitModel(reviewer.model),
-    parts: [{ type: "text", text: reviewBrief(run.target, reviewer.focus) }],
+    parts: [
+      {
+        type: "text",
+        text: reviewBrief(
+          run.target,
+          reviewer.focus,
+          run.context ?? run.gatherer?.output,
+        ),
+      },
+    ],
+    tools: READ_ONLY_TOOLS,
+  };
+}
+
+function gatherPrompt(
+  run: CrossReviewRun,
+  gatherer: GathererRun,
+): AsyncPrompt["body"] {
+  return {
+    messageID: gatherer.messageID,
+    agent: REVIEWER_AGENT,
+    model: splitModel(gatherer.model),
+    parts: [{ type: "text", text: gatherBrief(run.target) }],
     tools: READ_ONLY_TOOLS,
   };
 }
@@ -417,6 +484,12 @@ function judgePrompt(run: CrossReviewRun): AsyncPrompt["body"] {
         text: [
           "Act as the read-only cross-review judge.",
           `Target: ${run.target}`,
+          ...(run.context === undefined || run.context.length === 0
+            ? []
+            : [
+                "Shared target context (already gathered; verify findings against it):",
+                run.context,
+              ]),
           "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
           "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
           JSON.stringify(
@@ -756,6 +829,144 @@ export function createCrossReviewProtocolTools(
     judge.status = "starting";
   }
 
+  async function reconcileGatherer(
+    run: CrossReviewRun,
+    statuses: Record<string, SessionStatus>,
+    save: SaveRun,
+    context: ProtocolContext,
+  ) {
+    const gatherer = run.gatherer;
+    if (gatherer === undefined) return;
+    if (gatherer.status === "queued") {
+      if (migrateMessageIDs(run)) await save();
+      const startedAt = now();
+      gatherer.status = "starting";
+      // Preserve the original deadline on redispatch so an ambiguous gatherer
+      // prompt cannot retry forever.
+      if (gatherer.startedAt === undefined) {
+        gatherer.startedAt = startedAt;
+        gatherer.deadlineAt = startedAt + run.reviewerTimeoutMs;
+      }
+      delete gatherer.error;
+      await save();
+      try {
+        asyncResponse(
+          await client.session.promptAsync({
+            body: gatherPrompt(run, gatherer),
+            path: { id: gatherer.sessionID },
+            query: { directory: run.directory },
+            signal: requestSignal(context.abort),
+          }),
+          "Gather prompt",
+        );
+      } catch (error) {
+        const dispatchError = errorMessage(error);
+        try {
+          await abortSession(gatherer.sessionID, run.directory);
+          gatherer.status = context.abort.aborted ? "cancelled" : "failed";
+          gatherer.completedAt = now();
+          gatherer.error = dispatchError;
+        } catch (abortError) {
+          gatherer.status = "starting";
+          gatherer.error = `${dispatchError}; ${errorMessage(abortError)}`;
+        }
+        await save();
+      }
+      return;
+    }
+    if (
+      gatherer.status !== "starting" &&
+      gatherer.status !== "running" &&
+      gatherer.status !== "retrying"
+    )
+      return;
+    const timestamp = now();
+    const deadlineReached =
+      gatherer.deadlineAt !== undefined && timestamp >= gatherer.deadlineAt;
+    const timeoutGatherer = async () => {
+      let abortWarning: string | undefined;
+      try {
+        await abortSession(gatherer.sessionID, run.directory);
+      } catch (error) {
+        abortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
+      }
+      gatherer.status = "timed_out";
+      gatherer.completedAt = timestamp;
+      gatherer.error = `Gatherer timed out after ${run.reviewerTimeoutMs}ms${abortWarning ?? ""}`;
+      delete gatherer.retry;
+    };
+    // Gathering is an optimization: when it fails or times out, degrade to
+    // independent fetching rather than failing the whole review. On success
+    // the gathered output becomes the shared context reviewers must verify
+    // against; it stays in the judge session's own history, so the later
+    // judge prompt does not need to repeat it.
+    const transitionToReviewing = async () => {
+      run.phase = "reviewing";
+      await save();
+      await dispatchAvailable(run, save, context);
+    };
+    const status = statuses[gatherer.sessionID];
+    if (status?.type === "busy" && !deadlineReached) {
+      gatherer.status = "running";
+      delete gatherer.retry;
+      delete gatherer.error;
+      return;
+    }
+    if (status?.type === "retry" && !deadlineReached) {
+      gatherer.status = "retrying";
+      gatherer.retry = {
+        attempt: status.attempt,
+        message: status.message,
+        next: status.next,
+      };
+      return;
+    }
+
+    let messages: SessionMessage[];
+    try {
+      messages = await sessionMessages(gatherer.sessionID, run, context);
+    } catch (error) {
+      if (deadlineReached) {
+        await timeoutGatherer();
+        gatherer.error = `${gatherer.error}; status unavailable: ${errorMessage(error)}`;
+        await transitionToReviewing();
+      } else {
+        gatherer.error = `Gatherer status unavailable: ${errorMessage(error)}`;
+      }
+      return;
+    }
+    const outcome = terminalOutcome(messages, "Gather prompt");
+    if (outcome !== undefined) {
+      gatherer.status = outcome.status;
+      gatherer.completedAt = timestamp;
+      gatherer.latestActivityAt = outcome.latestActivityAt;
+      if (outcome.output !== undefined) gatherer.output = outcome.output;
+      if (outcome.error !== undefined) gatherer.error = outcome.error;
+      else delete gatherer.error;
+      delete gatherer.retry;
+      await transitionToReviewing();
+      return;
+    }
+    if (deadlineReached) {
+      await timeoutGatherer();
+      await transitionToReviewing();
+      return;
+    }
+    const latest = messages.at(-1);
+    if (latest !== undefined) gatherer.latestActivityAt = activityAt(latest);
+    if (
+      messages.length === 0 &&
+      gatherer.startedAt !== undefined &&
+      timestamp - gatherer.startedAt >= STARTING_GRACE_MS
+    ) {
+      // Re-queue an ambiguous gather dispatch so the same message ID is
+      // re-submitted, but keep the original deadline so it eventually times out.
+      gatherer.status = "queued";
+      return;
+    }
+    gatherer.status = "starting";
+  }
+
   async function statuses(run: CrossReviewRun, context: ProtocolContext) {
     return responseData(
       await client.session.status({
@@ -784,6 +995,11 @@ export function createCrossReviewProtocolTools(
     // API here would let one unavailable project directory block otherwise
     // recoverable local finalization.
     const hasActive =
+      (run.phase === "gathering" &&
+        run.gatherer !== undefined &&
+        ACTIVE_REVIEWER_STATUSES.has(
+          run.gatherer.status as ReviewerRunStatus,
+        )) ||
       (run.phase === "reviewing" &&
         run.reviewers.some((reviewer) =>
           ACTIVE_REVIEWER_STATUSES.has(reviewer.status),
@@ -803,6 +1019,10 @@ export function createCrossReviewProtocolTools(
       }
     }
 
+    if (run.phase === "gathering") {
+      await reconcileGatherer(run, currentStatuses ?? {}, save, context);
+      return;
+    }
     if (run.phase === "reviewing") {
       await Promise.all(
         run.reviewers.map((reviewer) =>
@@ -832,6 +1052,7 @@ export function createCrossReviewProtocolTools(
       "Start isolated cross-review sessions asynchronously and return a run ID",
     args: {
       target: tool.schema.string().min(1).max(4_000),
+      context: tool.schema.string().max(1_000_000).optional(),
       reviewModels: tool.schema
         .array(tool.schema.string())
         .min(1)
@@ -924,6 +1145,7 @@ export function createCrossReviewProtocolTools(
         }
         const timestamp = now();
         const warning = configWarning(loaded);
+        const gathers = judgeModel !== undefined && args.context === undefined;
         const run: CrossReviewRun = {
           schemaVersion: RUN_SCHEMA_VERSION,
           runID,
@@ -931,9 +1153,14 @@ export function createCrossReviewProtocolTools(
           ownerSessionID: context.sessionID,
           createdAt: timestamp,
           updatedAt: timestamp,
-          phase: "reviewing",
+          phase: gathers ? "gathering" : "reviewing",
           target: args.target,
-          brief: reviewBrief(args.target, args.focus ?? loaded.config.focus),
+          brief: reviewBrief(
+            args.target,
+            args.focus ?? loaded.config.focus,
+            args.context,
+          ),
+          ...(args.context === undefined ? {} : { context: args.context }),
           ...(warning === undefined ? {} : { warning }),
           quorum: Math.floor(reviewers.length / 2) + 1,
           maxConcurrency,
@@ -956,6 +1183,16 @@ export function createCrossReviewProtocolTools(
           ...(judgeModel === undefined || judgeSessionID === undefined
             ? {}
             : {
+                ...(gathers
+                  ? {
+                      gatherer: {
+                        model: judgeModel,
+                        sessionID: judgeSessionID,
+                        messageID: createMessageID(),
+                        status: "queued" as const,
+                      },
+                    }
+                  : {}),
                 judge: {
                   model: judgeModel,
                   sessionID: judgeSessionID,
@@ -967,8 +1204,28 @@ export function createCrossReviewProtocolTools(
         await store.create(run);
         return store.withRun(runID, async (stored, save) => {
           assertAuthorized(stored, context, directory);
-          await dispatchAvailable(stored, save, context);
+          if (stored.phase === "gathering" && stored.gatherer !== undefined) {
+            await reconcileGatherer(stored, {}, save, context);
+          } else {
+            await dispatchAvailable(stored, save, context);
+          }
           if (context.abort.aborted) {
+            if (
+              stored.gatherer !== undefined &&
+              ACTIVE_REVIEWER_STATUSES.has(
+                stored.gatherer.status as ReviewerRunStatus,
+              )
+            ) {
+              let abortWarning: string | undefined;
+              try {
+                await abortSession(stored.gatherer.sessionID, stored.directory);
+              } catch (error) {
+                abortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
+              }
+              stored.gatherer.status = "cancelled";
+              stored.gatherer.completedAt = now();
+              stored.gatherer.error = `Cross-review cancelled${abortWarning ?? ""}`;
+            }
             for (const reviewer of stored.reviewers) {
               let abortWarning: string | undefined;
               if (ACTIVE_REVIEWER_STATUSES.has(reviewer.status)) {
@@ -1071,6 +1328,19 @@ export function createCrossReviewProtocolTools(
             await save();
           }
         }
+        let gathererAbortWarning: string | undefined;
+        if (
+          run.gatherer?.sessionID !== undefined &&
+          (run.gatherer.status === "starting" ||
+            run.gatherer.status === "running" ||
+            run.gatherer.status === "retrying")
+        ) {
+          try {
+            await abortSession(run.gatherer.sessionID, run.directory);
+          } catch (error) {
+            gathererAbortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
+          }
+        }
         let judgeAbortWarning: string | undefined;
         if (
           run.judge?.sessionID !== undefined &&
@@ -1083,6 +1353,12 @@ export function createCrossReviewProtocolTools(
           } catch (error) {
             judgeAbortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
           }
+        }
+        if (run.gatherer !== undefined) {
+          run.gatherer.status = "cancelled";
+          run.gatherer.completedAt = timestamp;
+          run.gatherer.error = `Cross-review cancelled${gathererAbortWarning ?? ""}`;
+          await save();
         }
         if (run.judge !== undefined) {
           run.judge.status = "cancelled";
@@ -1110,6 +1386,11 @@ export function createCrossReviewProtocolTools(
         await reconcile(run, save, context);
         if (run.phase === "cancelled")
           return result(`Cross-review cancelled: ${run.target}`, progress(run));
+        if (run.phase === "gathering")
+          return result(
+            `Cross-review still running: ${run.target}`,
+            progress(run),
+          );
         if (run.phase === "reviewing" && !reviewersTerminal(run))
           return result(
             `Cross-review still running: ${run.target}`,
@@ -1127,6 +1408,9 @@ export function createCrossReviewProtocolTools(
             target: run.target,
             brief: run.brief,
             quorum: run.quorum,
+            ...(run.gatherer === undefined
+              ? {}
+              : { gatherer: publicGatherer(run.gatherer, true) }),
             reviewers: run.reviewers.map((reviewer) =>
               publicReviewer(reviewer, true),
             ),
@@ -1143,6 +1427,9 @@ export function createCrossReviewProtocolTools(
             target: run.target,
             brief: run.brief,
             quorum: run.quorum,
+            ...(run.gatherer === undefined
+              ? {}
+              : { gatherer: publicGatherer(run.gatherer, true) }),
             reviewers: run.reviewers.map((reviewer) =>
               publicReviewer(reviewer, true),
             ),
@@ -1182,6 +1469,9 @@ export function createCrossReviewProtocolTools(
               target: run.target,
               brief: run.brief,
               quorum: run.quorum,
+              ...(run.gatherer === undefined
+                ? {}
+                : { gatherer: publicGatherer(run.gatherer, true) }),
               reviewers: run.reviewers.map((reviewer) =>
                 publicReviewer(reviewer, true),
               ),
@@ -1204,6 +1494,9 @@ export function createCrossReviewProtocolTools(
               status: "judge-failed",
               target: run.target,
               quorum: run.quorum,
+              ...(run.gatherer === undefined
+                ? {}
+                : { gatherer: publicGatherer(run.gatherer, true) }),
               reviewers: run.reviewers.map((reviewer) =>
                 publicReviewer(reviewer, true),
               ),

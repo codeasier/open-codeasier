@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Gather the target context once and share it with every reviewer instead of
+  letting each reviewer fetch it independently. With a configured
+  `judgeModel` and no supplied `context`, cross-review runs a read-only
+  gathering phase in the judge session first (reported as a `gatherer` in
+  `cross_review_status`), embeds the gathered output into every reviewer
+  brief, and degrades to independent fetching when gathering fails or times
+  out. An optional `context` argument (collected by the parent session when
+  no `judgeModel` is configured) skips the gathering phase and is embedded in
+  reviewer briefs and the judge prompt. Run manifests migrate from schema
+  version 1 to 2 on load.
+
 ## [0.2.7] - 2026-08-14
 
 ### Added

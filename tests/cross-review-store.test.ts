@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -92,6 +92,48 @@ describe("cross-review run store", () => {
     await expect(
       store.withRun("../../escape", async () => Promise.resolve()),
     ).rejects.toThrow("Invalid cross-review run ID");
+  });
+
+  it("migrates version 1 manifests to the current schema on load", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+    const store = new FileCrossReviewRunStore(root);
+    const v1 = {
+      ...run(),
+      schemaVersion: 1,
+    } as unknown as CrossReviewRun;
+    await writeFile(join(root, `${RUN_ID}.json`), JSON.stringify(v1), "utf8");
+
+    await store.withRun(RUN_ID, async (stored, save) => {
+      expect(stored.schemaVersion).toBe(RUN_SCHEMA_VERSION);
+      expect(stored.gatherer).toBeUndefined();
+      expect(stored.context).toBeUndefined();
+      const reviewer = stored.reviewers[0];
+      if (reviewer === undefined) throw new Error("Missing reviewer");
+      reviewer.status = "running";
+      await save();
+    });
+
+    const persisted = JSON.parse(
+      await readFile(join(root, `${RUN_ID}.json`), "utf8"),
+    );
+    expect(persisted.schemaVersion).toBe(RUN_SCHEMA_VERSION);
+  });
+
+  it("rejects manifests with a newer schema version", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+    const store = new FileCrossReviewRunStore(root);
+    await writeFile(
+      join(root, `${RUN_ID}.json`),
+      JSON.stringify({
+        ...run(),
+        schemaVersion: RUN_SCHEMA_VERSION + 1,
+      } as unknown as CrossReviewRun),
+      "utf8",
+    );
+
+    await expect(
+      store.withRun(RUN_ID, async () => Promise.resolve()),
+    ).rejects.toThrow("Unsupported cross-review run manifest");
   });
 
   it("serializes concurrent recovery of the same stale lock", async () => {

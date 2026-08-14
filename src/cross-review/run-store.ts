@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { lock } from "proper-lockfile";
 
-export const RUN_SCHEMA_VERSION = 1;
+export const RUN_SCHEMA_VERSION = 2;
 export const RUN_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -64,7 +64,30 @@ export type JudgeRun = {
   error?: string;
 };
 
+export type GathererRun = {
+  model: string;
+  sessionID: string;
+  messageID: string;
+  status:
+    | "queued"
+    | "starting"
+    | "running"
+    | "retrying"
+    | "succeeded"
+    | "failed"
+    | "timed_out"
+    | "cancelled";
+  startedAt?: number;
+  deadlineAt?: number;
+  latestActivityAt?: number;
+  completedAt?: number;
+  retry?: { attempt: number; message: string; next: number };
+  output?: string;
+  error?: string;
+};
+
 export type CrossReviewRunPhase =
+  | "gathering"
   | "reviewing"
   | "judging"
   | "completed"
@@ -82,6 +105,7 @@ export type CrossReviewRun = {
   phase: CrossReviewRunPhase;
   target: string;
   brief: string;
+  context?: string;
   warning?: string;
   quorum: number;
   maxConcurrency: number;
@@ -91,6 +115,7 @@ export type CrossReviewRun = {
   projectConfigPath: string;
   globalConfigPath: string;
   reviewers: ReviewerRun[];
+  gatherer?: GathererRun;
   judge?: JudgeRun;
   finalResult?: Record<string, unknown>;
 };
@@ -154,9 +179,14 @@ function parseRun(path: string, content: string): CrossReviewRun {
   if (
     typeof parsed !== "object" ||
     parsed === null ||
-    (parsed as { schemaVersion?: unknown }).schemaVersion !== RUN_SCHEMA_VERSION
+    typeof (parsed as { schemaVersion?: unknown }).schemaVersion !== "number"
   )
     throw new Error(`Unsupported cross-review run manifest: ${path}`);
+  const version = (parsed as { schemaVersion: number }).schemaVersion;
+  if (version < 1 || version > RUN_SCHEMA_VERSION)
+    throw new Error(`Unsupported cross-review run manifest: ${path}`);
+  if (version < RUN_SCHEMA_VERSION)
+    (parsed as Record<string, unknown>).schemaVersion = RUN_SCHEMA_VERSION;
   return parsed as CrossReviewRun;
 }
 
