@@ -40,6 +40,8 @@ type SessionStatus =
   | { type: "retry"; attempt: number; message: string; next: number };
 
 type SessionMessage = {
+  id?: string;
+  parentID?: string;
   info: {
     role: "user" | "assistant";
     time: { created: number; completed?: number };
@@ -188,6 +190,7 @@ function activityAt(message: SessionMessage) {
 function terminalOutcome(
   messages: SessionMessage[],
   operation: string,
+  expectedParentID?: string,
 ):
   | {
       status: "succeeded" | "failed" | "cancelled";
@@ -196,11 +199,28 @@ function terminalOutcome(
       error?: string;
     }
   | undefined {
+  // Prefer assistant messages linked to the expected user message, so a
+  // session shared with another prompt (the judge reuses the gatherer
+  // session) is never resolved from a sibling response. Fall back to the
+  // last assistant message only when the SDK exposes no parent linkage at
+  // all, which is unambiguous for single-prompt sessions.
+  const assistantMessages = messages.filter(
+    (message) => message.info.role === "assistant",
+  );
+  const hasParentData = assistantMessages.some(
+    (message) => message.parentID !== undefined,
+  );
+  const candidates =
+    expectedParentID !== undefined && hasParentData
+      ? assistantMessages.filter(
+          (message) => message.parentID === expectedParentID,
+        )
+      : assistantMessages;
   let assistant: SessionMessage | undefined;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.info.role === "assistant") {
-      assistant = message;
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const candidate = candidates[index];
+    if (candidate !== undefined) {
+      assistant = candidate;
       break;
     }
   }
@@ -673,6 +693,7 @@ export function createCrossReviewProtocolTools(
     const outcome = terminalOutcome(
       messages,
       `Reviewer ${reviewer.reviewer} prompt`,
+      reviewer.messageID,
     );
     if (outcome !== undefined) {
       reviewer.status = outcome.status;
@@ -799,7 +820,7 @@ export function createCrossReviewProtocolTools(
       }
       return;
     }
-    const outcome = terminalOutcome(messages, "Judge prompt");
+    const outcome = terminalOutcome(messages, "Judge prompt", judge.messageID);
     if (outcome !== undefined) {
       judge.status = outcome.status;
       judge.completedAt = timestamp;
@@ -816,13 +837,19 @@ export function createCrossReviewProtocolTools(
     }
     const latest = messages.at(-1);
     if (latest !== undefined) judge.latestActivityAt = activityAt(latest);
+    // The judge session is shared with the gatherer, so a visible message
+    // does not prove the judge dispatch took. Only the judge's own user
+    // message does: re-queue an ambiguous dispatch when it is still absent,
+    // but keep the original deadline so it eventually times out.
+    const judgePromptVisible = messages.some(
+      (message) =>
+        message.info.role === "user" && message.id === judge.messageID,
+    );
     if (
-      messages.length === 0 &&
+      !judgePromptVisible &&
       judge.startedAt !== undefined &&
       timestamp - judge.startedAt >= STARTING_GRACE_MS
     ) {
-      // Re-queue an ambiguous judge dispatch so the same message ID is
-      // re-submitted, but keep the original deadline so it eventually times out.
       judge.status = "queued";
       return;
     }
@@ -943,7 +970,11 @@ export function createCrossReviewProtocolTools(
       }
       return;
     }
-    const outcome = terminalOutcome(messages, "Gather prompt");
+    const outcome = terminalOutcome(
+      messages,
+      "Gather prompt",
+      gatherer.messageID,
+    );
     if (outcome !== undefined) {
       gatherer.status = outcome.status;
       gatherer.completedAt = timestamp;

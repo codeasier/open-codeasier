@@ -63,6 +63,8 @@ function context(sessionID = "parent", abort = new AbortController()) {
 }
 
 type TestMessage = {
+  id?: string;
+  parentID?: string;
   info: {
     role: "user" | "assistant";
     time: { created: number; completed?: number };
@@ -71,6 +73,30 @@ type TestMessage = {
   };
   parts: Array<{ type: string; text?: string }>;
 };
+
+function userMessage(id: string, created = 1): TestMessage {
+  return {
+    id,
+    info: { role: "user", time: { created } },
+    parts: [],
+  };
+}
+
+function assistantMessage(
+  parentID: string,
+  text: string,
+  created = 10,
+): TestMessage {
+  return {
+    parentID,
+    info: {
+      role: "assistant",
+      time: { created, completed: created + 1 },
+      finish: "stop",
+    },
+    parts: [{ type: "text", text }],
+  };
+}
 
 function completed(text: string, created = 10): TestMessage[] {
   return [
@@ -1047,6 +1073,80 @@ describe("asynchronous cross-review protocol", () => {
     expect(client.session.abort).toHaveBeenCalledWith(
       expect.objectContaining({ path: { id: "child-2" } }),
     );
+  });
+
+  it("does not mistake the gatherer response for the judge outcome", async () => {
+    const { client, messages } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const run = store.runs.get(RUN_ID);
+    if (
+      run === undefined ||
+      run.gatherer === undefined ||
+      run.judge === undefined
+    )
+      throw new Error("test run was not created");
+    messages.set("child-2", [
+      userMessage(run.gatherer.messageID),
+      assistantMessage(run.gatherer.messageID, "gathered diff"),
+    ]);
+
+    let status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, includeOutputs: true },
+        context(),
+      ),
+    );
+    expect(status.phase).toBe("reviewing");
+    expect(status.gatherer).toMatchObject({
+      status: "succeeded",
+      output: "gathered diff",
+    });
+
+    messages.set("child-1", completed("candidate"));
+    const judging = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(judging.phase).toBe("judging");
+
+    // The judge has not responded yet: the gatherer's assistant message must
+    // not resolve the judge outcome.
+    status = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(status.phase).toBe("judging");
+    expect(status.judge.status).toBe("starting");
+
+    // The judge response arrives, linked to its own user message.
+    const judgeMessages = messages.get("child-2");
+    if (judgeMessages === undefined) throw new Error("missing judge messages");
+    judgeMessages.push(
+      assistantMessage(run.judge.messageID, "verified finding", 20),
+    );
+    const finalized = output(
+      await tools.cross_review_finalize.execute(
+        { runID: RUN_ID, includeOutputs: true },
+        context(),
+      ),
+    );
+    expect(finalized.phase).toBe("completed");
+    expect(finalized.judge).toMatchObject({
+      status: "succeeded",
+      output: "verified finding",
+    });
+    expect(finalized.reviewers[0]).toMatchObject({
+      status: "succeeded",
+      output: "candidate",
+    });
   });
 
   it("runs an explicit judge in a second asynchronous phase exactly once", async () => {
