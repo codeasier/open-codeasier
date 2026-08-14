@@ -269,7 +269,8 @@ describe("asynchronous cross-review protocol", () => {
     );
 
     expect(status.counts).toEqual({ succeeded: 1, running: 1, starting: 1 });
-    expect(status.reviewers[0]).not.toHaveProperty("output");
+    expect(status).not.toHaveProperty("reviewers");
+    expect(status).not.toHaveProperty("target");
     expect(status.pollAfterMs).toBe(3_000);
     expect(status.summary).toContain("1 succeeded of 3");
     expect(status.summary).toContain("1 running of 3");
@@ -281,6 +282,15 @@ describe("asynchronous cross-review protocol", () => {
       expect.objectContaining({ path: { id: "child-3" } }),
     );
 
+    const detailed = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
+    );
+    expect(detailed.reviewers[0]).not.toHaveProperty("output");
+    expect(detailed.target).toBe("HEAD");
+
     const withOutput = output(
       await tools.cross_review_status.execute(
         { runID: RUN_ID, includeOutputs: true },
@@ -288,6 +298,54 @@ describe("asynchronous cross-review protocol", () => {
       ),
     );
     expect(withOutput.reviewers[0].output).toBe("first review");
+  });
+
+  it("returns longer poll intervals once every reviewer is running", async () => {
+    const { client, statuses } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 2,
+        maxConcurrency: 2,
+      },
+      context(),
+    );
+    statuses["child-1"] = { type: "busy" };
+    statuses["child-2"] = { type: "busy" };
+
+    const status = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+    expect(status.counts).toEqual({ running: 2 });
+    expect(status.pollAfterMs).toBe(10_000);
+  });
+
+  it("truncates the target in the compact status summary", async () => {
+    const longTarget = `fix: ${"y".repeat(200)}`;
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      { target: longTarget, reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+
+    const status = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+    expect(status.summary).toContain("fix: ");
+    expect(status.summary).toContain("...");
+    expect(status.summary).not.toContain("y".repeat(200));
+    expect((status.summary.match(/y/g) ?? []).length).toBeLessThan(80);
+
+    const detailed = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
+    );
+    expect(detailed.target).toBe(longTarget);
   });
 
   it("maps provider retries without consuming another slot", async () => {
@@ -310,7 +368,10 @@ describe("asynchronous cross-review protocol", () => {
     };
 
     const status = output(
-      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
 
     expect(status.reviewers[0]).toMatchObject({
@@ -338,7 +399,10 @@ describe("asynchronous cross-review protocol", () => {
     timestamp = 6_001;
 
     const status = output(
-      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
 
     expect(status.reviewers.map((reviewer: any) => reviewer.status)).toEqual([
@@ -437,7 +501,10 @@ describe("asynchronous cross-review protocol", () => {
     timestamp = 6_001;
 
     const status = output(
-      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
 
     expect(status.reviewers[0]).toMatchObject({
@@ -567,7 +634,10 @@ describe("asynchronous cross-review protocol", () => {
     const callsAfterDeadline = client.session.promptAsync.mock.calls.length;
 
     const status = output(
-      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
     expect(status.reviewers[0]).toMatchObject({
       status: "timed_out",
@@ -650,7 +720,10 @@ describe("asynchronous cross-review protocol", () => {
     );
 
     const status = output(
-      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
 
     expect(status.reviewers[0]).toMatchObject({
@@ -942,7 +1015,10 @@ describe("asynchronous cross-review protocol", () => {
     timestamp = 6_001;
 
     const status = output(
-      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
 
     expect(status.phase).toBe("reviewing");
@@ -1000,7 +1076,10 @@ describe("asynchronous cross-review protocol", () => {
     messages.set("child-2", completed("gathered context"));
 
     const progressed = output(
-      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
     expect(progressed.gatherer).toMatchObject({
       status: "succeeded",

@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Cut the token cost of the `cross_review_status` polling loop. The default
+  status result is now compact (`runID`, `phase`, `quorum`, `counts`,
+  `readyToFinalize`, `pollAfterMs`, and the per-reviewer text `summary`),
+  omitting the full `target` and per-reviewer objects; request the full
+  fields with `detail: true` or `includeOutputs: true` (`includeOutputs`
+  implies `detail`), and `cross_review_finalize` still returns the complete
+  candidates once. The recommended poll interval now settles to 10s while
+  sessions are running, stays at 3s while the gatherer or any session is
+  starting, and shortens near a session deadline, so a review that used to
+  poll every 3 seconds now spends far fewer tokens on repeated status
+  payloads. The bundled skill and workflow instructions direct the parent
+  session to wait at least `pollAfterMs` between polls and to avoid copying
+  the status payload into the conversation.
+
 ## [0.2.8] - 2026-08-14
 
 ### Added

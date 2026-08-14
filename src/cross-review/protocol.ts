@@ -32,6 +32,9 @@ import {
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1_000;
 const DEFAULT_POLL_AFTER_MS = 3_000;
+const SETTLED_POLL_AFTER_MS = 10_000;
+const DEADLINE_WARNING_MS = 30_000;
+const STATUS_TARGET_LIMIT = 80;
 const SDK_REQUEST_TIMEOUT_MS = 15_000;
 const STARTING_GRACE_MS = 15_000;
 
@@ -359,24 +362,65 @@ function publicJudge(judge: JudgeRun | undefined, includeOutput: boolean) {
   };
 }
 
-function progress(run: CrossReviewRun, includeOutputs = false) {
+function truncate(text: string, limit: number) {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit - 3)}...`;
+}
+
+// Polling is what advances a run (dispatch, deadline enforcement), so the
+// interval is the token-cost lever: poll eagerly only while sessions are
+// starting or a deadline approaches, and settle into longer intervals once
+// every active session is confirmed running.
+function pollAfterMs(run: CrossReviewRun, timestamp: number) {
+  if (
+    run.phase === "completed" ||
+    run.phase === "quorum-not-met" ||
+    run.phase === "failed" ||
+    run.phase === "cancelled"
+  )
+    return undefined;
+  // The gathering phase gates every reviewer, so poll eagerly.
+  if (run.phase === "gathering") return DEFAULT_POLL_AFTER_MS;
+  const active = [
+    ...run.reviewers,
+    ...(run.gatherer === undefined ? [] : [run.gatherer]),
+    ...(run.judge === undefined ? [] : [run.judge]),
+  ].filter((entry) => ACTIVE_REVIEWER_STATUSES.has(entry.status));
+  if (active.some((entry) => entry.status === "starting"))
+    return DEFAULT_POLL_AFTER_MS;
+  const earliestDeadline = active.reduce(
+    (earliest, entry) =>
+      Math.min(earliest, entry.deadlineAt ?? Number.POSITIVE_INFINITY),
+    Number.POSITIVE_INFINITY,
+  );
+  if (earliestDeadline - timestamp < DEADLINE_WARNING_MS)
+    return Math.max(1_000, earliestDeadline - timestamp);
+  return SETTLED_POLL_AFTER_MS;
+}
+
+function progress(
+  run: CrossReviewRun,
+  includeOutputs: boolean,
+  detail: boolean,
+  timestamp: number,
+) {
   const counts: Record<string, number> = {};
   for (const reviewer of run.reviewers)
     counts[reviewer.status] = (counts[reviewer.status] ?? 0) + 1;
-  const pollAfterMs =
-    run.phase === "gathering" ||
-    run.phase === "reviewing" ||
-    run.phase === "judging"
-      ? DEFAULT_POLL_AFTER_MS
-      : undefined;
-  return {
+  const pollAfter = pollAfterMs(run, timestamp);
+  const compact = {
     runID: run.runID,
     phase: run.phase,
-    target: run.target,
     quorum: run.quorum,
     counts,
     readyToFinalize: run.phase === "reviewing" && reviewersTerminal(run),
-    pollAfterMs,
+    pollAfterMs: pollAfter,
+    summary: progressSummary(run, counts, pollAfter),
+  };
+  if (!detail && !includeOutputs) return compact;
+  return {
+    ...compact,
+    target: run.target,
     reviewers: run.reviewers.map((reviewer) =>
       publicReviewer(reviewer, includeOutputs),
     ),
@@ -386,7 +430,6 @@ function progress(run: CrossReviewRun, includeOutputs = false) {
     ...(run.judge === undefined
       ? {}
       : { judge: publicJudge(run.judge, includeOutputs) }),
-    summary: progressSummary(run, counts, pollAfterMs),
   };
 }
 
@@ -396,7 +439,9 @@ function progressSummary(
   pollAfterMs: number | undefined,
 ): string {
   const lines: string[] = [];
-  lines.push(`Cross-review ${run.phase} for ${run.target}`);
+  lines.push(
+    `Cross-review ${run.phase} for ${truncate(run.target, STATUS_TARGET_LIMIT)}`,
+  );
   const total = run.reviewers.length;
   const ordered = [
     "succeeded",
@@ -1302,12 +1347,12 @@ export function createCrossReviewProtocolTools(
             await save();
             return result(
               `Cross-review cancelled: ${args.target}`,
-              progress(stored),
+              progress(stored, false, true, now()),
             );
           }
           return result(
             `Cross-review started: ${args.target}`,
-            progress(stored),
+            progress(stored, false, true, now()),
           );
         });
       } catch (error) {
@@ -1326,14 +1371,20 @@ export function createCrossReviewProtocolTools(
       "Poll and advance one asynchronous cross-review run without blocking",
     args: {
       runID: tool.schema.string().uuid(),
+      detail: tool.schema.boolean().optional(),
       includeOutputs: tool.schema.boolean().optional(),
     },
     async execute(args, context) {
       return withAuthorizedRun(args.runID, context, async (run, save) => {
         await reconcile(run, save, context);
         return result(
-          `Cross-review status: ${run.target}`,
-          progress(run, args.includeOutputs ?? false),
+          `Cross-review status: ${truncate(run.target, STATUS_TARGET_LIMIT)}`,
+          progress(
+            run,
+            args.includeOutputs ?? false,
+            args.detail ?? false,
+            now(),
+          ),
         );
       });
     },
@@ -1345,7 +1396,10 @@ export function createCrossReviewProtocolTools(
     async execute(args, context) {
       return withAuthorizedRun(args.runID, context, async (run, save) => {
         if (run.phase === "cancelled")
-          return result(`Cross-review cancelled: ${run.target}`, progress(run));
+          return result(
+            `Cross-review cancelled: ${run.target}`,
+            progress(run, false, true, now()),
+          );
         if (
           run.phase === "completed" ||
           run.phase === "quorum-not-met" ||
@@ -1353,7 +1407,7 @@ export function createCrossReviewProtocolTools(
         )
           return result(
             `Cross-review already finished: ${run.target}`,
-            progress(run),
+            progress(run, false, true, now()),
           );
         const timestamp = now();
         for (const reviewer of run.reviewers) {
@@ -1415,7 +1469,10 @@ export function createCrossReviewProtocolTools(
           await save();
         }
         run.phase = "cancelled";
-        return result(`Cross-review cancelled: ${run.target}`, progress(run));
+        return result(
+          `Cross-review cancelled: ${run.target}`,
+          progress(run, false, true, now()),
+        );
       });
     },
   });
@@ -1433,16 +1490,19 @@ export function createCrossReviewProtocolTools(
           );
         await reconcile(run, save, context);
         if (run.phase === "cancelled")
-          return result(`Cross-review cancelled: ${run.target}`, progress(run));
+          return result(
+            `Cross-review cancelled: ${run.target}`,
+            progress(run, false, true, now()),
+          );
         if (run.phase === "gathering")
           return result(
             `Cross-review still running: ${run.target}`,
-            progress(run),
+            progress(run, false, true, now()),
           );
         if (run.phase === "reviewing" && !reviewersTerminal(run))
           return result(
             `Cross-review still running: ${run.target}`,
-            progress(run),
+            progress(run, false, true, now()),
           );
 
         const successful = successfulReviewers(run);
@@ -1502,7 +1562,7 @@ export function createCrossReviewProtocolTools(
           await reconcileJudge(run, {}, save, context);
           return result(
             `Cross-review judge started: ${run.target}`,
-            progress(run),
+            progress(run, false, true, now()),
           );
         }
 
@@ -1558,7 +1618,7 @@ export function createCrossReviewProtocolTools(
         }
         return result(
           `Cross-review still running: ${run.target}`,
-          progress(run),
+          progress(run, false, true, now()),
         );
       });
     },
