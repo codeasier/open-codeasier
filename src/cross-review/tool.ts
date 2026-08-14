@@ -144,14 +144,38 @@ export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function reviewBrief(target: string, focus?: string) {
+export const MAX_EMBEDDED_CONTEXT_LENGTH = 100_000;
+
+export function embeddedContext(context: string): string | undefined {
+  if (context.length === 0) return undefined;
+  if (context.length <= MAX_EMBEDDED_CONTEXT_LENGTH) return context;
+  const omitted = context.length - MAX_EMBEDDED_CONTEXT_LENGTH;
+  return `${context.slice(0, MAX_EMBEDDED_CONTEXT_LENGTH)}\n[...context truncated: ${omitted} chars omitted...]`;
+}
+
+export function reviewBrief(target: string, focus?: string, context?: string) {
   return [
     "Independently review the specified target. Remain read-only.",
     `Target: ${target}`,
     ...(focus === undefined ? [] : [`Focus: ${focus}`]),
+    ...(context === undefined || context.length === 0
+      ? []
+      : [
+          "Shared target context (already gathered; verify findings against it):",
+          embeddedContext(context) ?? "",
+        ]),
     "Prioritize correctness defects, security risks, behavioral regressions, and missing tests.",
     "Verify each finding against repository evidence. Report only actionable findings with severity and file/line references; state explicitly when there are no findings.",
     "Return only your review. Do not inspect or infer any other reviewer's output.",
+  ].join("\n");
+}
+
+export function gatherBrief(target: string) {
+  return [
+    "Act as the read-only cross-review context gatherer.",
+    `Target: ${target}`,
+    "Inspect the target (a repository state, pull request, or issue) and produce one self-contained review context: what changed or is reported, the exact diff or issue description, affected files and line references, and any referenced code or tests reviewers will need to verify findings.",
+    "Do not review, judge, or propose findings. Do not consult other sessions. Return only the gathered context.",
   ].join("\n");
 }
 
@@ -240,6 +264,7 @@ export function createCrossReviewTool(
       "Legacy blocking cross-review entry point; prefer cross_review_start/status/finalize",
     args: {
       target: tool.schema.string().min(1).max(4_000),
+      context: tool.schema.string().min(1).max(1_000_000).optional(),
       reviewModels: tool.schema
         .array(tool.schema.string())
         .min(1)
@@ -357,7 +382,74 @@ export function createCrossReviewTool(
             throw new Error(`Unavailable model: ${model}`);
         }
 
-        const brief = reviewBrief(args.target, sharedFocus);
+        let judgeSessionID: string | undefined;
+        let gatheredContext: string | undefined;
+        let gatherer:
+          | {
+              model: string;
+              status: "succeeded" | "failed";
+              output?: string;
+              error?: string;
+            }
+          | undefined;
+        // An empty context is treated as "not provided": it must not disable
+        // gathering while embedding nothing into reviewer briefs.
+        const providedContext =
+          args.context === undefined || args.context.length === 0
+            ? undefined
+            : args.context;
+        if (judgeModel !== undefined && providedContext === undefined) {
+          const parsedJudgeModel = parsedModels.get(judgeModel);
+          if (parsedJudgeModel === undefined)
+            throw new Error(`Unvalidated judge model: ${judgeModel}`);
+          throwIfCancelled();
+          const session = responseData(
+            await client.session.create({
+              body: {
+                parentID: context.sessionID,
+                title: `Cross-review gather: ${args.target}`,
+              },
+              query: { directory: context.directory },
+              signal: context.abort,
+            }),
+            "Gather session creation",
+          );
+          judgeSessionID = session.id;
+          sessions.add(session.id);
+          try {
+            throwIfCancelled();
+            const output = promptOutput(
+              await client.session.prompt({
+                body: {
+                  agent: REVIEWER_AGENT,
+                  model: parsedJudgeModel,
+                  parts: [{ type: "text", text: gatherBrief(args.target) }],
+                  tools: READ_ONLY_TOOLS,
+                },
+                path: { id: session.id },
+                query: { directory: context.directory },
+                signal: context.abort,
+              }),
+              "Gather prompt",
+            );
+            throwIfCancelled();
+            gatheredContext = output;
+            gatherer = {
+              model: judgeModel,
+              status: "succeeded",
+              output,
+            };
+          } catch (error) {
+            gatherer = {
+              model: judgeModel,
+              status: "failed",
+              error: errorMessage(error),
+            };
+          }
+        }
+
+        const gathered = providedContext ?? gatheredContext;
+        const brief = reviewBrief(args.target, sharedFocus, gathered);
         const reviewerResults = await runLimited(
           reviewers.length,
           maxConcurrency,
@@ -404,7 +496,11 @@ export function createCrossReviewTool(
                       parts: [
                         {
                           type: "text",
-                          text: reviewBrief(args.target, reviewer.focus),
+                          text: reviewBrief(
+                            args.target,
+                            reviewer.focus,
+                            gathered,
+                          ),
                         },
                       ],
                       tools: READ_ONLY_TOOLS,
@@ -518,18 +614,23 @@ export function createCrossReviewTool(
           judgeProgress = { model: judgeModel, status: "starting" };
           publishProgress("judging");
           try {
-            const session = responseData(
-              await client.session.create({
-                body: {
-                  parentID: context.sessionID,
-                  title: `Cross-review judge: ${args.target}`,
-                },
-                query: { directory: context.directory },
-                signal: context.abort,
-              }),
-              "Judge session creation",
-            );
-            sessions.add(session.id);
+            let session: { id: string };
+            if (judgeSessionID === undefined) {
+              session = responseData(
+                await client.session.create({
+                  body: {
+                    parentID: context.sessionID,
+                    title: `Cross-review judge: ${args.target}`,
+                  },
+                  query: { directory: context.directory },
+                  signal: context.abort,
+                }),
+                "Judge session creation",
+              );
+              sessions.add(session.id);
+            } else {
+              session = { id: judgeSessionID };
+            }
             judgeProgress = {
               model: judgeModel,
               sessionID: session.id,
@@ -549,6 +650,12 @@ export function createCrossReviewTool(
                         text: [
                           "Act as the read-only cross-review judge.",
                           `Target: ${args.target}`,
+                          ...(providedContext === undefined
+                            ? []
+                            : [
+                                "Shared target context (already gathered; verify findings against it):",
+                                embeddedContext(providedContext) ?? "",
+                              ]),
                           "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
                           "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
                           JSON.stringify(successful),
@@ -599,6 +706,7 @@ export function createCrossReviewTool(
           target: args.target,
           brief,
           quorum,
+          ...(gatherer === undefined ? {} : { gatherer }),
           reviewers: reviewerResults,
           judge: judge ?? {
             model: "parent-session",

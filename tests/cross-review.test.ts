@@ -124,6 +124,7 @@ describe("cross_review tool", () => {
       context(),
     );
     expect(prompt.mock.calls.map((call) => call[0].body.model)).toEqual([
+      { providerID: "unraid-wg", modelID: "cx/gpt-5.6-sol" },
       { providerID: "unraid-wg", modelID: "wb/kimi-k3" },
       { providerID: "unraid-wg", modelID: "cx/gpt-5.6-sol" },
     ]);
@@ -262,17 +263,22 @@ describe("cross_review tool", () => {
       wrapConfig(config),
     ).execute({ target: "main...HEAD" }, toolContext);
     const calls = prompt.mock.calls.map((call) => call[0]);
-    expect(calls).toHaveLength(3);
-    expect(calls.slice(0, 2).map((call) => call.body.model.modelID)).toEqual([
+    expect(calls).toHaveLength(4);
+    expect(calls[0].body.parts[0].text).toContain("context gatherer");
+    expect(calls.slice(1, 3).map((call) => call.body.model.modelID)).toEqual([
       "one",
       "two",
     ]);
-    expect(calls[0].body.parts[0].text).toContain("Focus: security and auth");
-    expect(calls[1].body.parts[0].text).toContain(
+    expect(calls[1].body.parts[0].text).toContain("Focus: security and auth");
+    expect(calls[2].body.parts[0].text).toContain(
       "Focus: performance regressions",
     );
-    expect(calls[2].body.model.modelID).toBe("judge");
+    expect(calls[3].body.model.modelID).toBe("judge");
     const parsed = JSON.parse((output as any).output);
+    expect(parsed.gatherer).toMatchObject({
+      model: "b/judge",
+      status: "succeeded",
+    });
     expect(parsed.judge).toMatchObject({
       model: "b/judge",
       status: "succeeded",
@@ -282,12 +288,12 @@ describe("cross_review tool", () => {
       .filter((judge) => judge !== undefined);
     expect(judgeUpdates).toContainEqual({
       model: "b/judge",
-      sessionID: "child-3",
+      sessionID: "child-1",
       status: "running",
     });
     expect(judgeUpdates).toContainEqual({
       model: "b/judge",
-      sessionID: "child-3",
+      sessionID: "child-1",
       status: "succeeded",
     });
     expect(judgeUpdates.every((judge) => !("output" in judge))).toBe(true);
@@ -360,10 +366,12 @@ describe("cross_review tool", () => {
       context(),
     );
     const calls = prompt.mock.calls.map((call) => call[0]);
-    expect(calls).toHaveLength(2);
-    expect(calls[0].body.model.modelID).toBe("two");
-    expect(calls[0].body.parts[0].text).toContain("Focus: override focus");
-    expect(calls[1].body.model.modelID).toBe("judge");
+    expect(calls).toHaveLength(3);
+    expect(calls[0].body.model.modelID).toBe("judge");
+    expect(calls[0].body.parts[0].text).toContain("context gatherer");
+    expect(calls[1].body.model.modelID).toBe("two");
+    expect(calls[1].body.parts[0].text).toContain("Focus: override focus");
+    expect(calls[2].body.model.modelID).toBe("judge");
   });
 
   it("uses an explicit agent count with configured reviewers", async () => {
@@ -385,10 +393,10 @@ describe("cross_review tool", () => {
     let call = 0;
     const prompt = vi.fn().mockImplementation(async () => {
       call += 1;
-      if (call === 2) throw new Error("reviewer unavailable");
+      if (call === 3) throw new Error("reviewer unavailable");
       return {
         data: {
-          parts: [{ type: "text", text: call === 4 ? "judged" : "candidate" }],
+          parts: [{ type: "text", text: call === 5 ? "judged" : "candidate" }],
         },
       };
     });
@@ -416,7 +424,7 @@ describe("cross_review tool", () => {
       status: "succeeded",
       output: "judged",
     });
-    expect(prompt.mock.calls[3]?.[0].body.tools).toMatchObject({
+    expect(prompt.mock.calls[4]?.[0].body.tools).toMatchObject({
       bash: false,
       edit: false,
       task: false,
@@ -536,6 +544,9 @@ describe("cross_review tool", () => {
         data: { parts: [{ type: "text", text: "candidate" }] },
       })
       .mockResolvedValueOnce({
+        data: { parts: [{ type: "text", text: "candidate" }] },
+      })
+      .mockResolvedValueOnce({
         data: {
           info: {
             error: {
@@ -557,6 +568,81 @@ describe("cross_review tool", () => {
         context(),
       ),
     ).rejects.toThrow("Judge prompt failed: MessageOutputLengthError");
+  });
+
+  it("embeds parent-gathered context in reviewer and judge briefs without gathering", async () => {
+    const prompt = vi.fn().mockResolvedValue({
+      data: { parts: [{ type: "text", text: "candidate" }] },
+    });
+    const mock = client(prompt);
+    await createCrossReviewTool(mock, emptyConfig).execute(
+      {
+        target: "HEAD",
+        context: "shared diff context",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const calls = prompt.mock.calls.map((call) => call[0]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].body.parts[0].text).toContain("shared diff context");
+    expect(calls[1].body.parts[0].text).toContain("shared diff context");
+  });
+
+  it("degrades to independent fetching when gathering fails", async () => {
+    const prompt = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("gather failed"))
+      .mockResolvedValue({
+        data: { parts: [{ type: "text", text: "candidate" }] },
+      });
+    const mock = client(prompt);
+    const result = await createCrossReviewTool(mock, emptyConfig).execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.gatherer).toMatchObject({
+      model: "b/judge",
+      status: "failed",
+    });
+    expect(parsed.reviewers[0].status).toBe("succeeded");
+    expect(prompt.mock.calls[1]?.[0].body.parts[0].text).not.toContain(
+      "gather failed",
+    );
+    expect(parsed.judge).toMatchObject({
+      model: "b/judge",
+      status: "succeeded",
+    });
+  });
+
+  it("treats an empty context as not provided and still gathers", async () => {
+    const prompt = vi.fn().mockResolvedValue({
+      data: { parts: [{ type: "text", text: "candidate" }] },
+    });
+    const mock = client(prompt);
+    const definition = createCrossReviewTool(mock, emptyConfig);
+    expect(definition.args.context.safeParse("").success).toBe(false);
+    await definition.execute(
+      {
+        target: "HEAD",
+        context: "",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const calls = prompt.mock.calls.map((call) => call[0]);
+    expect(calls).toHaveLength(3);
+    expect(calls[0].body.parts[0].text).toContain("context gatherer");
   });
 
   it("aborts child sessions when the parent is cancelled", async () => {

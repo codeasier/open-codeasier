@@ -64,6 +64,8 @@ function context(sessionID = "parent", abort = new AbortController()) {
 
 type TestMessage = {
   info: {
+    id?: string;
+    parentID?: string;
     role: "user" | "assistant";
     time: { created: number; completed?: number };
     error?: unknown;
@@ -71,6 +73,29 @@ type TestMessage = {
   };
   parts: Array<{ type: string; text?: string }>;
 };
+
+function userMessage(id: string, created = 1): TestMessage {
+  return {
+    info: { id, role: "user", time: { created } },
+    parts: [],
+  };
+}
+
+function assistantMessage(
+  parentID: string,
+  text: string,
+  created = 10,
+): TestMessage {
+  return {
+    info: {
+      parentID,
+      role: "assistant",
+      time: { created, completed: created + 1 },
+      finish: "stop",
+    },
+    parts: [{ type: "text", text }],
+  };
+}
 
 function completed(text: string, created = 10): TestMessage[] {
   return [
@@ -764,6 +789,391 @@ describe("asynchronous cross-review protocol", () => {
     });
   });
 
+  it("gathers context through the judge session before dispatching reviewers", async () => {
+    const { client, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "HEAD",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    );
+
+    expect(started.phase).toBe("gathering");
+    expect(started.gatherer).toMatchObject({
+      model: "b/judge",
+      sessionID: "child-2",
+      status: "starting",
+    });
+    expect(started.reviewers[0].status).toBe("queued");
+    expect(client.session.create).toHaveBeenCalledTimes(2);
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1);
+    expect(client.session.promptAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: { id: "child-2" },
+        body: expect.objectContaining({
+          model: { providerID: "b", modelID: "judge" },
+        }),
+      }),
+    );
+    expect(
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text,
+    ).toContain("context gatherer");
+
+    messages.set("child-2", completed("gathered diff"));
+    const status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, includeOutputs: true },
+        context(),
+      ),
+    );
+
+    expect(status.phase).toBe("reviewing");
+    expect(status.gatherer).toMatchObject({
+      status: "succeeded",
+      output: "gathered diff",
+    });
+    expect(status.reviewers[0].status).toBe("starting");
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("gathered diff");
+
+    messages.set("child-1", completed("candidate"));
+    const judging = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(judging.phase).toBe("judging");
+    expect(client.session.promptAsync.mock.calls.at(-1)?.[0].path.id).toBe(
+      "child-2",
+    );
+    const judgeText =
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
+    expect(judgeText).toContain("Act as the read-only cross-review judge");
+    expect(judgeText).not.toContain("gathered diff");
+  });
+
+  it("accepts parent-gathered context and skips the gathering phase", async () => {
+    const { client, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: "parent context",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    );
+
+    expect(started.phase).toBe("reviewing");
+    expect(started.gatherer).toBeUndefined();
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1);
+    expect(
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text,
+    ).toContain("parent context");
+
+    messages.set("child-1", completed("candidate"));
+    const judging = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(judging.phase).toBe("judging");
+    const judgeText =
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
+    expect(judgeText).toContain("parent context");
+  });
+
+  it("degrades to independent fetching when gathering fails", async () => {
+    const { client, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    messages.set("child-2", failed("APIError", "gather unavailable"));
+
+    const status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, includeOutputs: true },
+        context(),
+      ),
+    );
+
+    expect(status.phase).toBe("reviewing");
+    expect(status.gatherer).toMatchObject({ status: "failed" });
+    expect(status.reviewers[0].status).toBe("starting");
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
+    expect(reviewerText).not.toContain("gather unavailable");
+
+    messages.set("child-1", completed("candidate"));
+    const judging = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(judging.phase).toBe("judging");
+  });
+
+  it("times out a stuck gatherer and degrades to reviewing", async () => {
+    let timestamp = 1_000;
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    timestamp = 6_001;
+
+    const status = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+
+    expect(status.phase).toBe("reviewing");
+    expect(status.gatherer).toMatchObject({
+      status: "timed_out",
+      error: expect.stringContaining("timed out"),
+    });
+    expect(status.reviewers[0].status).toBe("starting");
+    expect(client.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: "child-2" } }),
+    );
+  });
+
+  it("degrades to reviewing when gatherer dispatch fails", async () => {
+    const { client } = mockClient();
+    client.session.promptAsync.mockRejectedValueOnce(
+      new Error("gather dispatch lost"),
+    );
+    const tools = protocol(client, new MemoryRunStore());
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "HEAD",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    );
+
+    expect(started.phase).toBe("reviewing");
+    expect(started.gatherer).toMatchObject({
+      status: "failed",
+      error: "gather dispatch lost",
+    });
+    expect(started.reviewers[0].status).toBe("starting");
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cancel a terminal gatherer", async () => {
+    const { client, messages } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    messages.set("child-2", completed("gathered context"));
+
+    const progressed = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+    expect(progressed.gatherer).toMatchObject({
+      status: "succeeded",
+    });
+    expect(store.runs.get(RUN_ID)?.gatherer?.output).toBe("gathered context");
+
+    const cancelled = output(
+      await tools.cross_review_cancel.execute({ runID: RUN_ID }, context()),
+    );
+
+    expect(cancelled.phase).toBe("cancelled");
+    expect(cancelled.gatherer).toMatchObject({ status: "succeeded" });
+    expect(store.runs.get(RUN_ID)?.gatherer?.output).toBe("gathered context");
+    expect(store.runs.get(RUN_ID)?.gatherer?.error).toBeUndefined();
+    expect(cancelled.reviewers[0].status).toBe("cancelled");
+  });
+
+  it("treats an empty context as not provided and still gathers", async () => {
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: "",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    );
+
+    expect(started.phase).toBe("gathering");
+    expect(started.gatherer).toBeDefined();
+    expect(
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text,
+    ).toContain("context gatherer");
+  });
+
+  it("truncates an oversized gathered context in reviewer briefs", async () => {
+    const { client, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const oversized = `start-${"x".repeat(100_100)}-end`;
+    messages.set("child-2", completed(oversized));
+
+    const status = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+    expect(status.phase).toBe("reviewing");
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("start-");
+    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("-end");
+  });
+
+  it("rejects an empty context through the argument schema", async () => {
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    expect(tools.cross_review_start.args.context.safeParse("").success).toBe(
+      false,
+    );
+  });
+
+  it("cancels an active gatherer session", async () => {
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+
+    const cancelled = output(
+      await tools.cross_review_cancel.execute({ runID: RUN_ID }, context()),
+    );
+
+    expect(cancelled.phase).toBe("cancelled");
+    expect(cancelled.gatherer).toMatchObject({ status: "cancelled" });
+    expect(client.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: "child-2" } }),
+    );
+  });
+
+  it("does not mistake the gatherer response for the judge outcome", async () => {
+    const { client, messages } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const run = store.runs.get(RUN_ID);
+    if (
+      run === undefined ||
+      run.gatherer === undefined ||
+      run.judge === undefined
+    )
+      throw new Error("test run was not created");
+    messages.set("child-2", [
+      userMessage(run.gatherer.messageID),
+      assistantMessage(run.gatherer.messageID, "gathered diff"),
+    ]);
+
+    let status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, includeOutputs: true },
+        context(),
+      ),
+    );
+    expect(status.phase).toBe("reviewing");
+    expect(status.gatherer).toMatchObject({
+      status: "succeeded",
+      output: "gathered diff",
+    });
+
+    messages.set("child-1", completed("candidate"));
+    const judging = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(judging.phase).toBe("judging");
+
+    // The judge has not responded yet: the gatherer's assistant message must
+    // not resolve the judge outcome.
+    status = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(status.phase).toBe("judging");
+    expect(status.judge.status).toBe("starting");
+
+    // The judge response arrives, linked to its own user message.
+    const judgeMessages = messages.get("child-2");
+    if (judgeMessages === undefined) throw new Error("missing judge messages");
+    judgeMessages.push(
+      assistantMessage(run.judge.messageID, "verified finding", 20),
+    );
+    const finalized = output(
+      await tools.cross_review_finalize.execute(
+        { runID: RUN_ID, includeOutputs: true },
+        context(),
+      ),
+    );
+    expect(finalized.phase).toBe("completed");
+    expect(finalized.judge).toMatchObject({
+      status: "succeeded",
+      output: "verified finding",
+    });
+    expect(finalized.reviewers[0]).toMatchObject({
+      status: "succeeded",
+      output: "candidate",
+    });
+  });
+
   it("runs an explicit judge in a second asynchronous phase exactly once", async () => {
     const { client, messages } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
@@ -776,6 +1186,14 @@ describe("asynchronous cross-review protocol", () => {
       },
       context(),
     );
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1);
+    messages.set("child-2", completed("gathered context"));
+
+    const progressed = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(progressed.phase).toBe("reviewing");
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
     messages.set("child-1", completed("candidate"));
 
     const judging = output(
@@ -786,7 +1204,7 @@ describe("asynchronous cross-review protocol", () => {
       judge: { model: "b/judge", sessionID: "child-2", status: "starting" },
     });
     expect(client.session.create).toHaveBeenCalledTimes(2);
-    expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(3);
     expect(
       client.session.promptAsync.mock.calls.every(([input]) =>
         /^msg_[0-9a-f-]+$/.test(input.body.messageID),
@@ -807,7 +1225,7 @@ describe("asynchronous cross-review protocol", () => {
     });
     expect(repeated).toEqual(finalized);
     expect(client.session.create).toHaveBeenCalledTimes(2);
-    expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(3);
   });
 
   it("migrates legacy message IDs before judge dispatch", async () => {
@@ -827,6 +1245,8 @@ describe("asynchronous cross-review protocol", () => {
     if (run === undefined || run.judge === undefined)
       throw new Error("test judge run was not created");
     run.judge.messageID = "00000000-0000-4000-8000-000000000003";
+    messages.set("child-2", completed("gathered context"));
+    await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
     messages.set("child-1", completed("candidate"));
 
     await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
