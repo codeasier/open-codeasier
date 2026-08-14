@@ -224,6 +224,15 @@ describe("workflow generator", () => {
       "ask the user which of `reviewers` and `reviewModels` to retain, then write that key only, dropping the other while keeping every remaining key such as `agents`, `judgeModel`, and `focus`",
     );
     expect(openCrossReview).toContain(
+      "If the file is invalid for any other reason",
+    );
+    expect(openCrossReview).toContain(
+      "unknown keys, malformed `reviewers` or `reviewModels` values, out-of-range `agents` or `maxConcurrency`, or invalid JSON",
+    );
+    expect(openCrossReview).toContain(
+      "stop, show the validation error, and ask the user to repair it before collecting fields",
+    );
+    expect(openCrossReview).toContain(
       "for an existing `reviewModels` destination, collect the flat model list plus one optional shared `focus`",
     );
     expect(openCrossReview).not.toContain(
