@@ -7,10 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Support an optional `reviewerTimeoutMs` key (5000-3600000, default 600000)
+  in project and global cross-review configuration, collected during guided
+  setup, so a team can pin the reviewer and judge deadline instead of passing
+  `--reviewer-timeout-ms` on every invocation.
+
 ### Fixed
 
 - Surface each reviewer's own progress in `cross_review_status` through a
   readable per-reviewer `summary` of every reviewer's and the judge's status.
+- Keep cross-review setup on the destination's existing `reviewers` or
+  `reviewModels` format instead of writing a conflicting `reviewers` array
+  into a flat `reviewModels` config.
 
 ## [0.2.6] - 2026-08-13
 

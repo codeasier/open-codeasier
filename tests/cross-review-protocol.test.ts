@@ -326,6 +326,74 @@ describe("asynchronous cross-review protocol", () => {
     expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
   });
 
+  it("uses the configured reviewerTimeoutMs when no flag is given", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = createCrossReviewProtocolTools(client, {
+      store,
+      loadConfig: () =>
+        Promise.resolve({
+          config: {
+            reviewModels: ["a/one"],
+            reviewerTimeoutMs: 900_000,
+          },
+          sources: { project: "loaded", global: "absent" },
+          projectPath: "/repo/.opencode/cross-review.json",
+          globalPath: "/home/.config/opencode/cross-review.json",
+        }),
+      now: () => 1_000,
+      createRunID: () => RUN_ID,
+      canonicalize: async (directory) => directory,
+    });
+    await tools.cross_review_start.execute(
+      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+    expect(store.runs.get(RUN_ID)?.reviewerTimeoutMs).toBe(900_000);
+  });
+
+  it("lets an explicit reviewerTimeoutMs flag override configuration", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = createCrossReviewProtocolTools(client, {
+      store,
+      loadConfig: () =>
+        Promise.resolve({
+          config: {
+            reviewModels: ["a/one"],
+            reviewerTimeoutMs: 900_000,
+          },
+          sources: { project: "loaded", global: "absent" },
+          projectPath: "/repo/.opencode/cross-review.json",
+          globalPath: "/home/.config/opencode/cross-review.json",
+        }),
+      now: () => 1_000,
+      createRunID: () => RUN_ID,
+      canonicalize: async (directory) => directory,
+    });
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    expect(store.runs.get(RUN_ID)?.reviewerTimeoutMs).toBe(5_000);
+  });
+
+  it("defaults reviewerTimeoutMs to 600000 without config or flag", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store);
+    await tools.cross_review_start.execute(
+      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+    expect(store.runs.get(RUN_ID)?.reviewerTimeoutMs).toBe(600_000);
+  });
+
   it("terminates a timeout without dispatching queued work when abort is unconfirmed", async () => {
     let timestamp = 1_000;
     const { client } = mockClient();
