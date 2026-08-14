@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-08-14
+
 ### Added
 
 - Gather the target context once and share it with every reviewer instead of
@@ -146,7 +148,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.7...HEAD
+[0.2.8]: https://github.com/codeasier/open-codeasier/compare/v0.2.7...v0.2.8
+[0.2.7]: https://github.com/codeasier/open-codeasier/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/codeasier/open-codeasier/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/codeasier/open-codeasier/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/codeasier/open-codeasier/compare/v0.2.3...v0.2.4
