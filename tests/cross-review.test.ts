@@ -623,6 +623,28 @@ describe("cross_review tool", () => {
     });
   });
 
+  it("treats an empty context as not provided and still gathers", async () => {
+    const prompt = vi.fn().mockResolvedValue({
+      data: { parts: [{ type: "text", text: "candidate" }] },
+    });
+    const mock = client(prompt);
+    const definition = createCrossReviewTool(mock, emptyConfig);
+    expect(definition.args.context.safeParse("").success).toBe(false);
+    await definition.execute(
+      {
+        target: "HEAD",
+        context: "",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const calls = prompt.mock.calls.map((call) => call[0]);
+    expect(calls).toHaveLength(3);
+    expect(calls[0].body.parts[0].text).toContain("context gatherer");
+  });
+
   it("aborts child sessions when the parent is cancelled", async () => {
     const abort = new AbortController();
     const prompt = vi.fn().mockImplementation(

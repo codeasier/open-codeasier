@@ -255,7 +255,7 @@ export function createCrossReviewTool(
       "Legacy blocking cross-review entry point; prefer cross_review_start/status/finalize",
     args: {
       target: tool.schema.string().min(1).max(4_000),
-      context: tool.schema.string().max(1_000_000).optional(),
+      context: tool.schema.string().min(1).max(1_000_000).optional(),
       reviewModels: tool.schema
         .array(tool.schema.string())
         .min(1)
@@ -383,7 +383,13 @@ export function createCrossReviewTool(
               error?: string;
             }
           | undefined;
-        if (judgeModel !== undefined && args.context === undefined) {
+        // An empty context is treated as "not provided": it must not disable
+        // gathering while embedding nothing into reviewer briefs.
+        const providedContext =
+          args.context === undefined || args.context.length === 0
+            ? undefined
+            : args.context;
+        if (judgeModel !== undefined && providedContext === undefined) {
           const parsedJudgeModel = parsedModels.get(judgeModel);
           if (parsedJudgeModel === undefined)
             throw new Error(`Unvalidated judge model: ${judgeModel}`);
@@ -433,7 +439,7 @@ export function createCrossReviewTool(
           }
         }
 
-        const gathered = args.context ?? gatheredContext;
+        const gathered = providedContext ?? gatheredContext;
         const brief = reviewBrief(args.target, sharedFocus, gathered);
         const reviewerResults = await runLimited(
           reviewers.length,
@@ -635,12 +641,11 @@ export function createCrossReviewTool(
                         text: [
                           "Act as the read-only cross-review judge.",
                           `Target: ${args.target}`,
-                          ...(args.context === undefined ||
-                          args.context.length === 0
+                          ...(providedContext === undefined
                             ? []
                             : [
                                 "Shared target context (already gathered; verify findings against it):",
-                                args.context,
+                                providedContext,
                               ]),
                           "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
                           "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",

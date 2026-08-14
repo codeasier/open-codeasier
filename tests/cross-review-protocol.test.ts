@@ -931,6 +931,100 @@ describe("asynchronous cross-review protocol", () => {
     );
   });
 
+  it("degrades to reviewing when gatherer dispatch fails", async () => {
+    const { client } = mockClient();
+    client.session.promptAsync.mockRejectedValueOnce(
+      new Error("gather dispatch lost"),
+    );
+    const tools = protocol(client, new MemoryRunStore());
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "HEAD",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    );
+
+    expect(started.phase).toBe("reviewing");
+    expect(started.gatherer).toMatchObject({
+      status: "failed",
+      error: "gather dispatch lost",
+    });
+    expect(started.reviewers[0].status).toBe("starting");
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cancel a terminal gatherer", async () => {
+    const { client, messages } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    messages.set("child-2", completed("gathered context"));
+
+    const progressed = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+    expect(progressed.gatherer).toMatchObject({
+      status: "succeeded",
+    });
+    expect(store.runs.get(RUN_ID)?.gatherer?.output).toBe("gathered context");
+
+    const cancelled = output(
+      await tools.cross_review_cancel.execute({ runID: RUN_ID }, context()),
+    );
+
+    expect(cancelled.phase).toBe("cancelled");
+    expect(cancelled.gatherer).toMatchObject({ status: "succeeded" });
+    expect(store.runs.get(RUN_ID)?.gatherer?.output).toBe("gathered context");
+    expect(store.runs.get(RUN_ID)?.gatherer?.error).toBeUndefined();
+    expect(cancelled.reviewers[0].status).toBe("cancelled");
+  });
+
+  it("treats an empty context as not provided and still gathers", async () => {
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: "",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    );
+
+    expect(started.phase).toBe("gathering");
+    expect(started.gatherer).toBeDefined();
+    expect(
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text,
+    ).toContain("context gatherer");
+  });
+
+  it("rejects an empty context through the argument schema", async () => {
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    expect(tools.cross_review_start.args.context.safeParse("").success).toBe(
+      false,
+    );
+  });
+
   it("cancels an active gatherer session", async () => {
     const { client } = mockClient();
     const tools = protocol(client, new MemoryRunStore());

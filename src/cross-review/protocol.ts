@@ -837,6 +837,16 @@ export function createCrossReviewProtocolTools(
   ) {
     const gatherer = run.gatherer;
     if (gatherer === undefined) return;
+    // Gathering is an optimization: when it fails or times out, degrade to
+    // independent fetching rather than failing the whole review. On success
+    // the gathered output becomes the shared context reviewers must verify
+    // against; it stays in the judge session's own history, so the later
+    // judge prompt does not need to repeat it.
+    const transitionToReviewing = async () => {
+      run.phase = "reviewing";
+      await save();
+      await dispatchAvailable(run, save, context);
+    };
     if (gatherer.status === "queued") {
       if (migrateMessageIDs(run)) await save();
       const startedAt = now();
@@ -867,10 +877,18 @@ export function createCrossReviewProtocolTools(
           gatherer.completedAt = now();
           gatherer.error = dispatchError;
         } catch (abortError) {
+          // The session could not be confirmed stopped; keep the same
+          // message ID queued for redispatch under the original deadline.
           gatherer.status = "starting";
           gatherer.error = `${dispatchError}; ${errorMessage(abortError)}`;
+          await save();
+          return;
         }
         await save();
+        // A confirmed dispatch failure is terminal for the gatherer: degrade
+        // to independent fetching instead of leaving the run stuck in the
+        // gathering phase. A parent abort is finalized by the caller.
+        if (!context.abort.aborted) await transitionToReviewing();
       }
       return;
     }
@@ -894,16 +912,6 @@ export function createCrossReviewProtocolTools(
       gatherer.completedAt = timestamp;
       gatherer.error = `Gatherer timed out after ${run.reviewerTimeoutMs}ms${abortWarning ?? ""}`;
       delete gatherer.retry;
-    };
-    // Gathering is an optimization: when it fails or times out, degrade to
-    // independent fetching rather than failing the whole review. On success
-    // the gathered output becomes the shared context reviewers must verify
-    // against; it stays in the judge session's own history, so the later
-    // judge prompt does not need to repeat it.
-    const transitionToReviewing = async () => {
-      run.phase = "reviewing";
-      await save();
-      await dispatchAvailable(run, save, context);
     };
     const status = statuses[gatherer.sessionID];
     if (status?.type === "busy" && !deadlineReached) {
@@ -1052,7 +1060,7 @@ export function createCrossReviewProtocolTools(
       "Start isolated cross-review sessions asynchronously and return a run ID",
     args: {
       target: tool.schema.string().min(1).max(4_000),
-      context: tool.schema.string().max(1_000_000).optional(),
+      context: tool.schema.string().min(1).max(1_000_000).optional(),
       reviewModels: tool.schema
         .array(tool.schema.string())
         .min(1)
@@ -1145,7 +1153,14 @@ export function createCrossReviewProtocolTools(
         }
         const timestamp = now();
         const warning = configWarning(loaded);
-        const gathers = judgeModel !== undefined && args.context === undefined;
+        // An empty context is treated as "not provided": it must not disable
+        // gathering while embedding nothing into reviewer briefs.
+        const providedContext =
+          args.context === undefined || args.context.length === 0
+            ? undefined
+            : args.context;
+        const gathers =
+          judgeModel !== undefined && providedContext === undefined;
         const run: CrossReviewRun = {
           schemaVersion: RUN_SCHEMA_VERSION,
           runID,
@@ -1158,9 +1173,11 @@ export function createCrossReviewProtocolTools(
           brief: reviewBrief(
             args.target,
             args.focus ?? loaded.config.focus,
-            args.context,
+            providedContext,
           ),
-          ...(args.context === undefined ? {} : { context: args.context }),
+          ...(providedContext === undefined
+            ? {}
+            : { context: providedContext }),
           ...(warning === undefined ? {} : { warning }),
           quorum: Math.floor(reviewers.length / 2) + 1,
           maxConcurrency,
@@ -1331,7 +1348,8 @@ export function createCrossReviewProtocolTools(
         let gathererAbortWarning: string | undefined;
         if (
           run.gatherer?.sessionID !== undefined &&
-          (run.gatherer.status === "starting" ||
+          (run.gatherer.status === "queued" ||
+            run.gatherer.status === "starting" ||
             run.gatherer.status === "running" ||
             run.gatherer.status === "retrying")
         ) {
@@ -1340,6 +1358,10 @@ export function createCrossReviewProtocolTools(
           } catch (error) {
             gathererAbortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
           }
+          run.gatherer.status = "cancelled";
+          run.gatherer.completedAt = timestamp;
+          run.gatherer.error = `Cross-review cancelled${gathererAbortWarning ?? ""}`;
+          await save();
         }
         let judgeAbortWarning: string | undefined;
         if (
@@ -1353,12 +1375,6 @@ export function createCrossReviewProtocolTools(
           } catch (error) {
             judgeAbortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
           }
-        }
-        if (run.gatherer !== undefined) {
-          run.gatherer.status = "cancelled";
-          run.gatherer.completedAt = timestamp;
-          run.gatherer.error = `Cross-review cancelled${gathererAbortWarning ?? ""}`;
-          await save();
         }
         if (run.judge !== undefined) {
           run.judge.status = "cancelled";
