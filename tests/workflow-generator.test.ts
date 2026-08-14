@@ -202,6 +202,42 @@ describe("workflow generator", () => {
     );
     expect(openCrossReview).toContain("restart OpenCode afterward");
     expect(openCrossReview).not.toContain("provider/...` placeholder");
+    expect(openCrossReview).toContain(
+      "read it first and detect its reviewer format",
+    );
+    expect(openCrossReview).toContain(
+      "an existing `reviewers` array, a flat `reviewModels` list, a config without any reviewer key",
+    );
+    expect(openCrossReview).toContain(
+      "the model-free `{}` created by `init`, or only non-reviewer keys such as `agents`, `judgeModel`, or `maxConcurrency`",
+    );
+    expect(openCrossReview).toContain(
+      "For a new destination, an existing config without a reviewer key, or an existing `reviewers` destination, collect an optional focus for each reviewer",
+    );
+    expect(openCrossReview).toContain(
+      "preserve its detected `reviewers` or `reviewModels` format",
+    );
+    expect(openCrossReview).toContain(
+      "never write `reviewers` alongside an existing `reviewModels`",
+    );
+    expect(openCrossReview).toContain(
+      "ask the user which of `reviewers` and `reviewModels` to retain, then write that key only, dropping the other while keeping every remaining key such as `agents`, `judgeModel`, and `focus`",
+    );
+    expect(openCrossReview).toContain(
+      "If the file is invalid for any other reason",
+    );
+    expect(openCrossReview).toContain(
+      "unknown keys, malformed `reviewers` or `reviewModels` values, out-of-range `agents` or `maxConcurrency`, or invalid JSON",
+    );
+    expect(openCrossReview).toContain(
+      "stop, show the validation error, and ask the user to repair it before collecting fields",
+    );
+    expect(openCrossReview).toContain(
+      "for an existing `reviewModels` destination, collect the flat model list plus one optional shared `focus`",
+    );
+    expect(openCrossReview).not.toContain(
+      "then collect an optional focus for each reviewer and max concurrency",
+    );
     const openAgent = await readFile(
       join(open.target, "agents/cross-reviewer.md"),
       "utf8",

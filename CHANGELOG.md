@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   setup, so a team can pin the reviewer and judge deadline instead of passing
   `--reviewer-timeout-ms` on every invocation.
 
+### Fixed
+
+- Keep cross-review setup on the destination's existing `reviewers` or
+  `reviewModels` format instead of writing a conflicting `reviewers` array
+  into a flat `reviewModels` config.
+
 ## [0.2.6] - 2026-08-13
 
 ### Fixed
