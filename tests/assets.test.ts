@@ -43,6 +43,27 @@ describe("distributed workflow assets", () => {
     }
   });
 
+  it("keeps cross-review from globbing hidden project config", async () => {
+    const content = await readFile("skills/cross-review/SKILL.md", "utf8");
+    expect(content).toContain("Do not glob `.opencode/**`");
+    expect(content).toContain(
+      "Call `cross_review_start` with the target plus only user-supplied overrides",
+    );
+    expect(content).toContain(
+      "never copy models from either config file into `--review-models`",
+    );
+    expect(content).toContain(
+      "never probe config files to reconstruct options",
+    );
+    expect(content).toContain("~/.config/opencode/cross-review.json");
+    expect(content).toContain("does not use `~/.opencode`");
+    expect(content).not.toContain("~/.opencode/cross-review.json");
+    expect(content).toContain(
+      "If `cross_review_start` reports that no review models are configured",
+    );
+    expect(content).not.toContain("both canonical paths are absent");
+  });
+
   it("packages the handoff skill and command for installation", async () => {
     const paths = (await discoverAssets()).map((asset) => asset.relativeTarget);
     expect(paths).toContain("skills/handoff/SKILL.md");
