@@ -5,7 +5,7 @@ import { fetchSessionReviewInput, type SessionClient } from "./fetch.js";
 export function createSessionReviewTool(client: SessionClient) {
   return tool({
     description:
-      "Read and normalize one explicit OpenCode session for evidence-based review",
+      "Read and normalize one explicit OpenCode session for evidence-based review; invoke only with explicit user review intent from primary sessions",
     args: {
       sessionID: tool.schema.string().min(1),
       mode: tool.schema.enum(["summary", "troubleshoot"]),

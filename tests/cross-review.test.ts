@@ -228,6 +228,24 @@ describe("cross_review tool", () => {
     expect(calls.every((call) => call.body.tools.edit === false)).toBe(true);
     expect(calls.every((call) => call.body.tools.task === false)).toBe(true);
     expect(calls.every((call) => call.body.tools.write === false)).toBe(true);
+    expect(calls.every((call) => call.body.tools.cross_review === false)).toBe(
+      true,
+    );
+    expect(
+      calls.every((call) => call.body.tools.cross_review_start === false),
+    ).toBe(true);
+    expect(
+      calls.every((call) => call.body.tools.cross_review_status === false),
+    ).toBe(true);
+    expect(
+      calls.every((call) => call.body.tools.cross_review_cancel === false),
+    ).toBe(true);
+    expect(
+      calls.every((call) => call.body.tools.cross_review_finalize === false),
+    ).toBe(true);
+    expect(
+      calls.every((call) => call.body.tools.session_review === false),
+    ).toBe(true);
     expect(JSON.parse((output as any).output)).toMatchObject({
       quorum: 3,
       judge: { model: "parent-session" },
@@ -429,6 +447,12 @@ describe("cross_review tool", () => {
       edit: false,
       task: false,
       write: false,
+      cross_review: false,
+      cross_review_start: false,
+      cross_review_status: false,
+      cross_review_cancel: false,
+      cross_review_finalize: false,
+      session_review: false,
     });
   });
 

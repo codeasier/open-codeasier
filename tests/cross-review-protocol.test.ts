@@ -211,6 +211,12 @@ describe("asynchronous cross-review protocol", () => {
             bash: false,
             edit: false,
             task: false,
+            cross_review: false,
+            cross_review_start: false,
+            cross_review_status: false,
+            cross_review_cancel: false,
+            cross_review_finalize: false,
+            session_review: false,
           }),
         }),
       }),
@@ -1388,6 +1394,46 @@ describe("asynchronous cross-review protocol", () => {
     });
     expect(finalized.reviewers.map((reviewer: any) => reviewer.status)).toEqual(
       ["succeeded", "failed", "failed"],
+    );
+  });
+
+  it("rejects cross_review_start from child sessions with a parentID", async () => {
+    const { client } = mockClient();
+    client.session.get = vi.fn().mockResolvedValue({
+      data: { id: "child-session", parentID: "root-parent-session" },
+    });
+    const tools = protocol(client, new MemoryRunStore());
+
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context("child-session"),
+      ),
+    ).rejects.toThrow(
+      "cross_review_start can only be invoked from primary sessions",
+    );
+    expect(client.session.create).not.toHaveBeenCalled();
+  });
+
+  it("allows cross_review_start from primary sessions without a parentID", async () => {
+    const { client } = mockClient();
+    client.session.get = vi.fn().mockResolvedValue({
+      data: { id: "primary-session" },
+    });
+    const tools = protocol(client, new MemoryRunStore());
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context("primary-session"),
+      ),
+    );
+    expect(started.runID).toBe(RUN_ID);
+    expect(client.session.get).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: { id: "primary-session" },
+        query: { directory: "/repo" },
+      }),
     );
   });
 });
