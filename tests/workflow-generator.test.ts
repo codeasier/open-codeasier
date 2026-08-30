@@ -238,6 +238,22 @@ describe("workflow generator", () => {
     expect(openCrossReview).not.toContain(
       "then collect an optional focus for each reviewer and max concurrency",
     );
+    expect(openCrossReview).toContain("Do not glob `.opencode/**`");
+    expect(openCrossReview).toContain(
+      "Call `cross_review_start` with the target plus only user-supplied overrides",
+    );
+    expect(openCrossReview).toContain(
+      "never copy models from either config file into `--review-models`",
+    );
+    expect(openCrossReview).toContain(
+      "Read or `test -f` those two canonical paths only",
+    );
+    expect(openCrossReview).toContain("~/.config/opencode/cross-review.json");
+    expect(openCrossReview).toContain("does not use `~/.opencode`");
+    expect(openCrossReview).not.toContain("~/.opencode/cross-review.json");
+    expect(openCrossReview).toContain(
+      "Do not infer that configuration is missing from a glob result",
+    );
     const openAgent = await readFile(
       join(open.target, "agents/cross-reviewer.md"),
       "utf8",
