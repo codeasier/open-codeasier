@@ -13,6 +13,7 @@ export type SessionClient = {
     get(input: {
       path: { id: string };
       query?: { directory?: string };
+      signal?: AbortSignal;
     }): Promise<SdkResult<Session>>;
     messages(input: {
       path: { id: string };

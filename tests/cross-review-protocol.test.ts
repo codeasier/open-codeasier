@@ -140,6 +140,9 @@ function mockClient() {
       }),
     },
     session: {
+      get: vi.fn().mockImplementation(async (input) => ({
+        data: { id: input.path.id },
+      })),
       create: vi.fn().mockImplementation(async () => ({
         data: { id: `child-${++nextID}` },
       })),
@@ -211,6 +214,12 @@ describe("asynchronous cross-review protocol", () => {
             bash: false,
             edit: false,
             task: false,
+            cross_review: false,
+            cross_review_start: false,
+            cross_review_status: false,
+            cross_review_cancel: false,
+            cross_review_finalize: false,
+            session_review: false,
           }),
         }),
       }),
@@ -1388,6 +1397,78 @@ describe("asynchronous cross-review protocol", () => {
     });
     expect(finalized.reviewers.map((reviewer: any) => reviewer.status)).toEqual(
       ["succeeded", "failed", "failed"],
+    );
+  });
+
+  it("rejects cross_review_start from child sessions with a parentID", async () => {
+    const { client } = mockClient();
+    client.session.get = vi.fn().mockResolvedValue({
+      data: { id: "child-session", parentID: "root-parent-session" },
+    });
+    const tools = protocol(client, new MemoryRunStore());
+
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context("child-session"),
+      ),
+    ).rejects.toThrow(
+      "cross_review_start can only be invoked from primary sessions",
+    );
+    expect(client.session.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross_review_start when session inspection is unavailable", async () => {
+    const { client } = mockClient();
+    (client.session as { get?: unknown }).get = undefined;
+    const tools = protocol(client, new MemoryRunStore());
+
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      ),
+    ).rejects.toThrow(
+      "cross_review_start can only be invoked from primary sessions: session inspection is unavailable",
+    );
+    expect(client.session.create).not.toHaveBeenCalled();
+  });
+
+  it("attaches the underlying session inspection error", async () => {
+    const { client } = mockClient();
+    client.session.get = vi.fn().mockResolvedValue({
+      error: { name: "APIError", data: { message: "unavailable" } },
+    });
+    const tools = protocol(client, new MemoryRunStore());
+
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      ),
+    ).rejects.toThrow("Session inspection failed: unavailable");
+    expect(client.session.create).not.toHaveBeenCalled();
+  });
+
+  it("allows cross_review_start from primary sessions without a parentID", async () => {
+    const { client } = mockClient();
+    client.session.get = vi.fn().mockResolvedValue({
+      data: { id: "primary-session" },
+    });
+    const tools = protocol(client, new MemoryRunStore());
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context("primary-session"),
+      ),
+    );
+    expect(started.runID).toBe(RUN_ID);
+    expect(client.session.get).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: { id: "primary-session" },
+        query: { directory: "/repo" },
+      }),
     );
   });
 });

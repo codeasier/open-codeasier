@@ -1,6 +1,7 @@
 import type { Plugin, PluginModule } from "@opencode-ai/plugin";
 import {
   createCrossReviewTool,
+  PRIMARY_TOOL_IDS,
   type CrossReviewClient,
 } from "./cross-review/tool.js";
 import {
@@ -15,6 +16,14 @@ export const server: Plugin = async ({ client }) => {
     client as AsyncCrossReviewClient,
   );
   return {
+    config: async (config) => {
+      const existing = config.experimental?.primary_tools ?? [];
+      const merged = Array.from(new Set([...existing, ...PRIMARY_TOOL_IDS]));
+      config.experimental = {
+        ...config.experimental,
+        primary_tools: merged,
+      };
+    },
     tool: {
       cross_review: createCrossReviewTool(client as CrossReviewClient),
       ...protocol,

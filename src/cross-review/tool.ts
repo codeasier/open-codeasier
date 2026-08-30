@@ -1,4 +1,5 @@
 import { tool } from "@opencode-ai/plugin";
+import { assertPrimarySession } from "../primary-session.js";
 import {
   loadCrossReviewConfig,
   MODEL_ID,
@@ -9,12 +10,27 @@ import {
 export const REVIEWER_AGENT = "cross-reviewer";
 const DEFAULT_AGENTS = 3;
 const DEFAULT_CONCURRENCY = 3;
+export const PRIMARY_TOOL_IDS = [
+  "cross_review",
+  "cross_review_start",
+  "cross_review_status",
+  "cross_review_cancel",
+  "cross_review_finalize",
+  "session_review",
+] as const;
+
 export const READ_ONLY_TOOLS = {
   bash: false,
   edit: false,
   patch: false,
   task: false,
   write: false,
+  cross_review: false,
+  cross_review_start: false,
+  cross_review_status: false,
+  cross_review_cancel: false,
+  cross_review_finalize: false,
+  session_review: false,
 } as const;
 
 export type ApiResult<T> = { data?: T; error?: unknown };
@@ -37,6 +53,11 @@ export type CrossReviewClient = {
     >;
   };
   session: {
+    get(input: {
+      path: { id: string };
+      query?: { directory?: string };
+      signal?: AbortSignal;
+    }): Promise<ApiResult<{ id: string; parentID?: string }>>;
     create(input: {
       body: { parentID: string; title: string };
       query: { directory: string };
@@ -261,7 +282,7 @@ export function createCrossReviewTool(
 ) {
   return tool({
     description:
-      "Legacy blocking cross-review entry point; prefer cross_review_start/status/finalize",
+      "Legacy blocking cross-review entry point; invoke only with explicit user review intent from primary sessions and prefer cross_review_start/status/finalize",
     args: {
       target: tool.schema.string().min(1).max(4_000),
       context: tool.schema.string().min(1).max(1_000_000).optional(),
@@ -276,6 +297,13 @@ export function createCrossReviewTool(
       focus: tool.schema.string().max(2_000).optional(),
     },
     async execute(args, context) {
+      if (context.abort.aborted) throw new Error("Cross-review cancelled");
+      await assertPrimarySession(
+        client,
+        context,
+        "cross_review",
+        context.abort,
+      );
       const sessions = new Set<string>();
       const abortSessions = () => {
         for (const id of sessions)

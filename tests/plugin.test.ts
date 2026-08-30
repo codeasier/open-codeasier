@@ -64,6 +64,11 @@ describe("plugin module", () => {
       },
     );
     expect(client.session.get).toHaveBeenCalledWith({
+      path: { id: "current" },
+      query: { directory: "/repo" },
+      signal: expect.any(AbortSignal),
+    });
+    expect(client.session.get).toHaveBeenCalledWith({
       path: { id: "ses_123" },
       query: { directory: "/repo" },
     });
@@ -72,5 +77,43 @@ describe("plugin module", () => {
       metadata: { mode: "summary", truncated: false, omittedMessages: 0 },
     });
     expect((output as any).output).toContain('"sessionID":"ses_123"');
+  });
+
+  it("configures review tools as primary_tools in experimental config hook", async () => {
+    const hooks = await plugin.server({
+      client: {},
+      project: {},
+      directory: "/repo",
+      worktree: "/repo",
+      serverUrl: new URL("http://localhost"),
+    } as any);
+
+    expect(hooks.config).toBeDefined();
+    const config: any = {
+      experimental: {
+        primary_tools: ["custom_primary"],
+      },
+    };
+    await hooks.config?.(config);
+    expect(config.experimental.primary_tools).toEqual([
+      "custom_primary",
+      "cross_review",
+      "cross_review_start",
+      "cross_review_status",
+      "cross_review_cancel",
+      "cross_review_finalize",
+      "session_review",
+    ]);
+
+    const emptyConfig: any = {};
+    await hooks.config?.(emptyConfig);
+    expect(emptyConfig.experimental.primary_tools).toEqual([
+      "cross_review",
+      "cross_review_start",
+      "cross_review_status",
+      "cross_review_cancel",
+      "cross_review_finalize",
+      "session_review",
+    ]);
   });
 });

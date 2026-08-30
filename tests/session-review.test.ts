@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { SessionReviewError } from "../src/session-review/errors.js";
 import { fetchSessionReviewInput } from "../src/session-review/fetch.js";
+import { createSessionReviewTool } from "../src/session-review/tool.js";
 
 const session = { id: "ses_1", title: "x", time: { created: 1, updated: 2 } };
 const messages = [
@@ -98,5 +99,77 @@ describe("session SDK boundary", () => {
     });
     await expect(promise).rejects.toBeInstanceOf(SessionReviewError);
     await expect(promise).rejects.not.toThrow(/token|secret/);
+  });
+});
+
+function toolContext(sessionID = "current") {
+  return {
+    sessionID,
+    messageID: "m",
+    agent: "a",
+    directory: "/repo",
+    worktree: "/repo",
+    abort: new AbortController().signal,
+    metadata() {},
+    async ask() {},
+  } as any;
+}
+
+describe("session_review tool", () => {
+  it("rejects invocations from child sessions with a parentID", async () => {
+    const client = {
+      session: {
+        get: vi
+          .fn()
+          .mockResolvedValue(
+            result({ ...session, id: "child-session", parentID: "root" }),
+          ),
+        messages: vi.fn(),
+      },
+    };
+    await expect(
+      createSessionReviewTool(client as any).execute(
+        { sessionID: "ses_1", mode: "summary" },
+        toolContext("child-session"),
+      ),
+    ).rejects.toThrow(
+      "session_review can only be invoked from primary sessions",
+    );
+    expect(client.session.messages).not.toHaveBeenCalled();
+    expect(client.session.get).toHaveBeenCalledWith({
+      path: { id: "child-session" },
+      query: { directory: "/repo" },
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("reads the target session from a primary caller", async () => {
+    const client = {
+      session: {
+        get: vi.fn().mockImplementation(async (input) => {
+          if (input.path.id === "current")
+            return result({ ...session, id: "current" });
+          return result(session);
+        }),
+        messages: vi.fn().mockResolvedValue(result(messages)),
+      },
+    };
+    const output = await createSessionReviewTool(client as any).execute(
+      { sessionID: "ses_1", mode: "summary" },
+      toolContext(),
+    );
+    expect(output).toMatchObject({
+      title: "Session review input: ses_1",
+      metadata: { mode: "summary", truncated: false, omittedMessages: 0 },
+    });
+    expect(client.session.get).toHaveBeenCalledWith({
+      path: { id: "current" },
+      query: { directory: "/repo" },
+      signal: expect.any(AbortSignal),
+    });
+    expect(client.session.get).toHaveBeenCalledWith({
+      path: { id: "ses_1" },
+      query: { directory: "/repo" },
+    });
   });
 });

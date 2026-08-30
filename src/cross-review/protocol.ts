@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
+import { assertPrimarySession } from "../primary-session.js";
 import {
   configWarning,
   embeddedContext,
@@ -85,6 +86,11 @@ export type AsyncCrossReviewClient = {
     >;
   };
   session: {
+    get(input: {
+      path: { id: string };
+      query?: { directory?: string };
+      signal?: AbortSignal;
+    }): Promise<ApiResult<{ id: string; parentID?: string }>>;
     create(input: {
       body: { parentID: string; title: string };
       query: { directory: string };
@@ -1134,7 +1140,7 @@ export function createCrossReviewProtocolTools(
 
   const start = tool({
     description:
-      "Start isolated cross-review sessions asynchronously and return a run ID",
+      "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user review intent from primary sessions",
     args: {
       target: tool.schema.string().min(1).max(4_000),
       context: tool.schema.string().min(1).max(1_000_000).optional(),
@@ -1156,6 +1162,12 @@ export function createCrossReviewProtocolTools(
     },
     async execute(args, context) {
       if (context.abort.aborted) throw new Error("Cross-review cancelled");
+      await assertPrimarySession(
+        client,
+        context,
+        "cross_review_start",
+        requestSignal(context.abort),
+      );
       const directory = await canonicalize(context.directory);
       const loaded = await loadConfig(context.directory);
       const reviewers = resolveReviewers(args, loaded.config);
@@ -1368,7 +1380,7 @@ export function createCrossReviewProtocolTools(
 
   const status = tool({
     description:
-      "Poll and advance one asynchronous cross-review run without blocking",
+      "Poll and advance one asynchronous cross-review run without blocking; invoke only with explicit user review intent from primary sessions",
     args: {
       runID: tool.schema.string().uuid(),
       detail: tool.schema.boolean().optional(),
@@ -1391,7 +1403,8 @@ export function createCrossReviewProtocolTools(
   });
 
   const cancel = tool({
-    description: "Cancel one asynchronous cross-review run",
+    description:
+      "Cancel one asynchronous cross-review run; invoke only with explicit user review intent from primary sessions",
     args: { runID: tool.schema.string().uuid() },
     async execute(args, context) {
       return withAuthorizedRun(args.runID, context, async (run, save) => {
@@ -1479,7 +1492,7 @@ export function createCrossReviewProtocolTools(
 
   const finalize = tool({
     description:
-      "Finalize an asynchronous cross-review run or start its explicit judge",
+      "Finalize an asynchronous cross-review run or start its explicit judge; invoke only with explicit user review intent from primary sessions",
     args: { runID: tool.schema.string().uuid() },
     async execute(args, context) {
       return withAuthorizedRun(args.runID, context, async (run, save) => {
