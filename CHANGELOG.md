@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-08-31
+
 ### Fixed
 
+- Restrict cross-review and session-review tools to primary sessions, preventing
+  child sessions from recursively invoking review workflows. The plugin also
+  marks the tools as primary-only and fails closed when caller inspection is
+  unavailable.
 - Stop the cross-review skill from treating a glob miss on hidden
   `.opencode/` as missing project config, which caused agents to copy
   stale global models into `--review-models`. Review mode now calls
@@ -174,7 +180,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/codeasier/open-codeasier/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/codeasier/open-codeasier/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/codeasier/open-codeasier/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/codeasier/open-codeasier/compare/v0.2.6...v0.2.7
