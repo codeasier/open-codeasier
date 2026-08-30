@@ -246,14 +246,15 @@ describe("workflow generator", () => {
       "never copy models from either config file into `--review-models`",
     );
     expect(openCrossReview).toContain(
-      "Read or `test -f` those two canonical paths only",
+      "never probe config files to reconstruct options",
     );
     expect(openCrossReview).toContain("~/.config/opencode/cross-review.json");
     expect(openCrossReview).toContain("does not use `~/.opencode`");
     expect(openCrossReview).not.toContain("~/.opencode/cross-review.json");
     expect(openCrossReview).toContain(
-      "Do not infer that configuration is missing from a glob result",
+      "If `cross_review_start` reports that no review models are configured",
     );
+    expect(openCrossReview).not.toContain("both canonical paths are absent");
     const openAgent = await readFile(
       join(open.target, "agents/cross-reviewer.md"),
       "utf8",

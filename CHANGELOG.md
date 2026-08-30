@@ -12,8 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Stop the cross-review skill from treating a glob miss on hidden
   `.opencode/` as missing project config, which caused agents to copy
   stale global models into `--review-models`. Review mode now calls
-  `cross_review_start` with the target and user-supplied overrides only,
-  and probes the two canonical config paths with Read or `test -f`.
+  `cross_review_start` with the target and user-supplied overrides only
+  and lets the plugin resolve project, shared-worktree, and global config.
 
 ## [0.2.9] - 2026-08-15
 

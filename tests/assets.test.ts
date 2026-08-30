@@ -53,14 +53,15 @@ describe("distributed workflow assets", () => {
       "never copy models from either config file into `--review-models`",
     );
     expect(content).toContain(
-      "Read or `test -f` those two canonical paths only",
+      "never probe config files to reconstruct options",
     );
     expect(content).toContain("~/.config/opencode/cross-review.json");
     expect(content).toContain("does not use `~/.opencode`");
     expect(content).not.toContain("~/.opencode/cross-review.json");
     expect(content).toContain(
-      "Do not infer that configuration is missing from a glob result",
+      "If `cross_review_start` reports that no review models are configured",
     );
+    expect(content).not.toContain("both canonical paths are absent");
   });
 
   it("packages the handoff skill and command for installation", async () => {
