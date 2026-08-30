@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
+import { assertPrimarySession } from "../primary-session.js";
 import {
   configWarning,
   embeddedContext,
@@ -85,7 +86,7 @@ export type AsyncCrossReviewClient = {
     >;
   };
   session: {
-    get?(input: {
+    get(input: {
       path: { id: string };
       query?: { directory?: string };
       signal?: AbortSignal;
@@ -1161,21 +1162,12 @@ export function createCrossReviewProtocolTools(
     },
     async execute(args, context) {
       if (context.abort.aborted) throw new Error("Cross-review cancelled");
-      if (client.session.get !== undefined) {
-        const caller = responseData(
-          await client.session.get({
-            path: { id: context.sessionID },
-            query: { directory: context.directory },
-            signal: requestSignal(context.abort),
-          }),
-          "Session inspection",
-        );
-        if (caller.parentID !== undefined) {
-          throw new Error(
-            "cross_review_start can only be invoked from primary sessions",
-          );
-        }
-      }
+      await assertPrimarySession(
+        client,
+        context,
+        "cross_review_start",
+        requestSignal(context.abort),
+      );
       const directory = await canonicalize(context.directory);
       const loaded = await loadConfig(context.directory);
       const reviewers = resolveReviewers(args, loaded.config);

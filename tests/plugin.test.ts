@@ -64,6 +64,11 @@ describe("plugin module", () => {
       },
     );
     expect(client.session.get).toHaveBeenCalledWith({
+      path: { id: "current" },
+      query: { directory: "/repo" },
+      signal: expect.any(AbortSignal),
+    });
+    expect(client.session.get).toHaveBeenCalledWith({
       path: { id: "ses_123" },
       query: { directory: "/repo" },
     });

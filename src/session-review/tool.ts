@@ -1,4 +1,5 @@
 import { tool } from "@opencode-ai/plugin";
+import { assertPrimarySession } from "../primary-session.js";
 import { SessionReviewError } from "./errors.js";
 import { fetchSessionReviewInput, type SessionClient } from "./fetch.js";
 
@@ -13,6 +14,12 @@ export function createSessionReviewTool(client: SessionClient) {
     },
     async execute(args, context) {
       try {
+        await assertPrimarySession(
+          client,
+          context,
+          "session_review",
+          context.abort,
+        );
         const review = await fetchSessionReviewInput({
           client,
           directory: context.directory,

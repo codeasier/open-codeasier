@@ -59,6 +59,9 @@ function client(prompt?: CrossReviewClient["session"]["prompt"]) {
       }),
     },
     session: {
+      get: vi.fn().mockImplementation(async (input) => ({
+        data: { id: input.path.id },
+      })),
       create: vi.fn().mockImplementation(async () => ({
         data: { id: `child-${++nextID}` },
       })),
@@ -789,6 +792,35 @@ describe("cross_review tool", () => {
       project: "absent",
       global: "absent",
     });
+  });
+
+  it("rejects invocations from child sessions with a parentID", async () => {
+    const mock = client();
+    mock.session.get.mockResolvedValue({
+      data: { id: "parent", parentID: "root-parent-session" },
+    });
+    await expect(
+      createCrossReviewTool(mock, emptyConfig).execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      ),
+    ).rejects.toThrow("cross_review can only be invoked from primary sessions");
+    expect(mock.session.create).not.toHaveBeenCalled();
+    expect(mock.provider.list).not.toHaveBeenCalled();
+  });
+
+  it("rejects invocations when session inspection is unavailable", async () => {
+    const mock = client();
+    (mock.session as { get?: unknown }).get = undefined;
+    await expect(
+      createCrossReviewTool(mock, emptyConfig).execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      ),
+    ).rejects.toThrow(
+      "cross_review can only be invoked from primary sessions: session inspection is unavailable",
+    );
+    expect(mock.session.create).not.toHaveBeenCalled();
   });
 
   it("omits the warning and structured sources from output when the project config loads", async () => {
