@@ -203,7 +203,7 @@ describe("validate CLI", () => {
     expect(await run(["validate", path])).toBe(1);
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining(
-        "`reviewers` must be 1-8 `{ \"model\", \"focus\"? }` entries",
+        '`reviewers` must be 1-8 `{ "model", "focus"? }` entries',
       ),
     );
 
@@ -242,10 +242,7 @@ describe("validate CLI", () => {
       expect(log).toHaveBeenCalledWith(
         `valid: ${projectConfigPath(await realpath(root))}`,
       );
-      await writeFile(
-        projectConfigPath(root),
-        JSON.stringify({ agents: 0 }),
-      );
+      await writeFile(projectConfigPath(root), JSON.stringify({ agents: 0 }));
       expect(await run(["validate"])).toBe(1);
       expect(error).toHaveBeenCalledWith(
         expect.stringContaining("`agents` must be an integer from 1 to 8"),

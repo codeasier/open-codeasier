@@ -118,7 +118,9 @@ describe("cross_review tool", () => {
     ).rejects.toThrow("`maxConcurrency` must be an integer from 1 to 8");
     await expect(
       definition.execute({ target: "HEAD", reviewModels: [] }, context()),
-    ).rejects.toThrow("`reviewModels` must be 1-8 `provider/model` identifiers");
+    ).rejects.toThrow(
+      "`reviewModels` must be 1-8 `provider/model` identifiers",
+    );
     expect(mock.session.create).not.toHaveBeenCalled();
     expect(mock.provider.list).not.toHaveBeenCalled();
   });

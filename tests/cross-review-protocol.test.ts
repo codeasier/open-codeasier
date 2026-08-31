@@ -255,7 +255,9 @@ describe("asynchronous cross-review protocol", () => {
         { target: "HEAD", reviewModels: [] },
         context(),
       ),
-    ).rejects.toThrow("`reviewModels` must be 1-8 `provider/model` identifiers");
+    ).rejects.toThrow(
+      "`reviewModels` must be 1-8 `provider/model` identifiers",
+    );
     expect(client.session.create).not.toHaveBeenCalled();
     expect(client.provider.list).not.toHaveBeenCalled();
     expect(store.runs.size).toBe(0);
