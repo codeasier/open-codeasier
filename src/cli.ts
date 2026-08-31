@@ -3,7 +3,11 @@ import { readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { findGitRoot } from "./cross-review/config.js";
+import {
+  findGitRoot,
+  parseCrossReviewConfig,
+  projectConfigPath,
+} from "./cross-review/config.js";
 import {
   CrossReviewConfigConflictError,
   initializeCrossReviewConfig,
@@ -66,6 +70,48 @@ export async function run(argv: string[]): Promise<number> {
       }
       throw error;
     }
+  }
+  if (command === "validate") {
+    let requested: string | undefined;
+    while (argv.length) {
+      const option = argv.shift();
+      if (
+        option !== undefined &&
+        !option.startsWith("--") &&
+        requested === undefined
+      )
+        requested = option;
+      else return 2;
+    }
+    const requestedPath = resolve(requested ?? ".");
+    // With no explicit file, validate the project config the way
+    // loadCrossReviewConfig resolves it: the enclosing repository root.
+    const path =
+      requested === undefined
+        ? projectConfigPath((await findGitRoot(requestedPath)) ?? requestedPath)
+        : requestedPath;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readFile(path, "utf8"));
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        console.error(`Invalid JSON in ${path}: ${error.message}`);
+        return 1;
+      }
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        console.error(`Cross-review config not found: ${path}`);
+        return 1;
+      }
+      throw error;
+    }
+    try {
+      parseCrossReviewConfig(path, raw);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
+    console.log(`valid: ${path}`);
+    return 0;
   }
   if (command !== "install" && command !== "uninstall") return 2;
   let project: string | undefined;

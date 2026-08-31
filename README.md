@@ -71,7 +71,16 @@ npx open-codeasier init --global
 
 The CLI initializer writes an empty, model-free configuration and refuses to overwrite an existing file. It never guesses which providers or models you can use. Add `--dry-run` to preview the destination without writing.
 
-OpenCode can guide the same setup interactively. Run `/cross-review init` (local by default), `/cross-review init --global`, or ask the session to "set up cross-review". It treats `opencode models` as the authoritative source, shows the complete connected model list, and recommends reviewers and an optional judge only from that list. The recommendations favor code-review strength, complementary model families, and strong evidence synthesis, but you can choose any listed models. Nothing is written until you confirm the full selection.
+After editing a configuration, validate it exactly the way the runtime parses it:
+
+```bash
+npx open-codeasier validate                  # project config found from the current directory
+npx open-codeasier validate /path/to/cross-review.json
+```
+
+It prints `valid: <path>` and exits 0, or the exact validation error and exits 1. Note the value shapes: `reviewers` is an array of `{ "model", "focus"? }` objects, while `reviewModels` is a flat array of `provider/model` strings; a flat string array under the `reviewers` key is rejected.
+
+OpenCode can guide the same setup interactively. Run `/cross-review init` (local by default), `/cross-review init --global`, or ask the session to "set up cross-review". It treats `opencode models` as the authoritative source, shows the complete connected model list, and recommends reviewers and an optional judge only from that list. The recommendations favor code-review strength, complementary model families, and strong evidence synthesis, but you can choose any listed models. Nothing is written until you confirm the full selection, and the guided flow validates the written file with `npx open-codeasier validate` before reporting success.
 
 Configuration shape after guided setup (model values are schematic, not defaults):
 
