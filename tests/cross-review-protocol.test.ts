@@ -226,6 +226,41 @@ describe("asynchronous cross-review protocol", () => {
     );
   });
 
+  it("rejects out-of-range overrides without creating sessions or a run", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store);
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 0 },
+        context(),
+      ),
+    ).rejects.toThrow("`agents` must be an integer from 1 to 8");
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], maxConcurrency: 0 },
+        context(),
+      ),
+    ).rejects.toThrow("`maxConcurrency` must be an integer from 1 to 8");
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], reviewerTimeoutMs: 0 },
+        context(),
+      ),
+    ).rejects.toThrow(
+      "`reviewerTimeoutMs` must be an integer from 5000 to 3600000",
+    );
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: [] },
+        context(),
+      ),
+    ).rejects.toThrow("`reviewModels` must be 1-8 `provider/model` identifiers");
+    expect(client.session.create).not.toHaveBeenCalled();
+    expect(client.provider.list).not.toHaveBeenCalled();
+    expect(store.runs.size).toBe(0);
+  });
+
   it("returns a cancelled run when the parent aborts during dispatch", async () => {
     const abort = new AbortController();
     const { client } = mockClient();

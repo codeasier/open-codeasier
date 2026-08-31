@@ -3,6 +3,7 @@ import { assertPrimarySession } from "../primary-session.js";
 import {
   loadCrossReviewConfig,
   MODEL_ID,
+  validateCrossReviewOverrides,
   type CrossReviewConfig,
   type LoadedCrossReviewConfig,
 } from "./config.js";
@@ -208,6 +209,23 @@ export function resolveReviewers(
   },
   config: CrossReviewConfig,
 ): ReviewerTarget[] {
+  const reviewers = resolveReviewerTargets(args, config);
+  // A zero-reviewer resolution must be an error, never a valid run: it would
+  // otherwise persist a ghost run that is immediately "finalizable" with an
+  // unreachable quorum.
+  if (reviewers.length === 0)
+    throw new Error("Cross-review requires at least one reviewer");
+  return reviewers;
+}
+
+function resolveReviewerTargets(
+  args: {
+    reviewModels?: string[] | undefined;
+    agents?: number | undefined;
+    focus?: string | undefined;
+  },
+  config: CrossReviewConfig,
+): ReviewerTarget[] {
   const sharedFocus = args.focus ?? config.focus;
   const count = args.agents ?? config.agents ?? DEFAULT_AGENTS;
   const explicitModels = args.reviewModels;
@@ -324,6 +342,9 @@ export function createCrossReviewTool(
 
       try {
         throwIfCancelled();
+        // The host may not enforce the declared tool schema, so out-of-range
+        // overrides are revalidated here with the loader's bounds.
+        validateCrossReviewOverrides(args);
         context.metadata({
           title: "Cross-review: preparing",
           metadata: { target: args.target, stage: "preparing" },
