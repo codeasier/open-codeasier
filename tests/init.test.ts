@@ -251,4 +251,39 @@ describe("validate CLI", () => {
       process.chdir(previousDirectory);
     }
   });
+
+  it("defaults to the shared repository config for linked worktrees", async () => {
+    const { run } = await import("../src/cli.js");
+    const mainRoot = await fixture();
+    const worktreeRoot = await fixture();
+    const gitDirectory = join(mainRoot, ".git", "worktrees", "linked");
+    await mkdir(gitDirectory, { recursive: true });
+    await writeFile(join(gitDirectory, "commondir"), "../..\n");
+    await writeFile(join(worktreeRoot, ".git"), `gitdir: ${gitDirectory}\n`);
+    await mkdir(join(mainRoot, ".opencode"), { recursive: true });
+    await writeFile(
+      projectConfigPath(mainRoot),
+      JSON.stringify({ reviewers: [{ model: "a/one" }] }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const previousDirectory = process.cwd();
+    try {
+      process.chdir(worktreeRoot);
+      expect(await run(["validate"])).toBe(0);
+      expect(log).toHaveBeenCalledWith(`valid: ${projectConfigPath(mainRoot)}`);
+      await writeFile(
+        projectConfigPath(mainRoot),
+        JSON.stringify({ agents: 0 }),
+      );
+      expect(await run(["validate"])).toBe(1);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining("`agents` must be an integer from 1 to 8"),
+      );
+    } finally {
+      process.chdir(previousDirectory);
+    }
+  });
 });

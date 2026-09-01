@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   findGitRoot,
   parseCrossReviewConfig,
-  projectConfigPath,
+  resolveProjectConfigPath,
 } from "./cross-review/config.js";
 import {
   CrossReviewConfigConflictError,
@@ -85,10 +85,11 @@ export async function run(argv: string[]): Promise<number> {
     }
     const requestedPath = resolve(requested ?? ".");
     // With no explicit file, validate the project config the way
-    // loadCrossReviewConfig resolves it: the enclosing repository root.
+    // loadCrossReviewConfig resolves it, including the shared-root
+    // fallback for linked worktrees without an own config.
     const path =
       requested === undefined
-        ? projectConfigPath((await findGitRoot(requestedPath)) ?? requestedPath)
+        ? await resolveProjectConfigPath(requestedPath)
         : requestedPath;
     let raw: unknown;
     try {
