@@ -182,3 +182,108 @@ describe("init CLI", () => {
     );
   });
 });
+
+describe("validate CLI", () => {
+  it("accepts a runtime-valid config and rejects the shapes the parser rejects", async () => {
+    const { run } = await import("../src/cli.js");
+    const root = await fixture();
+    const path = join(root, "cross-review.json");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    await writeFile(path, JSON.stringify({ reviewers: [{ model: "a/one" }] }));
+    expect(await run(["validate", path])).toBe(0);
+    expect(log).toHaveBeenCalledWith(`valid: ${path}`);
+
+    // The exact setup-flow failure shape from issue #52: flat strings
+    // written under the `reviewers` key.
+    await writeFile(path, JSON.stringify({ reviewers: ["a/one", "b/two"] }));
+    expect(await run(["validate", path])).toBe(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '`reviewers` must be 1-8 `{ "model", "focus"? }` entries',
+      ),
+    );
+
+    await writeFile(path, "{ invalid");
+    expect(await run(["validate", path])).toBe(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining("Invalid JSON in"),
+    );
+
+    expect(await run(["validate", join(root, "missing.json")])).toBe(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining("Cross-review config not found"),
+    );
+    expect(await run(["validate", "--bogus"])).toBe(2);
+  });
+
+  it("defaults to the enclosing project's cross-review config", async () => {
+    const { run } = await import("../src/cli.js");
+    const root = await fixture();
+    const subDir = join(root, "packages", "nested");
+    await mkdir(join(root, ".git"), { recursive: true });
+    await mkdir(subDir, { recursive: true });
+    await mkdir(join(root, ".opencode"), { recursive: true });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const previousDirectory = process.cwd();
+    try {
+      process.chdir(subDir);
+      await writeFile(
+        projectConfigPath(root),
+        JSON.stringify({ reviewModels: ["a/one"] }),
+      );
+      expect(await run(["validate"])).toBe(0);
+      expect(log).toHaveBeenCalledWith(
+        `valid: ${projectConfigPath(await realpath(root))}`,
+      );
+      await writeFile(projectConfigPath(root), JSON.stringify({ agents: 0 }));
+      expect(await run(["validate"])).toBe(1);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining("`agents` must be an integer from 1 to 8"),
+      );
+    } finally {
+      process.chdir(previousDirectory);
+    }
+  });
+
+  it("defaults to the shared repository config for linked worktrees", async () => {
+    const { run } = await import("../src/cli.js");
+    const mainRoot = await fixture();
+    const worktreeRoot = await fixture();
+    const gitDirectory = join(mainRoot, ".git", "worktrees", "linked");
+    await mkdir(gitDirectory, { recursive: true });
+    await writeFile(join(gitDirectory, "commondir"), "../..\n");
+    await writeFile(join(worktreeRoot, ".git"), `gitdir: ${gitDirectory}\n`);
+    await mkdir(join(mainRoot, ".opencode"), { recursive: true });
+    await writeFile(
+      projectConfigPath(mainRoot),
+      JSON.stringify({ reviewers: [{ model: "a/one" }] }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const previousDirectory = process.cwd();
+    try {
+      process.chdir(worktreeRoot);
+      expect(await run(["validate"])).toBe(0);
+      expect(log).toHaveBeenCalledWith(`valid: ${projectConfigPath(mainRoot)}`);
+      await writeFile(
+        projectConfigPath(mainRoot),
+        JSON.stringify({ agents: 0 }),
+      );
+      expect(await run(["validate"])).toBe(1);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining("`agents` must be an integer from 1 to 8"),
+      );
+    } finally {
+      process.chdir(previousDirectory);
+    }
+  });
+});

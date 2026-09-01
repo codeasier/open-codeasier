@@ -17,7 +17,10 @@ import {
   splitModel,
   type CrossReviewConfigLoader,
 } from "./tool.js";
-import { loadCrossReviewConfig } from "./config.js";
+import {
+  loadCrossReviewConfig,
+  validateCrossReviewOverrides,
+} from "./config.js";
 import {
   FileCrossReviewRunStore,
   RUN_SCHEMA_VERSION,
@@ -1168,6 +1171,9 @@ export function createCrossReviewProtocolTools(
         "cross_review_start",
         requestSignal(context.abort),
       );
+      // The host may not enforce the declared tool schema, so out-of-range
+      // overrides are revalidated here with the loader's bounds.
+      validateCrossReviewOverrides(args);
       const directory = await canonicalize(context.directory);
       const loaded = await loadConfig(context.directory);
       const reviewers = resolveReviewers(args, loaded.config);

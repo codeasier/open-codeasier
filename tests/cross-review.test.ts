@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewTool,
+  resolveReviewers,
   type CrossReviewClient,
 } from "../src/cross-review/tool.js";
 import type {
@@ -87,7 +88,9 @@ describe("cross_review tool", () => {
         },
         context(),
       ),
-    ).rejects.toThrow("Invalid model identifier");
+    ).rejects.toThrow(
+      "`reviewModels` must be 1-8 `provider/model` identifiers",
+    );
     await expect(
       definition.execute(
         {
@@ -99,6 +102,36 @@ describe("cross_review tool", () => {
     ).rejects.toThrow("Unavailable model");
     expect(definition.args.agents.safeParse(9).success).toBe(false);
     expect(mock.session.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects out-of-range overrides before any session is created", async () => {
+    const mock = client();
+    const definition = createCrossReviewTool(mock, emptyConfig);
+    await expect(
+      definition.execute({ target: "HEAD", agents: 0 }, context()),
+    ).rejects.toThrow("`agents` must be an integer from 1 to 8");
+    await expect(
+      definition.execute(
+        { target: "HEAD", reviewModels: ["a/one"], maxConcurrency: 0 },
+        context(),
+      ),
+    ).rejects.toThrow("`maxConcurrency` must be an integer from 1 to 8");
+    await expect(
+      definition.execute({ target: "HEAD", reviewModels: [] }, context()),
+    ).rejects.toThrow(
+      "`reviewModels` must be 1-8 `provider/model` identifiers",
+    );
+    expect(mock.session.create).not.toHaveBeenCalled();
+    expect(mock.provider.list).not.toHaveBeenCalled();
+  });
+
+  it("never resolves an empty reviewer set", () => {
+    expect(() =>
+      resolveReviewers(
+        { agents: 0 },
+        { reviewers: [{ model: "a/one" }, { model: "a/two" }] },
+      ),
+    ).toThrow("Cross-review requires at least one reviewer");
   });
 
   it("rejects invocations without any configured or explicit reviewers", async () => {

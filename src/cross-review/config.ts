@@ -94,6 +94,38 @@ function isModelList(value: unknown): value is string[] {
   );
 }
 
+/**
+ * Enforce the loader's bounds on per-invocation tool overrides so an
+ * out-of-range value fails fast even when the host skips tool-schema
+ * validation.
+ */
+export function validateCrossReviewOverrides(overrides: {
+  reviewModels?: string[] | undefined;
+  agents?: number | undefined;
+  maxConcurrency?: number | undefined;
+  reviewerTimeoutMs?: number | undefined;
+}): void {
+  if (
+    overrides.reviewModels !== undefined &&
+    !isModelList(overrides.reviewModels)
+  )
+    throw new Error("`reviewModels` must be 1-8 `provider/model` identifiers");
+  if (overrides.agents !== undefined && !isBound(overrides.agents))
+    throw new Error("`agents` must be an integer from 1 to 8");
+  if (
+    overrides.maxConcurrency !== undefined &&
+    !isBound(overrides.maxConcurrency)
+  )
+    throw new Error("`maxConcurrency` must be an integer from 1 to 8");
+  if (
+    overrides.reviewerTimeoutMs !== undefined &&
+    !isReviewerTimeoutMs(overrides.reviewerTimeoutMs)
+  )
+    throw new Error(
+      "`reviewerTimeoutMs` must be an integer from 5000 to 3600000",
+    );
+}
+
 export function parseCrossReviewConfig(
   source: string,
   raw: unknown,
@@ -202,23 +234,41 @@ async function readConfigContent(path: string): Promise<unknown | undefined> {
   }
 }
 
+async function configExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+/**
+ * Resolve the project config path the way `loadCrossReviewConfig` reads
+ * it: the enclosing repository root, falling back to the shared
+ * repository root when a linked worktree has no own config.
+ */
+export async function resolveProjectConfigPath(
+  directory: string,
+): Promise<string> {
+  const enclosingGitRoot = await findGitRoot(directory);
+  const gitRoot = enclosingGitRoot ?? directory;
+  const ownPath = projectConfigPath(gitRoot);
+  if (enclosingGitRoot === undefined) return ownPath;
+  if (await configExists(ownPath)) return ownPath;
+  const sharedGitRoot = await findSharedGitRoot(gitRoot);
+  return sharedGitRoot === gitRoot ? ownPath : projectConfigPath(sharedGitRoot);
+}
+
 export async function loadCrossReviewConfig(
   directory: string,
   home = homedir(),
 ): Promise<LoadedCrossReviewConfig> {
-  const enclosingGitRoot = await findGitRoot(directory);
-  const gitRoot = enclosingGitRoot ?? directory;
-  let projectPath = projectConfigPath(gitRoot);
+  const projectPath = await resolveProjectConfigPath(directory);
   const globalPath = globalConfigPath(home);
 
-  let projectRaw = await readConfigContent(projectPath);
-  if (projectRaw === undefined && enclosingGitRoot !== undefined) {
-    const sharedGitRoot = await findSharedGitRoot(gitRoot);
-    if (sharedGitRoot !== gitRoot) {
-      projectPath = projectConfigPath(sharedGitRoot);
-      projectRaw = await readConfigContent(projectPath);
-    }
-  }
+  const projectRaw = await readConfigContent(projectPath);
   const globalRaw = await readConfigContent(globalPath);
 
   const project: CrossReviewConfig | undefined =
