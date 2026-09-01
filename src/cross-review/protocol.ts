@@ -407,6 +407,17 @@ function pollAfterMs(run: CrossReviewRun, timestamp: number) {
   return SETTLED_POLL_AFTER_MS;
 }
 
+function configObservability(run: CrossReviewRun) {
+  return {
+    config: {
+      sources: run.configSources,
+      projectConfigPath: run.projectConfigPath,
+      globalConfigPath: run.globalConfigPath,
+    },
+    ...(run.warning === undefined ? {} : { warning: run.warning }),
+  };
+}
+
 function progress(
   run: CrossReviewRun,
   includeOutputs: boolean,
@@ -429,6 +440,7 @@ function progress(
   if (!detail && !includeOutputs) return compact;
   return {
     ...compact,
+    ...configObservability(run),
     target: run.target,
     reviewers: run.reviewers.map((reviewer) =>
       publicReviewer(reviewer, includeOutputs),
@@ -501,12 +513,29 @@ function progressSummary(
 }
 
 function result(title: string, output: Record<string, unknown>) {
+  const config =
+    output.config !== undefined &&
+    typeof output.config === "object" &&
+    output.config !== null
+      ? (output.config as {
+          sources?: unknown;
+          projectConfigPath?: unknown;
+          globalConfigPath?: unknown;
+        })
+      : undefined;
   return {
     title,
     output: JSON.stringify(output),
     metadata: {
       runID: output.runID,
       phase: output.phase,
+      ...(config === undefined
+        ? {}
+        : {
+            configSources: config.sources,
+            projectConfigPath: config.projectConfigPath,
+            globalConfigPath: config.globalConfigPath,
+          }),
     },
   };
 }
@@ -1616,6 +1645,7 @@ export function createCrossReviewProtocolTools(
           ) {
             run.phase = "failed";
             run.finalResult = {
+              ...(run.warning === undefined ? {} : { warning: run.warning }),
               runID: run.runID,
               phase: run.phase,
               status: "judge-failed",

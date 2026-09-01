@@ -49,6 +49,24 @@ function loadedConfig(): Promise<LoadedCrossReviewConfig> {
   });
 }
 
+function globalFallbackConfig(): Promise<LoadedCrossReviewConfig> {
+  return Promise.resolve({
+    config: {},
+    sources: { project: "absent", global: "loaded" },
+    projectPath: "/repo/.opencode/cross-review.json",
+    globalPath: "/home/.config/opencode/cross-review.json",
+  });
+}
+
+const PROJECT_CONFIG_BLOCK = {
+  sources: { project: "loaded", global: "absent" },
+  projectConfigPath: "/repo/.opencode/cross-review.json",
+  globalConfigPath: "/home/.config/opencode/cross-review.json",
+};
+
+const GLOBAL_FALLBACK_WARNING =
+  "warning: project config not found at /repo/.opencode/cross-review.json; using global config at /home/.config/opencode/cross-review.json";
+
 function context(sessionID = "parent", abort = new AbortController()) {
   return {
     sessionID,
@@ -163,10 +181,11 @@ function protocol(
   client: AsyncCrossReviewClient,
   store: CrossReviewRunStore,
   now: () => number = () => 1_000,
+  loadConfig: () => Promise<LoadedCrossReviewConfig> = loadedConfig,
 ) {
   return createCrossReviewProtocolTools(client, {
     store,
-    loadConfig: loadedConfig,
+    loadConfig,
     now,
     createRunID: () => RUN_ID,
     canonicalize: async (directory) => directory,
@@ -263,6 +282,77 @@ describe("asynchronous cross-review protocol", () => {
     expect(store.runs.size).toBe(0);
   });
 
+  it("surfaces config resolution on start without a fallback warning", async () => {
+    const { client } = mockClient();
+    const started = await protocol(
+      client,
+      new MemoryRunStore(),
+    ).cross_review_start.execute(
+      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+
+    expect(output(started)).toMatchObject({
+      config: PROJECT_CONFIG_BLOCK,
+    });
+    expect(output(started)).not.toHaveProperty("warning");
+    expect(
+      (started as { metadata: Record<string, unknown> }).metadata,
+    ).toMatchObject({
+      runID: RUN_ID,
+      phase: "reviewing",
+      configSources: PROJECT_CONFIG_BLOCK.sources,
+      projectConfigPath: PROJECT_CONFIG_BLOCK.projectConfigPath,
+      globalConfigPath: PROJECT_CONFIG_BLOCK.globalConfigPath,
+    });
+  });
+
+  it("echoes the config fallback warning on start and detailed status only", async () => {
+    const { client } = mockClient();
+    const tools = protocol(
+      client,
+      new MemoryRunStore(),
+      () => 1_000,
+      globalFallbackConfig,
+    );
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      ),
+    );
+    expect(started.config).toEqual({
+      sources: { project: "absent", global: "loaded" },
+      projectConfigPath: "/repo/.opencode/cross-review.json",
+      globalConfigPath: "/home/.config/opencode/cross-review.json",
+    });
+    expect(started.warning).toBe(GLOBAL_FALLBACK_WARNING);
+
+    const compactResult = await tools.cross_review_status.execute(
+      { runID: RUN_ID },
+      context(),
+    );
+    const compact = output(compactResult);
+    expect(compact).not.toHaveProperty("config");
+    expect(compact).not.toHaveProperty("warning");
+    expect(
+      (compactResult as { metadata: Record<string, unknown> }).metadata,
+    ).toEqual({
+      runID: RUN_ID,
+      phase: "reviewing",
+    });
+
+    const detailed = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
+    );
+    expect(detailed.config).toEqual(started.config);
+    expect(detailed.warning).toBe(GLOBAL_FALLBACK_WARNING);
+  });
+
   it("returns a cancelled run when the parent aborts during dispatch", async () => {
     const abort = new AbortController();
     const { client } = mockClient();
@@ -317,6 +407,8 @@ describe("asynchronous cross-review protocol", () => {
     expect(status.counts).toEqual({ succeeded: 1, running: 1, starting: 1 });
     expect(status).not.toHaveProperty("reviewers");
     expect(status).not.toHaveProperty("target");
+    expect(status).not.toHaveProperty("config");
+    expect(status).not.toHaveProperty("warning");
     expect(status.pollAfterMs).toBe(3_000);
     expect(status.summary).toContain("1 succeeded of 3");
     expect(status.summary).toContain("1 running of 3");
@@ -336,6 +428,7 @@ describe("asynchronous cross-review protocol", () => {
     );
     expect(detailed.reviewers[0]).not.toHaveProperty("output");
     expect(detailed.target).toBe("HEAD");
+    expect(detailed.config).toEqual(PROJECT_CONFIG_BLOCK);
 
     const withOutput = output(
       await tools.cross_review_status.execute(
@@ -905,6 +998,42 @@ describe("asynchronous cross-review protocol", () => {
         status: "pending-parent-consolidation",
       },
       reviewers: [{ status: "succeeded", output: "candidate" }],
+    });
+  });
+
+  it("includes the config warning when an explicit judge fails", async () => {
+    const { client, messages } = mockClient();
+    const tools = protocol(
+      client,
+      new MemoryRunStore(),
+      () => 1_000,
+      globalFallbackConfig,
+    );
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    messages.set("child-1", completed("candidate"));
+    const judging = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(judging.phase).toBe("judging");
+    messages.set("child-2", failed("APIError", "judge unavailable"));
+
+    const finalized = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+
+    expect(finalized).toMatchObject({
+      phase: "failed",
+      status: "judge-failed",
+      warning: GLOBAL_FALLBACK_WARNING,
     });
   });
 

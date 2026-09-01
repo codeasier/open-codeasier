@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Surface config resolution (`config.sources` plus resolved paths) and the
+  project-config fallback `warning` on `cross_review_start` and on
+  `cross_review_status` when `detail` or `includeOutputs` is requested.
+  Compact status polls stay unchanged. Judge-failed finalize results now
+  include the same `warning` as the other terminal results.
+
 ## [0.2.10] - 2026-08-31
 
 ### Fixed
