@@ -182,6 +182,8 @@ function protocol(
   store: CrossReviewRunStore,
   now: () => number = () => 1_000,
   loadConfig: () => Promise<LoadedCrossReviewConfig> = loadedConfig,
+  defaultWaitMs = 0,
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>,
 ) {
   return createCrossReviewProtocolTools(client, {
     store,
@@ -189,6 +191,8 @@ function protocol(
     now,
     createRunID: () => RUN_ID,
     canonicalize: async (directory) => directory,
+    defaultWaitMs,
+    ...(sleep !== undefined ? { sleep } : {}),
   });
 }
 
@@ -1636,5 +1640,213 @@ describe("asynchronous cross-review protocol", () => {
         query: { directory: "/repo" },
       }),
     );
+  });
+
+  describe("waitMs long polling in cross_review_status", () => {
+    it("returns immediately without waiting when waitMs is 0", async () => {
+      const { client, statuses } = mockClient();
+      let slept = false;
+      const sleepMock = vi.fn().mockImplementation(async () => {
+        slept = true;
+      });
+      const tools = protocol(
+        client,
+        new MemoryRunStore(),
+        () => 1_000,
+        loadedConfig,
+        30_000, // defaultWaitMs is 30s
+        sleepMock,
+      );
+      await tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      );
+      statuses["child-1"] = { type: "busy" };
+
+      const status = output(
+        await tools.cross_review_status.execute(
+          { runID: RUN_ID, waitMs: 0 },
+          context(),
+        ),
+      );
+      expect(status.counts).toEqual({ running: 1 });
+      expect(sleepMock).not.toHaveBeenCalled();
+      expect(slept).toBe(false);
+    });
+
+    it("returns immediately without waiting when run is already terminal or readyToFinalize", async () => {
+      const { client, messages } = mockClient();
+      const sleepMock = vi.fn();
+      const tools = protocol(
+        client,
+        new MemoryRunStore(),
+        () => 1_000,
+        loadedConfig,
+        30_000,
+        sleepMock,
+      );
+      await tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      );
+      messages.set("child-1", completed("done"));
+
+      const status = output(
+        await tools.cross_review_status.execute(
+          { runID: RUN_ID, waitMs: 30_000 },
+          context(),
+        ),
+      );
+      expect(status.readyToFinalize).toBe(true);
+      expect(status.counts).toEqual({ succeeded: 1 });
+      expect(sleepMock).not.toHaveBeenCalled();
+    });
+
+    it("wakes up early as soon as a reviewer changes state", async () => {
+      const { client, statuses, messages } = mockClient();
+      let currentTime = 1_000;
+      let sleepCallCount = 0;
+      const sleepMock = vi.fn().mockImplementation(async (ms: number) => {
+        sleepCallCount++;
+        currentTime += ms;
+        if (sleepCallCount === 2) {
+          // On second sleep tick, reviewer finishes: session is no longer busy, and assistant completed message arrives
+          delete statuses["child-1"];
+          messages.set("child-1", completed("finished review"));
+        }
+      });
+      const tools = protocol(
+        client,
+        new MemoryRunStore(),
+        () => currentTime,
+        loadedConfig,
+        30_000,
+        sleepMock,
+      );
+      await tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      );
+      statuses["child-1"] = { type: "busy" };
+
+      const status = output(
+        await tools.cross_review_status.execute(
+          { runID: RUN_ID, waitMs: 30_000 },
+          context(),
+        ),
+      );
+      expect(sleepCallCount).toBe(2);
+      expect(status.counts).toEqual({ succeeded: 1 });
+      expect(status.readyToFinalize).toBe(true);
+    });
+
+    it("exits and returns status when waitMs timeout expires without state change", async () => {
+      const { client, statuses } = mockClient();
+      let currentTime = 1_000;
+      const sleepMock = vi.fn().mockImplementation(async (ms: number) => {
+        currentTime += ms;
+      });
+      const tools = protocol(
+        client,
+        new MemoryRunStore(),
+        () => currentTime,
+        loadedConfig,
+        0,
+        sleepMock,
+      );
+      await tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      );
+      statuses["child-1"] = { type: "busy" };
+
+      const status = output(
+        await tools.cross_review_status.execute(
+          { runID: RUN_ID, waitMs: 9_000 },
+          context(),
+        ),
+      );
+      expect(status.counts).toEqual({ running: 1 });
+      expect(sleepMock).toHaveBeenCalledTimes(3); // 3_000 * 3 = 9_000
+    });
+
+    it("aborts promptly when context.abort fires during wait", async () => {
+      const { client, statuses } = mockClient();
+      const abort = new AbortController();
+      let currentTime = 1_000;
+      const sleepMock = vi.fn().mockImplementation(async (ms: number) => {
+        currentTime += ms;
+        abort.abort();
+      });
+      const tools = protocol(
+        client,
+        new MemoryRunStore(),
+        () => currentTime,
+        loadedConfig,
+        0,
+        sleepMock,
+      );
+      await tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      );
+      statuses["child-1"] = { type: "busy" };
+
+      await expect(
+        tools.cross_review_status.execute(
+          { runID: RUN_ID, waitMs: 30_000 },
+          context("parent", abort),
+        ),
+      ).rejects.toThrow("Cross-review cancelled");
+    });
+
+    it("releases lock between sleep ticks so cancel can execute", async () => {
+      const { client, statuses } = mockClient();
+      const root = await mkdtemp(join(tmpdir(), "cross-review-wait-lock-"));
+      const store = new FileCrossReviewRunStore(root, () => 1_000);
+      let currentTime = 1_000;
+      let tick = 0;
+      const sleepMock = vi.fn().mockImplementation(async (ms: number) => {
+        tick++;
+        currentTime += ms;
+        if (tick === 1) {
+          // Concurrent cancel while status is waiting in sleep!
+          const cancelProtocol = protocol(
+            client,
+            store,
+            () => currentTime,
+            loadedConfig,
+            0,
+          );
+          await cancelProtocol.cross_review_cancel.execute(
+            { runID: RUN_ID },
+            context(),
+          );
+        }
+      });
+
+      const statusProtocol = protocol(
+        client,
+        store,
+        () => currentTime,
+        loadedConfig,
+        0,
+        sleepMock,
+      );
+      await statusProtocol.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      );
+      statuses["child-1"] = { type: "busy" };
+
+      const status = output(
+        await statusProtocol.cross_review_status.execute(
+          { runID: RUN_ID, waitMs: 30_000 },
+          context(),
+        ),
+      );
+      expect(status.phase).toBe("cancelled");
+      expect(status.counts).toEqual({ cancelled: 1 });
+    });
   });
 });
