@@ -25,6 +25,7 @@ import {
   FileCrossReviewRunStore,
   RUN_SCHEMA_VERSION,
   type CrossReviewRun,
+  type CrossReviewRunPhase,
   type CrossReviewRunStore,
   type GathererRun,
   type JudgeRun,
@@ -41,6 +42,9 @@ const DEADLINE_WARNING_MS = 30_000;
 const STATUS_TARGET_LIMIT = 80;
 const SDK_REQUEST_TIMEOUT_MS = 15_000;
 const STARTING_GRACE_MS = 15_000;
+const DEFAULT_WAIT_MS = 30_000;
+const MAX_WAIT_MS = 60_000;
+const WAIT_TICK_MS = 3_000;
 
 type SessionStatus =
   | { type: "idle" }
@@ -129,6 +133,8 @@ type ProtocolOptions = {
   now?: () => number;
   createRunID?: () => string;
   canonicalize?: (directory: string) => Promise<string>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  defaultWaitMs?: number;
 };
 
 const ACTIVE_REVIEWER_STATUSES = new Set<ReviewerRunStatus>([
@@ -289,8 +295,38 @@ function reviewersTerminal(run: CrossReviewRun) {
   );
 }
 
+function isTerminalPhase(phase: CrossReviewRunPhase) {
+  return (
+    phase === "completed" ||
+    phase === "quorum-not-met" ||
+    phase === "failed" ||
+    phase === "cancelled"
+  );
+}
+
 function successfulReviewers(run: CrossReviewRun) {
   return run.reviewers.filter((reviewer) => reviewer.status === "succeeded");
+}
+
+function runFinishedWaiting(run: CrossReviewRun) {
+  if (isTerminalPhase(run.phase)) return true;
+  if (run.phase === "reviewing" && reviewersTerminal(run)) return true;
+  if (
+    run.phase === "judging" &&
+    run.judge !== undefined &&
+    TERMINAL_REVIEWER_STATUSES.has(run.judge.status as ReviewerRunStatus)
+  )
+    return true;
+  return false;
+}
+
+function runSnapshot(run: CrossReviewRun) {
+  return [
+    run.phase,
+    run.gatherer?.status ?? "",
+    run.judge?.status ?? "",
+    ...run.reviewers.map((reviewer) => reviewer.status),
+  ].join(":");
 }
 
 function publicReviewer(reviewer: ReviewerRun, includeOutputs: boolean) {
@@ -608,6 +644,28 @@ function judgePrompt(run: CrossReviewRun): AsyncPrompt["body"] {
   };
 }
 
+function defaultSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((res, rej) => {
+    if (signal?.aborted) {
+      rej(new Error("Cross-review cancelled"));
+      return;
+    }
+    const abortHandler = () => {
+      clearTimeout(timer);
+      rej(new Error("Cross-review cancelled"));
+    };
+    if (signal !== undefined) {
+      signal.addEventListener("abort", abortHandler, { once: true });
+    }
+    const timer = setTimeout(() => {
+      if (signal !== undefined) {
+        signal.removeEventListener("abort", abortHandler);
+      }
+      res();
+    }, ms);
+  });
+}
+
 export function createCrossReviewProtocolTools(
   client: AsyncCrossReviewClient,
   options: ProtocolOptions = {},
@@ -617,6 +675,8 @@ export function createCrossReviewProtocolTools(
   const now = options.now ?? Date.now;
   const createRunID = options.createRunID ?? randomUUID;
   const canonicalize = options.canonicalize ?? canonicalizeDirectory;
+  const sleep = options.sleep ?? defaultSleep;
+  const configuredDefaultWaitMs = options.defaultWaitMs ?? DEFAULT_WAIT_MS;
 
   async function abortSession(sessionID: string, directory: string) {
     const aborted = responseData(
@@ -1415,25 +1475,63 @@ export function createCrossReviewProtocolTools(
 
   const status = tool({
     description:
-      "Poll and advance one asynchronous cross-review run without blocking; invoke only with explicit user review intent from primary sessions",
+      "Poll and advance one asynchronous cross-review run with optional server-side wait; invoke only with explicit user review intent from primary sessions",
     args: {
       runID: tool.schema.string().uuid(),
       detail: tool.schema.boolean().optional(),
       includeOutputs: tool.schema.boolean().optional(),
+      waitMs: tool.schema.number().int().min(0).max(MAX_WAIT_MS).optional(),
     },
     async execute(args, context) {
-      return withAuthorizedRun(args.runID, context, async (run, save) => {
+      const waitBudgetMs = args.waitMs ?? configuredDefaultWaitMs;
+      let initialSnapshot: string | undefined;
+      let finishedWaiting = false;
+
+      let latestRun: CrossReviewRun | undefined;
+
+      await withAuthorizedRun(args.runID, context, async (run, save) => {
         await reconcile(run, save, context);
-        return result(
-          `Cross-review status: ${truncate(run.target, STATUS_TARGET_LIMIT)}`,
-          progress(
-            run,
-            args.includeOutputs ?? false,
-            args.detail ?? false,
-            now(),
-          ),
-        );
+        latestRun = run;
+        initialSnapshot = runSnapshot(run);
+        finishedWaiting = runFinishedWaiting(run);
       });
+
+      if (waitBudgetMs > 0 && !finishedWaiting) {
+        const deadline = now() + waitBudgetMs;
+        while (now() < deadline) {
+          if (context.abort.aborted) throw new Error("Cross-review cancelled");
+          const remaining = deadline - now();
+          const sleepDuration = Math.min(remaining, WAIT_TICK_MS);
+          if (sleepDuration <= 0) break;
+          await sleep(sleepDuration, context.abort);
+          if (context.abort.aborted) throw new Error("Cross-review cancelled");
+
+          let stateChanged = false;
+          await withAuthorizedRun(args.runID, context, async (run, save) => {
+            await reconcile(run, save, context);
+            latestRun = run;
+            const currentSnap = runSnapshot(run);
+            if (currentSnap !== initialSnapshot || runFinishedWaiting(run)) {
+              stateChanged = true;
+            }
+          });
+          if (stateChanged) break;
+        }
+      }
+
+      if (latestRun === undefined) {
+        throw new Error(`Cross-review run unavailable: ${args.runID}`);
+      }
+
+      return result(
+        `Cross-review status: ${truncate(latestRun.target, STATUS_TARGET_LIMIT)}`,
+        progress(
+          latestRun,
+          args.includeOutputs ?? false,
+          args.detail ?? false,
+          now(),
+        ),
+      );
     },
   });
 

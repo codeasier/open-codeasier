@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Add server-side waiting (`waitMs`) to `cross_review_status` long polling.
+  The tool holds active runs for up to `waitMs` (0-60000ms, default 30000ms)
+  without holding the run lock across sleep intervals, returning early whenever
+  any reviewer or phase state changes, the run finishes waiting, or timeout
+  expires. This eliminates client-side busy-polling sleep loops in the parent
+  session.
+- Update cross-review skill and orchestration instructions to utilize
+  server-side wait in `cross_review_status` without manual client sleeps.
+
 ## [0.2.11] - 2026-09-03
 
 ### Fixed
