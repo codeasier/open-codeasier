@@ -7,8 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-09-03
+
 ### Fixed
 
+- Reject out-of-range cross-review overrides and empty reviewer sets with an
+  explicit error instead of running a 0-reviewer ghost run that finalizes as
+  quorum-not-met. Tool overrides are revalidated against the config loader
+  bounds even when the host skips tool-schema validation.
+- Make cross-review setup write valid config shapes and validate semantically.
+  Document the `reviewers` object-array versus `reviewModels` string-array
+  shapes and add an `open-codeasier validate` subcommand that runs the runtime
+  parser on a config file; guided setup validates the written file with it
+  instead of a syntax-only JSON check.
+- Resolve the no-arg `validate` path through the shared repository root
+  fallback, so a linked worktree without its own config validates the same
+  project file that `cross_review_start` loads instead of reporting not found.
 - Surface config resolution (`config.sources` plus resolved paths) and the
   project-config fallback `warning` on `cross_review_start` and on
   `cross_review_status` when `detail` or `includeOutputs` is requested.
@@ -188,7 +202,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.10...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.11...HEAD
+[0.2.11]: https://github.com/codeasier/open-codeasier/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/codeasier/open-codeasier/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/codeasier/open-codeasier/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/codeasier/open-codeasier/compare/v0.2.7...v0.2.8
