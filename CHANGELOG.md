@@ -26,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   backfilled from global; tell callers to configure reviewers in the existing
   project file or pass `--review-models`.
 
+### Fixed
+
+- Treat host type-default cross-review overrides (`reviewModels: []` and `0`
+  for `agents`, `maxConcurrency`, and `reviewerTimeoutMs`) as omitted so they
+  fall back to the loaded config instead of failing validation before it is
+  applied. Truly illegal overrides still fail fast. Empty or zero values that
+  still reach validation mention omitting the argument to use config. Blank
+  `judgeModel` still means parent-session judging; empty `focus` is unchanged.
+
 ## [0.2.12] - 2026-09-04
 
 ### Added

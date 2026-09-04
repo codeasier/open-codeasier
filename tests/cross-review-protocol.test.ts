@@ -255,19 +255,19 @@ describe("asynchronous cross-review protocol", () => {
     const tools = protocol(client, store);
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 0 },
+        { target: "HEAD", reviewModels: ["a/one"], agents: 9 },
         context(),
       ),
     ).rejects.toThrow("`agents` must be an integer from 1 to 8");
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], maxConcurrency: 0 },
+        { target: "HEAD", reviewModels: ["a/one"], maxConcurrency: 9 },
         context(),
       ),
     ).rejects.toThrow("`maxConcurrency` must be an integer from 1 to 8");
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], reviewerTimeoutMs: 0 },
+        { target: "HEAD", reviewModels: ["a/one"], reviewerTimeoutMs: 1 },
         context(),
       ),
     ).rejects.toThrow(
@@ -275,7 +275,7 @@ describe("asynchronous cross-review protocol", () => {
     );
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: [] },
+        { target: "HEAD", reviewModels: ["malformed"] },
         context(),
       ),
     ).rejects.toThrow(
@@ -283,6 +283,76 @@ describe("asynchronous cross-review protocol", () => {
     );
     expect(client.session.create).not.toHaveBeenCalled();
     expect(client.provider.list).not.toHaveBeenCalled();
+    expect(store.runs.size).toBe(0);
+  });
+
+  it("treats host type-default overrides as absent and uses project config", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(
+      client,
+      store,
+      () => 1_000,
+      () =>
+        Promise.resolve({
+          config: {
+            reviewers: [{ model: "a/one" }, { model: "a/two" }],
+            agents: 3,
+            maxConcurrency: 2,
+            judgeModel: "b/judge",
+            focus: "from-config",
+            reviewerTimeoutMs: 900_000,
+          },
+          sources: { project: "loaded", global: "absent" },
+          projectPath: "/repo/.opencode/cross-review.json",
+          globalPath: "/home/.config/opencode/cross-review.json",
+        }),
+    );
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "PR #72",
+          context: "already gathered",
+          reviewModels: [],
+          agents: 0,
+          maxConcurrency: 0,
+          reviewerTimeoutMs: 0,
+          focus: "",
+          judgeModel: "",
+        },
+        context(),
+      ),
+    );
+
+    expect(started.config).toEqual(PROJECT_CONFIG_BLOCK);
+    expect(started.reviewers.map((reviewer: any) => reviewer.model)).toEqual([
+      "a/one",
+      "a/two",
+    ]);
+    expect(started.reviewers.map((reviewer: any) => reviewer.focus)).toEqual([
+      "",
+      "",
+    ]);
+    expect(started.judge).toBeUndefined();
+    const run = store.runs.get(RUN_ID);
+    expect(run?.maxConcurrency).toBe(2);
+    expect(run?.reviewerTimeoutMs).toBe(900_000);
+    expect(run?.judgeModel).toBeUndefined();
+    expect(run?.brief).toContain("Focus: \n");
+    expect(client.session.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to config when only empty reviewModels is supplied", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const tools = protocol(client, store);
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: [] },
+        context(),
+      ),
+    ).rejects.toThrow("No review models configured");
     expect(store.runs.size).toBe(0);
   });
 
@@ -2475,11 +2545,11 @@ describe("cross_review_config preview", () => {
     const tools = protocol(client, new MemoryRunStore());
 
     await expect(
-      tools.cross_review_config.execute({ agents: 0 }, context()),
+      tools.cross_review_config.execute({ agents: 9 }, context()),
     ).rejects.toThrow("`agents` must be an integer from 1 to 8");
     await expect(
       tools.cross_review_config.execute(
-        { reviewModels: ["a/one"], reviewerTimeoutMs: 0 },
+        { reviewModels: ["a/one"], reviewerTimeoutMs: 1 },
         context(),
       ),
     ).rejects.toThrow(
@@ -2487,6 +2557,37 @@ describe("cross_review_config preview", () => {
     );
     expect(client.session.create).not.toHaveBeenCalled();
     expect(client.provider.list).not.toHaveBeenCalled();
+  });
+
+  it("treats host type-default preview overrides as absent", async () => {
+    const { client } = mockClient();
+    const tools = protocol(
+      client,
+      new MemoryRunStore(),
+      () => 1_000,
+      previewConfig,
+    );
+
+    const preview = output(
+      await tools.cross_review_config.execute(
+        {
+          reviewModels: [],
+          agents: 0,
+          maxConcurrency: 0,
+          reviewerTimeoutMs: 0,
+        },
+        context(),
+      ),
+    );
+
+    expect(preview.reviewers).toEqual([
+      { reviewer: 1, model: "a/one", focus: "security" },
+      { reviewer: 2, model: "a/two" },
+    ]);
+    expect(preview.judge).toEqual({ model: "b/judge" });
+    expect(preview.maxConcurrency).toBe(2);
+    expect(preview.reviewerTimeoutMs).toBe(900_000);
+    expect(client.session.create).not.toHaveBeenCalled();
   });
 
   it("rejects unavailable preview models without creating sessions", async () => {

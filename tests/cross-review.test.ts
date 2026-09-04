@@ -108,16 +108,19 @@ describe("cross_review tool", () => {
     const mock = client();
     const definition = createCrossReviewTool(mock, emptyConfig);
     await expect(
-      definition.execute({ target: "HEAD", agents: 0 }, context()),
+      definition.execute({ target: "HEAD", agents: 9 }, context()),
     ).rejects.toThrow("`agents` must be an integer from 1 to 8");
     await expect(
       definition.execute(
-        { target: "HEAD", reviewModels: ["a/one"], maxConcurrency: 0 },
+        { target: "HEAD", reviewModels: ["a/one"], maxConcurrency: 9 },
         context(),
       ),
     ).rejects.toThrow("`maxConcurrency` must be an integer from 1 to 8");
     await expect(
-      definition.execute({ target: "HEAD", reviewModels: [] }, context()),
+      definition.execute(
+        { target: "HEAD", reviewModels: ["malformed"] },
+        context(),
+      ),
     ).rejects.toThrow(
       "`reviewModels` must be 1-8 `provider/model` identifiers",
     );
@@ -125,13 +128,53 @@ describe("cross_review tool", () => {
     expect(mock.provider.list).not.toHaveBeenCalled();
   });
 
-  it("never resolves an empty reviewer set", () => {
-    expect(() =>
+  it("treats host type-default overrides as absent and uses configured reviewers", async () => {
+    const mock = client();
+    const result = await createCrossReviewTool(mock, () =>
+      wrapConfig({
+        reviewers: [{ model: "a/one" }, { model: "a/two" }],
+        maxConcurrency: 2,
+        judgeModel: "b/judge",
+        focus: "from-config",
+      }),
+    ).execute(
+      {
+        target: "HEAD",
+        reviewModels: [],
+        agents: 0,
+        maxConcurrency: 0,
+      },
+      context(),
+    );
+
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.reviewers.map((reviewer: any) => reviewer.model)).toEqual([
+      "a/one",
+      "a/two",
+    ]);
+    expect(parsed.reviewers[0].focus).toBe("from-config");
+    expect(mock.session.create).toHaveBeenCalled();
+  });
+
+  it("treats agents 0 as absent when resolving configured reviewers", () => {
+    expect(
       resolveReviewers(
         { agents: 0 },
         { reviewers: [{ model: "a/one" }, { model: "a/two" }] },
       ),
-    ).toThrow("Cross-review requires at least one reviewer");
+    ).toEqual([{ model: "a/one" }, { model: "a/two" }]);
+    expect(
+      resolveReviewers(
+        { reviewModels: [] },
+        { reviewModels: ["a/one"], agents: 1 },
+      ),
+    ).toEqual([{ model: "a/one" }]);
+  });
+
+  it("never resolves an empty reviewer set", () => {
+    expect(() => resolveReviewers({}, {})).toThrow(
+      "No review models configured",
+    );
   });
 
   it("rejects invocations without any configured or explicit reviewers", async () => {
