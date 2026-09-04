@@ -150,7 +150,7 @@ describe("cross-review configuration", () => {
     expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
   });
 
-  it("lets project keys override global defaults", async () => {
+  it("uses the project config exclusively when both files exist", async () => {
     const root = await fixture();
     await mkdir(join(root, ".config", "opencode"), { recursive: true });
     await writeFile(
@@ -168,16 +168,25 @@ describe("cross-review configuration", () => {
       JSON.stringify({ agents: 5, judgeModel: "b/two" }),
     );
     const loaded = await loadCrossReviewConfig(root, root);
-    expect(loaded.config).toEqual({
-      reviewModels: ["a/one", "b/two"],
-      agents: 5,
-      judgeModel: "b/two",
-      reviewerTimeoutMs: 900_000,
-    });
-    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
+    expect(loaded.config).toEqual({ agents: 5, judgeModel: "b/two" });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
   });
 
-  it("lets a project reviewerTimeoutMs override the global value", async () => {
+  it("does not backfill global models when the project config is empty", async () => {
+    const root = await fixture();
+    await mkdir(join(root, ".config", "opencode"), { recursive: true });
+    await writeFile(
+      globalConfigPath(root),
+      JSON.stringify({ reviewModels: ["a/one", "b/two"] }),
+    );
+    await mkdir(join(root, ".opencode"), { recursive: true });
+    await writeFile(projectConfigPath(root), "{}");
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({});
+    expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
+  });
+
+  it("does not fall back to global reviewerTimeoutMs when project exists", async () => {
     const root = await fixture();
     await mkdir(join(root, ".config", "opencode"), { recursive: true });
     await writeFile(
@@ -194,13 +203,12 @@ describe("cross-review configuration", () => {
     );
     const loaded = await loadCrossReviewConfig(root, root);
     expect(loaded.config).toEqual({
-      reviewModels: ["a/one"],
       reviewerTimeoutMs: 1_200_000,
     });
-    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
   });
 
-  it("replaces the global reviewer source when the project overrides it", async () => {
+  it("ignores the global reviewer source when the project config exists", async () => {
     const root = await fixture();
     await mkdir(join(root, ".config", "opencode"), { recursive: true });
     await writeFile(
@@ -216,10 +224,10 @@ describe("cross-review configuration", () => {
     expect(loaded.config).toEqual({
       reviewers: [{ model: "b/two", focus: "security" }],
     });
-    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
   });
 
-  it("lets project reviewModels replace global reviewers", async () => {
+  it("ignores global reviewers when the project config exists", async () => {
     const root = await fixture();
     await mkdir(join(root, ".config", "opencode"), { recursive: true });
     await writeFile(
@@ -233,7 +241,21 @@ describe("cross-review configuration", () => {
     );
     const loaded = await loadCrossReviewConfig(root, root);
     expect(loaded.config).toEqual({ reviewModels: ["b/two"] });
-    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
+  });
+
+  it("never reads the global file once the project config loads", async () => {
+    const root = await fixture();
+    await mkdir(join(root, ".config", "opencode"), { recursive: true });
+    await writeFile(globalConfigPath(root), "{ invalid");
+    await mkdir(join(root, ".opencode"), { recursive: true });
+    await writeFile(
+      projectConfigPath(root),
+      JSON.stringify({ reviewers: [{ model: "a/one" }] }),
+    );
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({ reviewers: [{ model: "a/one" }] });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
   });
 
   it("rejects malformed JSON and invalid config shapes with the file path", async () => {
@@ -267,7 +289,7 @@ describe("cross-review configuration", () => {
     );
     const loaded = await loadCrossReviewConfig(subDir, repoRoot);
     expect(loaded.config).toEqual({ reviewers: [{ model: "a/one" }] });
-    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
     expect(loaded.projectPath).toBe(projectConfigPath(repoRoot));
   });
 
