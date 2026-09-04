@@ -12,7 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { lock } from "proper-lockfile";
 
-export const RUN_SCHEMA_VERSION = 2;
+export const RUN_SCHEMA_VERSION = 3;
 export const RUN_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -21,6 +21,7 @@ export type ReviewerRunStatus =
   | "starting"
   | "running"
   | "retrying"
+  | "timeout_pending"
   | "succeeded"
   | "failed"
   | "timed_out"
@@ -36,6 +37,8 @@ export type ReviewerRun = {
   startedAt?: number;
   deadlineAt?: number;
   latestActivityAt?: number;
+  timeoutDetectedAt?: number;
+  timeoutExtensions?: number;
   completedAt?: number;
   retry?: { attempt: number; message: string; next: number };
   output?: string;
@@ -51,6 +54,7 @@ export type JudgeRun = {
     | "starting"
     | "running"
     | "retrying"
+    | "timeout_pending"
     | "succeeded"
     | "failed"
     | "timed_out"
@@ -58,6 +62,8 @@ export type JudgeRun = {
   startedAt?: number;
   deadlineAt?: number;
   latestActivityAt?: number;
+  timeoutDetectedAt?: number;
+  timeoutExtensions?: number;
   completedAt?: number;
   retry?: { attempt: number; message: string; next: number };
   output?: string;
@@ -73,6 +79,7 @@ export type GathererRun = {
     | "starting"
     | "running"
     | "retrying"
+    | "timeout_pending"
     | "succeeded"
     | "failed"
     | "timed_out"
@@ -80,6 +87,8 @@ export type GathererRun = {
   startedAt?: number;
   deadlineAt?: number;
   latestActivityAt?: number;
+  timeoutDetectedAt?: number;
+  timeoutExtensions?: number;
   completedAt?: number;
   retry?: { attempt: number; message: string; next: number };
   output?: string;

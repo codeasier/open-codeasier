@@ -525,7 +525,7 @@ describe("asynchronous cross-review protocol", () => {
     expect(client.session.promptAsync).toHaveBeenCalledTimes(1);
   });
 
-  it("times out an overdue reviewer and advances quorum work", async () => {
+  it("pauses an overdue reviewer for a timeout decision", async () => {
     let timestamp = 1_000;
     const { client } = mockClient();
     const tools = protocol(client, new MemoryRunStore(), () => timestamp);
@@ -549,6 +549,104 @@ describe("asynchronous cross-review protocol", () => {
     );
 
     expect(status.reviewers.map((reviewer: any) => reviewer.status)).toEqual([
+      "timeout_pending",
+      "queued",
+    ]);
+    expect(status.actionRequired).toMatchObject({
+      type: "timeout",
+      sessions: [
+        {
+          role: "reviewer",
+          reviewer: 1,
+          model: "a/one",
+          sessionID: "child-1",
+        },
+      ],
+      options: ["preserve", "abort"],
+    });
+    expect(status.pollAfterMs).toBeUndefined();
+    expect(status.summary).toContain("timeout decision required");
+    expect(client.session.abort).not.toHaveBeenCalled();
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an overdue reviewer and later collects its output", async () => {
+    let timestamp = 1_000;
+    const { client, statuses, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 2,
+        maxConcurrency: 1,
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    statuses["child-1"] = { type: "busy" };
+    timestamp = 6_001;
+
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+    const preserved = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true, timeoutAction: "preserve" },
+        context(),
+      ),
+    );
+
+    expect(preserved.reviewers[0]).toMatchObject({
+      status: "running",
+      timeoutDetectedAt: 6_001,
+      timeoutExtensions: 1,
+      deadlineAt: 11_001,
+    });
+    expect(preserved.reviewers[1].status).toBe("queued");
+    expect(preserved).not.toHaveProperty("actionRequired");
+    expect(client.session.abort).not.toHaveBeenCalled();
+
+    delete statuses["child-1"];
+    messages.set("child-1", completed("late but useful review"));
+    timestamp = 7_000;
+    const completedStatus = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, includeOutputs: true },
+        context(),
+      ),
+    );
+    expect(completedStatus.reviewers[0]).toMatchObject({
+      status: "succeeded",
+      output: "late but useful review",
+      timeoutExtensions: 1,
+    });
+    expect(completedStatus.reviewers[1].status).toBe("starting");
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts an overdue reviewer and advances queued work on request", async () => {
+    let timestamp = 1_000;
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 2,
+        maxConcurrency: 1,
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    timestamp = 6_001;
+
+    const status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true, timeoutAction: "abort" },
+        context(),
+      ),
+    );
+
+    expect(status.reviewers.map((reviewer: any) => reviewer.status)).toEqual([
       "timed_out",
       "starting",
     ]);
@@ -556,6 +654,120 @@ describe("asynchronous cross-review protocol", () => {
       expect.objectContaining({ path: { id: "child-1" } }),
     );
     expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts a preserved reviewer early within its extension", async () => {
+    let timestamp = 1_000;
+    const { client, statuses } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 2,
+        maxConcurrency: 1,
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    statuses["child-1"] = { type: "busy" };
+    timestamp = 6_001;
+
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+    const preserved = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true, timeoutAction: "preserve" },
+        context(),
+      ),
+    );
+    expect(preserved.reviewers[0].status).toBe("running");
+
+    // Still within the extended deadline (11_001): an explicit abort must
+    // terminate the session instead of being silently ignored.
+    timestamp = 7_000;
+    const aborted = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true, timeoutAction: "abort" },
+        context(),
+      ),
+    );
+
+    expect(aborted.reviewers.map((reviewer: any) => reviewer.status)).toEqual([
+      "timed_out",
+      "starting",
+    ]);
+    expect(client.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: "child-1" } }),
+    );
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it("redispatches an ambiguous preserved reviewer instead of idling", async () => {
+    let timestamp = 1_000;
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        reviewerTimeoutMs: 20_000,
+      },
+      context(),
+    );
+    timestamp = 22_000;
+
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+    await tools.cross_review_status.execute(
+      { runID: RUN_ID, timeoutAction: "preserve" },
+      context(),
+    );
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(1);
+
+    // The preserved session still shows no message: re-queue the same
+    // message ID instead of idling until the extended deadline.
+    timestamp = 23_000;
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+
+    expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
+    const first =
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.messageID;
+    const second =
+      client.session.promptAsync.mock.calls.at(1)?.[0].body.messageID;
+    expect(first).toBeDefined();
+    expect(second).toBe(first);
+  });
+
+  it("does not leave a transient fetch error on a preserved reviewer", async () => {
+    let timestamp = 1_000;
+    const { client, statuses } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    statuses["child-1"] = { type: "busy" };
+    client.session.messages.mockRejectedValueOnce(new Error("network down"));
+    timestamp = 6_001;
+
+    const preserved = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true, timeoutAction: "preserve" },
+        context(),
+      ),
+    );
+
+    expect(preserved.reviewers[0]).toMatchObject({
+      status: "running",
+      timeoutExtensions: 1,
+    });
+    expect(preserved.reviewers[0].error).toBeUndefined();
+    expect(preserved.summary).not.toContain("status unavailable");
   });
 
   it("uses the configured reviewerTimeoutMs when no flag is given", async () => {
@@ -645,7 +857,7 @@ describe("asynchronous cross-review protocol", () => {
 
     const status = output(
       await tools.cross_review_status.execute(
-        { runID: RUN_ID, detail: true },
+        { runID: RUN_ID, detail: true, timeoutAction: "abort" },
         context(),
       ),
     );
@@ -778,7 +990,7 @@ describe("asynchronous cross-review protocol", () => {
 
     const status = output(
       await tools.cross_review_status.execute(
-        { runID: RUN_ID, detail: true },
+        { runID: RUN_ID, detail: true, timeoutAction: "abort" },
         context(),
       ),
     );
@@ -1195,7 +1407,7 @@ describe("asynchronous cross-review protocol", () => {
 
     const status = output(
       await tools.cross_review_status.execute(
-        { runID: RUN_ID, detail: true },
+        { runID: RUN_ID, detail: true, timeoutAction: "abort" },
         context(),
       ),
     );
@@ -1206,6 +1418,108 @@ describe("asynchronous cross-review protocol", () => {
       error: expect.stringContaining("timed out"),
     });
     expect(status.reviewers[0].status).toBe("starting");
+    expect(client.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: "child-2" } }),
+    );
+  });
+
+  it("preserves an overdue gatherer and uses its eventual context", async () => {
+    let timestamp = 1_000;
+    const { client, statuses, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    statuses["child-2"] = { type: "busy" };
+    timestamp = 6_001;
+
+    const pending = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
+    );
+    expect(pending.phase).toBe("gathering");
+    expect(pending.gatherer.status).toBe("timeout_pending");
+    expect(pending.actionRequired.sessions).toEqual([
+      { role: "gatherer", model: "b/judge", sessionID: "child-2" },
+    ]);
+    expect(client.session.abort).not.toHaveBeenCalled();
+
+    const preserved = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true, timeoutAction: "preserve" },
+        context(),
+      ),
+    );
+    expect(preserved.gatherer).toMatchObject({
+      status: "running",
+      timeoutExtensions: 1,
+      deadlineAt: 11_001,
+    });
+
+    delete statuses["child-2"];
+    messages.set("child-2", completed("late gathered context"));
+    timestamp = 7_000;
+    const reviewing = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, includeOutputs: true },
+        context(),
+      ),
+    );
+    expect(reviewing.phase).toBe("reviewing");
+    expect(reviewing.gatherer).toMatchObject({
+      status: "succeeded",
+      output: "late gathered context",
+    });
+    expect(
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text,
+    ).toContain("late gathered context");
+  });
+
+  it("aborts a preserved gatherer early and degrades to reviewing", async () => {
+    let timestamp = 1_000;
+    const { client, statuses } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    statuses["child-2"] = { type: "busy" };
+    timestamp = 6_001;
+
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+    await tools.cross_review_status.execute(
+      { runID: RUN_ID, timeoutAction: "preserve" },
+      context(),
+    );
+
+    // Still within the extended deadline (11_001): abort the preserved
+    // gatherer instead of waiting for the new deadline.
+    timestamp = 7_000;
+    const aborted = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true, timeoutAction: "abort" },
+        context(),
+      ),
+    );
+
+    expect(aborted.phase).toBe("reviewing");
+    expect(aborted.gatherer).toMatchObject({ status: "timed_out" });
+    expect(aborted.reviewers[0].status).toBe("starting");
     expect(client.session.abort).toHaveBeenCalledWith(
       expect.objectContaining({ path: { id: "child-2" } }),
     );
@@ -1486,6 +1800,103 @@ describe("asynchronous cross-review protocol", () => {
     expect(client.session.promptAsync).toHaveBeenCalledTimes(3);
   });
 
+  it("preserves an overdue judge and later finalizes its output", async () => {
+    let timestamp = 1_000;
+    const { client, statuses, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        context: "shared context",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    messages.set("child-1", completed("candidate"));
+    await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
+    statuses["child-2"] = { type: "busy" };
+    timestamp = 6_001;
+
+    const pending = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
+    );
+    expect(pending.phase).toBe("judging");
+    expect(pending.judge.status).toBe("timeout_pending");
+    expect(pending.actionRequired.sessions).toEqual([
+      { role: "judge", model: "b/judge", sessionID: "child-2" },
+    ]);
+
+    await tools.cross_review_status.execute(
+      { runID: RUN_ID, timeoutAction: "preserve" },
+      context(),
+    );
+    expect(client.session.abort).not.toHaveBeenCalled();
+
+    delete statuses["child-2"];
+    messages.set("child-2", completed("late verified finding"));
+    timestamp = 7_000;
+    const finalized = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(finalized).toMatchObject({
+      phase: "completed",
+      judge: {
+        status: "succeeded",
+        output: "late verified finding",
+        timeoutExtensions: 1,
+      },
+    });
+  });
+
+  it("aborts a preserved judge early within its extension", async () => {
+    let timestamp = 1_000;
+    const { client, statuses, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        context: "shared context",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    messages.set("child-1", completed("candidate"));
+    await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
+    statuses["child-2"] = { type: "busy" };
+    timestamp = 6_001;
+
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+    await tools.cross_review_status.execute(
+      { runID: RUN_ID, timeoutAction: "preserve" },
+      context(),
+    );
+
+    // Still within the extended deadline (11_001): an explicit abort must
+    // terminate the preserved judge instead of being silently ignored.
+    timestamp = 7_000;
+    const aborted = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true, timeoutAction: "abort" },
+        context(),
+      ),
+    );
+
+    expect(aborted.phase).toBe("judging");
+    expect(aborted.judge).toMatchObject({ status: "timed_out" });
+    expect(client.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { id: "child-2" } }),
+    );
+  });
+
   it("migrates legacy message IDs before judge dispatch", async () => {
     const { client, messages } = mockClient();
     const store = new MemoryRunStore();
@@ -1738,6 +2149,51 @@ describe("asynchronous cross-review protocol", () => {
       expect(sleepCallCount).toBe(2);
       expect(status.counts).toEqual({ succeeded: 1 });
       expect(status.readyToFinalize).toBe(true);
+    });
+
+    it("applies timeoutAction to timeouts that arise while waiting", async () => {
+      const { client } = mockClient();
+      let currentTime = 1_000;
+      const sleepMock = vi.fn().mockImplementation(async (ms: number) => {
+        currentTime += ms;
+      });
+      const tools = protocol(
+        client,
+        new MemoryRunStore(),
+        () => currentTime,
+        loadedConfig,
+        30_000,
+        sleepMock,
+      );
+      await tools.cross_review_start.execute(
+        {
+          target: "HEAD",
+          reviewModels: ["a/one"],
+          agents: 1,
+          reviewerTimeoutMs: 5_000,
+        },
+        context(),
+      );
+
+      const status = output(
+        await tools.cross_review_status.execute(
+          {
+            runID: RUN_ID,
+            detail: true,
+            waitMs: 10_000,
+            timeoutAction: "abort",
+          },
+          context(),
+        ),
+      );
+
+      // The deadline (6_000) passes inside the wait window: the same call
+      // must abort instead of parking the session in timeout_pending.
+      expect(status.reviewers[0]).toMatchObject({ status: "timed_out" });
+      expect(client.session.abort).toHaveBeenCalledWith(
+        expect.objectContaining({ path: { id: "child-1" } }),
+      );
+      expect(sleepMock).toHaveBeenCalled();
     });
 
     it("exits and returns status when waitMs timeout expires without state change", async () => {

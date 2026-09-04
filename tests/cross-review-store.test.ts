@@ -94,30 +94,37 @@ describe("cross-review run store", () => {
     ).rejects.toThrow("Invalid cross-review run ID");
   });
 
-  it("migrates version 1 manifests to the current schema on load", async () => {
-    const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
-    const store = new FileCrossReviewRunStore(root);
-    const v1 = {
-      ...run(),
-      schemaVersion: 1,
-    } as unknown as CrossReviewRun;
-    await writeFile(join(root, `${RUN_ID}.json`), JSON.stringify(v1), "utf8");
+  it.each([1, 2])(
+    "migrates version %i manifests to the current schema on load",
+    async (schemaVersion) => {
+      const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+      const store = new FileCrossReviewRunStore(root);
+      const legacy = {
+        ...run(),
+        schemaVersion,
+      } as unknown as CrossReviewRun;
+      await writeFile(
+        join(root, `${RUN_ID}.json`),
+        JSON.stringify(legacy),
+        "utf8",
+      );
 
-    await store.withRun(RUN_ID, async (stored, save) => {
-      expect(stored.schemaVersion).toBe(RUN_SCHEMA_VERSION);
-      expect(stored.gatherer).toBeUndefined();
-      expect(stored.context).toBeUndefined();
-      const reviewer = stored.reviewers[0];
-      if (reviewer === undefined) throw new Error("Missing reviewer");
-      reviewer.status = "running";
-      await save();
-    });
+      await store.withRun(RUN_ID, async (stored, save) => {
+        expect(stored.schemaVersion).toBe(RUN_SCHEMA_VERSION);
+        expect(stored.gatherer).toBeUndefined();
+        expect(stored.context).toBeUndefined();
+        const reviewer = stored.reviewers[0];
+        if (reviewer === undefined) throw new Error("Missing reviewer");
+        reviewer.status = "running";
+        await save();
+      });
 
-    const persisted = JSON.parse(
-      await readFile(join(root, `${RUN_ID}.json`), "utf8"),
-    );
-    expect(persisted.schemaVersion).toBe(RUN_SCHEMA_VERSION);
-  });
+      const persisted = JSON.parse(
+        await readFile(join(root, `${RUN_ID}.json`), "utf8"),
+      );
+      expect(persisted.schemaVersion).toBe(RUN_SCHEMA_VERSION);
+    },
+  );
 
   it("rejects manifests with a newer schema version", async () => {
     const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
