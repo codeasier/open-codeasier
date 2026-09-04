@@ -43,6 +43,7 @@ describe("plugin module", () => {
     } as any);
     expect(Object.keys(hooks.tool ?? {})).toEqual([
       "cross_review",
+      "cross_review_config",
       "cross_review_start",
       "cross_review_status",
       "cross_review_cancel",
@@ -98,6 +99,7 @@ describe("plugin module", () => {
     expect(config.experimental.primary_tools).toEqual([
       "custom_primary",
       "cross_review",
+      "cross_review_config",
       "cross_review_start",
       "cross_review_status",
       "cross_review_cancel",
@@ -109,6 +111,7 @@ describe("plugin module", () => {
     await hooks.config?.(emptyConfig);
     expect(emptyConfig.experimental.primary_tools).toEqual([
       "cross_review",
+      "cross_review_config",
       "cross_review_start",
       "cross_review_status",
       "cross_review_cancel",
