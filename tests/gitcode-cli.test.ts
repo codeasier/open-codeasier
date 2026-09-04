@@ -170,7 +170,7 @@ describe("discoverGitcodeCli", () => {
     ).resolves.toBe(await realpath(cli));
   });
 
-  it.skipIf(process.getuid?.() === 0)(
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "skips candidates inside unreadable PATH directories",
     async () => {
       const root = await fixture();
@@ -198,6 +198,60 @@ describe("discoverGitcodeCli", () => {
       }
     },
   );
+
+  it("skips PATH entries that are files rather than directories", async () => {
+    const root = await fixture();
+    const notADir = join(root, "not-a-dir");
+    const bin = join(root, "bin");
+    await writeFile(notADir, "not a directory\n");
+    await mkdir(bin);
+    const cli = join(bin, "gitcode");
+    await writeFile(cli, "#!/bin/sh\necho gitcode, version test\n", {
+      mode: 0o755,
+    });
+    await expect(
+      discoverGitcodeCli({
+        platform: "darwin",
+        pathEnv: `${notADir}:${bin}`,
+        pathDelimiter: ":",
+        home: root,
+        async versionOutput() {
+          return "gitcode, version test";
+        },
+      }),
+    ).resolves.toBe(await realpath(cli));
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "skips unreadable conda env directories and still searches PATH",
+    async () => {
+      const root = await fixture();
+      const bin = join(root, "bin");
+      const envs = join(root, "miniconda3", "envs");
+      await mkdir(bin);
+      await mkdir(envs, { recursive: true });
+      const cli = join(bin, "gitcode");
+      await writeFile(cli, "#!/bin/sh\necho gitcode, version test\n", {
+        mode: 0o755,
+      });
+      await chmod(envs, 0o000);
+      try {
+        await expect(
+          discoverGitcodeCli({
+            platform: "darwin",
+            pathEnv: bin,
+            pathDelimiter: ":",
+            home: root,
+            async versionOutput() {
+              return "gitcode, version test";
+            },
+          }),
+        ).resolves.toBe(await realpath(cli));
+      } finally {
+        await chmod(envs, 0o755);
+      }
+    },
+  );
 });
 
 describe("detect-gitcode CLI", () => {
@@ -209,30 +263,33 @@ describe("detect-gitcode CLI", () => {
     expect(await run(["detect-gitcode", "--bogus"])).toBe(2);
   });
 
-  it("prints the found path and exits 0 when a candidate matches", async () => {
-    const { run } = await import("../src/cli.js");
-    const root = await fixture();
-    const bin = join(root, "bin");
-    const home = join(root, "home");
-    await mkdir(bin);
-    await mkdir(home);
-    const cli = join(bin, "gitcode");
-    await writeFile(cli, "#!/bin/sh\necho gitcode, version test\n", {
-      mode: 0o755,
-    });
-    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    const previousPath = process.env.PATH;
-    const previousHome = process.env.HOME;
-    process.env.PATH = bin;
-    process.env.HOME = home;
-    try {
-      expect(await run(["detect-gitcode"])).toBe(0);
-    } finally {
-      process.env.PATH = previousPath;
-      process.env.HOME = previousHome;
-    }
-    expect(log).toHaveBeenCalledWith(`found: ${await realpath(cli)}`);
-  });
+  it.skipIf(process.platform === "win32")(
+    "prints the found path and exits 0 when a candidate matches",
+    async () => {
+      const { run } = await import("../src/cli.js");
+      const root = await fixture();
+      const bin = join(root, "bin");
+      const home = join(root, "home");
+      await mkdir(bin);
+      await mkdir(home);
+      const cli = join(bin, "gitcode");
+      await writeFile(cli, "#!/bin/sh\necho gitcode, version test\n", {
+        mode: 0o755,
+      });
+      const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+      const previousPath = process.env.PATH;
+      const previousHome = process.env.HOME;
+      process.env.PATH = bin;
+      process.env.HOME = home;
+      try {
+        expect(await run(["detect-gitcode"])).toBe(0);
+      } finally {
+        process.env.PATH = previousPath;
+        process.env.HOME = previousHome;
+      }
+      expect(log).toHaveBeenCalledWith(`found: ${await realpath(cli)}`);
+    },
+  );
 
   it("reports the install URL and exits 1 when nothing matches", async () => {
     const { run } = await import("../src/cli.js");
