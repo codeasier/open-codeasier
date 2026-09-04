@@ -209,7 +209,7 @@ describe("workflow generator", () => {
       "an existing `reviewers` array, a flat `reviewModels` list, a config without any reviewer key",
     );
     expect(openCrossReview).toContain(
-      "the model-free `{}` created by `init`, or only non-reviewer keys such as `agents`, `judgeModel`, `maxConcurrency`, or `gitcodeCli`",
+      "the model-free `{}` created by `init`, or only non-reviewer keys such as `agents`, `judgeModel`, or `maxConcurrency`",
     );
     expect(openCrossReview).toContain(
       "For a new destination, an existing config without a reviewer key, or an existing `reviewers` destination, collect an optional focus for each reviewer",
@@ -221,7 +221,7 @@ describe("workflow generator", () => {
       "never write `reviewers` alongside an existing `reviewModels`",
     );
     expect(openCrossReview).toContain(
-      "ask the user which of `reviewers` and `reviewModels` to retain, then write that key only, dropping the other while keeping every remaining key such as `agents`, `judgeModel`, `focus`, and `gitcodeCli`",
+      "ask the user which of `reviewers` and `reviewModels` to retain, then write that key only, dropping the other while keeping every remaining key such as `agents`, `judgeModel`, and `focus`",
     );
     expect(openCrossReview).toContain(
       "If the file is invalid for any other reason",
@@ -251,28 +251,6 @@ describe("workflow generator", () => {
     expect(openCrossReview).toContain("~/.config/opencode/cross-review.json");
     expect(openCrossReview).toContain("does not use `~/.opencode`");
     expect(openCrossReview).not.toContain("~/.opencode/cross-review.json");
-    expect(openCrossReview).toContain("ask whether GitCode support is needed");
-    expect(openCrossReview).toContain("npx open-codeasier detect-gitcode");
-    expect(openCrossReview).toContain(
-      "https://github.com/codeasier/gitcode-cli",
-    );
-    expect(openCrossReview).toContain("on macOS `gc` is often Graphviz");
-    expect(openCrossReview).toContain("A `gitcode.com` URL");
-    expect(openCrossReview).toContain(
-      "GitHub and other non-GitCode targets keep using `gh`",
-    );
-    expect(openCrossReview).toContain(
-      "a configured `gitcodeCli` must not change GitHub fetching",
-    );
-    expect(openCrossReview).toContain(
-      "Always pass the result as `context`, including when `judgeModel` is configured",
-    );
-    expect(openCrossReview).toContain(
-      "do not fall back to `gh` for a GitCode target",
-    );
-    expect(openCrossReview).toContain(
-      "GitCode targets must always supply that `context`, even when a judge model is configured",
-    );
     expect(openCrossReview).toContain(
       "If `cross_review_start` reports that no review models are configured",
     );

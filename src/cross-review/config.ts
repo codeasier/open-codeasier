@@ -1,7 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { isGitcodeCliPath } from "./gitcode-cli.js";
 
 export const MODEL_ID = /^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$/;
 
@@ -18,7 +17,6 @@ export type CrossReviewConfig = {
   judgeModel?: string;
   focus?: string;
   reviewerTimeoutMs?: number;
-  gitcodeCli?: string;
 };
 
 export type CrossReviewConfigSource = "loaded" | "absent";
@@ -43,7 +41,6 @@ const CONFIG_KEYS = [
   "judgeModel",
   "focus",
   "reviewerTimeoutMs",
-  "gitcodeCli",
 ] as const;
 
 function invalid(source: string, message: string): never {
@@ -163,8 +160,6 @@ export function parseCrossReviewConfig(
       source,
       "`reviewerTimeoutMs` must be an integer from 5000 to 3600000",
     );
-  if (config.gitcodeCli !== undefined && !isGitcodeCliPath(config.gitcodeCli))
-    invalid(source, "`gitcodeCli` must be an absolute path");
 
   const parsed: CrossReviewConfig = {};
   if (config.reviewers !== undefined) parsed.reviewers = config.reviewers;
@@ -177,8 +172,6 @@ export function parseCrossReviewConfig(
   if (config.focus !== undefined) parsed.focus = config.focus;
   if (config.reviewerTimeoutMs !== undefined)
     parsed.reviewerTimeoutMs = config.reviewerTimeoutMs;
-  if (isGitcodeCliPath(config.gitcodeCli))
-    parsed.gitcodeCli = config.gitcodeCli;
   return parsed;
 }
 

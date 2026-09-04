@@ -197,15 +197,6 @@ describe("validate CLI", () => {
     expect(await run(["validate", path])).toBe(0);
     expect(log).toHaveBeenCalledWith(`valid: ${path}`);
 
-    await writeFile(
-      path,
-      JSON.stringify({
-        reviewers: [{ model: "a/one" }],
-        gitcodeCli: join(root, "bin", "gitcode"),
-      }),
-    );
-    expect(await run(["validate", path])).toBe(0);
-
     // The exact setup-flow failure shape from issue #52: flat strings
     // written under the `reviewers` key.
     await writeFile(path, JSON.stringify({ reviewers: ["a/one", "b/two"] }));
