@@ -29,7 +29,7 @@ Target context is gathered once and shared instead of being fetched by every rev
 
 Normalize the target and focus once. Every reviewer must receive that exact brief (plus the shared context), run read-only, and remain isolated from every other reviewer's output. {{CROSS_REVIEW_ORCHESTRATION}}
 
-If `cross_review_start` reports that no review models are configured and no `--review-models` override was given, ask the user which models to use, write a project `.opencode/cross-review.json`, and call the tool again.
+If `cross_review_start` reports that no review models are configured and no `--review-models` override was given, ask the user which models to use, configure reviewers in `.opencode/cross-review.json` or pass `--review-models`, and call the tool again.
 
 Require a majority quorum. Preserve each reviewer's model, status, and session provenance. Isolate individual failures; never replace an invalid or failed model silently. On cancellation, stop outstanding work and do not report a partial review as complete.
 

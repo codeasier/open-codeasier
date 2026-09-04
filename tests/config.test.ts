@@ -172,6 +172,20 @@ describe("cross-review configuration", () => {
     expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
   });
 
+  it("does not backfill global models when the project config is empty", async () => {
+    const root = await fixture();
+    await mkdir(join(root, ".config", "opencode"), { recursive: true });
+    await writeFile(
+      globalConfigPath(root),
+      JSON.stringify({ reviewModels: ["a/one", "b/two"] }),
+    );
+    await mkdir(join(root, ".opencode"), { recursive: true });
+    await writeFile(projectConfigPath(root), "{}");
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({});
+    expect(loaded.sources).toEqual({ project: "loaded", global: "absent" });
+  });
+
   it("does not fall back to global reviewerTimeoutMs when project exists", async () => {
     const root = await fixture();
     await mkdir(join(root, ".config", "opencode"), { recursive: true });
