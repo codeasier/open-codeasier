@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-09-04
+
 ### Added
 
 - Preserve overdue cross-review sessions until the user explicitly chooses an
@@ -221,7 +223,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.11...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.12...HEAD
+[0.2.12]: https://github.com/codeasier/open-codeasier/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/codeasier/open-codeasier/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/codeasier/open-codeasier/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/codeasier/open-codeasier/compare/v0.2.8...v0.2.9
