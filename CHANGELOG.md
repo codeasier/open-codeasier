@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Align the embedded reviewer brief context limit with the `cross_review_start`
+  schema cap (1,000,000 characters) so large pull request diffs are no longer
+  silently truncated to 100,000 characters when embedded.
+
 ### Changed
 
 - Load project `.opencode/cross-review.json` exclusively when present, without
@@ -15,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   config, including the model-free `{}` created by `init`, is no longer
   backfilled from global; tell callers to configure reviewers in the existing
   project file or pass `--review-models`.
+- Cross-review skill and reviewer-agent instructions: prefer authenticated
+  parent-session collection (optionally via gitcode-cli/pygitcode) for GitCode
+  pull requests, document the `/diff` `private-token` requirement, preserve the
+  `<review_context>` / `<context_error>` gathering contracts, require offset
+  continuation for truncated reads, and cancel the run instead of degrading to
+  unauthenticated reviewer fetching when a GitCode PR gatherer fails.
 
 ## [0.2.12] - 2026-09-04
 

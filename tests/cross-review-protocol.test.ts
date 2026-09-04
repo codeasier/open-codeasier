@@ -1626,7 +1626,7 @@ describe("asynchronous cross-review protocol", () => {
       },
       context(),
     );
-    const oversized = `start-${"x".repeat(100_100)}-end`;
+    const oversized = `start-${"x".repeat(1_000_100)}-end`;
     messages.set("child-2", completed(oversized));
 
     const status = output(
