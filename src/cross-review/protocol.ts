@@ -137,10 +137,14 @@ type ProtocolOptions = {
   defaultWaitMs?: number;
 };
 
+type TimeoutAction = "abort" | "preserve";
+type TimedRun = ReviewerRun | GathererRun | JudgeRun;
+
 const ACTIVE_REVIEWER_STATUSES = new Set<ReviewerRunStatus>([
   "starting",
   "running",
   "retrying",
+  "timeout_pending",
 ]);
 const TERMINAL_REVIEWER_STATUSES = new Set<ReviewerRunStatus>([
   "succeeded",
@@ -308,7 +312,83 @@ function successfulReviewers(run: CrossReviewRun) {
   return run.reviewers.filter((reviewer) => reviewer.status === "succeeded");
 }
 
+function pendingTimeouts(run: CrossReviewRun) {
+  return [
+    ...run.reviewers
+      .filter((reviewer) => reviewer.status === "timeout_pending")
+      .map((reviewer) => ({
+        role: "reviewer" as const,
+        reviewer: reviewer.reviewer,
+        model: reviewer.model,
+        sessionID: reviewer.sessionID,
+      })),
+    ...(run.gatherer?.status === "timeout_pending"
+      ? [
+          {
+            role: "gatherer" as const,
+            model: run.gatherer.model,
+            sessionID: run.gatherer.sessionID,
+          },
+        ]
+      : []),
+    ...(run.judge?.status === "timeout_pending"
+      ? [
+          {
+            role: "judge" as const,
+            model: run.judge.model,
+            sessionID: run.judge.sessionID,
+          },
+        ]
+      : []),
+  ];
+}
+
+function timeoutActionRequired(run: CrossReviewRun) {
+  return {
+    type: "timeout",
+    sessions: pendingTimeouts(run),
+    options: ["preserve", "abort"],
+    message:
+      "Choose preserve to keep these sessions running and extend their deadlines, or abort to stop them. Then call cross_review_status with timeoutAction.",
+  };
+}
+
+function markTimeoutPending(
+  entry: TimedRun,
+  label: string,
+  timeoutMs: number,
+  timestamp: number,
+) {
+  entry.status = "timeout_pending";
+  entry.timeoutDetectedAt ??= timestamp;
+  entry.error = `${label} reached its ${timeoutMs}ms timeout; awaiting preserve or abort decision`;
+  delete entry.retry;
+}
+
+function preserveTimedRun(
+  entry: TimedRun,
+  status: SessionStatus | undefined,
+  timeoutMs: number,
+  timestamp: number,
+) {
+  entry.timeoutExtensions = (entry.timeoutExtensions ?? 0) + 1;
+  entry.deadlineAt = timestamp + timeoutMs;
+  delete entry.error;
+  if (status?.type === "retry") {
+    entry.status = "retrying";
+    entry.retry = {
+      attempt: status.attempt,
+      message: status.message,
+      next: status.next,
+    };
+    return;
+  }
+  delete entry.retry;
+  entry.status = status?.type === "busy" ? "running" : "starting";
+}
+
 function runFinishedWaiting(run: CrossReviewRun) {
+  if (pendingTimeouts(run).length > 0) return true;
   if (isTerminalPhase(run.phase)) return true;
   if (run.phase === "reviewing" && reviewersTerminal(run)) return true;
   if (
@@ -345,6 +425,12 @@ function publicReviewer(reviewer: ReviewerRun, includeOutputs: boolean) {
     ...(reviewer.latestActivityAt === undefined
       ? {}
       : { latestActivityAt: reviewer.latestActivityAt }),
+    ...(reviewer.timeoutDetectedAt === undefined
+      ? {}
+      : { timeoutDetectedAt: reviewer.timeoutDetectedAt }),
+    ...(reviewer.timeoutExtensions === undefined
+      ? {}
+      : { timeoutExtensions: reviewer.timeoutExtensions }),
     ...(reviewer.completedAt === undefined
       ? {}
       : { completedAt: reviewer.completedAt }),
@@ -374,6 +460,12 @@ function publicGatherer(
     ...(gatherer.latestActivityAt === undefined
       ? {}
       : { latestActivityAt: gatherer.latestActivityAt }),
+    ...(gatherer.timeoutDetectedAt === undefined
+      ? {}
+      : { timeoutDetectedAt: gatherer.timeoutDetectedAt }),
+    ...(gatherer.timeoutExtensions === undefined
+      ? {}
+      : { timeoutExtensions: gatherer.timeoutExtensions }),
     ...(gatherer.completedAt === undefined
       ? {}
       : { completedAt: gatherer.completedAt }),
@@ -396,6 +488,12 @@ function publicJudge(judge: JudgeRun | undefined, includeOutput: boolean) {
     ...(judge.latestActivityAt === undefined
       ? {}
       : { latestActivityAt: judge.latestActivityAt }),
+    ...(judge.timeoutDetectedAt === undefined
+      ? {}
+      : { timeoutDetectedAt: judge.timeoutDetectedAt }),
+    ...(judge.timeoutExtensions === undefined
+      ? {}
+      : { timeoutExtensions: judge.timeoutExtensions }),
     ...(judge.completedAt === undefined
       ? {}
       : { completedAt: judge.completedAt }),
@@ -417,6 +515,7 @@ function truncate(text: string, limit: number) {
 // starting or a deadline approaches, and settle into longer intervals once
 // every active session is confirmed running.
 function pollAfterMs(run: CrossReviewRun, timestamp: number) {
+  if (pendingTimeouts(run).length > 0) return undefined;
   if (
     run.phase === "completed" ||
     run.phase === "quorum-not-met" ||
@@ -472,6 +571,9 @@ function progress(
     readyToFinalize: run.phase === "reviewing" && reviewersTerminal(run),
     pollAfterMs: pollAfter,
     summary: progressSummary(run, counts, pollAfter),
+    ...(pendingTimeouts(run).length === 0
+      ? {}
+      : { actionRequired: timeoutActionRequired(run) }),
   };
   if (!detail && !includeOutputs) return compact;
   return {
@@ -506,6 +608,7 @@ function progressSummary(
     "starting",
     "retrying",
     "queued",
+    "timeout_pending",
     "timed_out",
     "failed",
     "cancelled",
@@ -524,6 +627,8 @@ function progressSummary(
     let detail = `${label} — ${reviewer.status}`;
     if (reviewer.retry !== undefined)
       detail += ` (retry ${reviewer.retry.attempt}: ${reviewer.retry.message})`;
+    if (reviewer.timeoutExtensions !== undefined)
+      detail += ` (preserved ${reviewer.timeoutExtensions}x)`;
     if (reviewer.error !== undefined) detail += ` — ${reviewer.error}`;
     lines.push(`  ${detail}`);
   }
@@ -532,6 +637,8 @@ function progressSummary(
     let detail = `gatherer (${gatherer.model}) — ${gatherer.status}`;
     if (gatherer.retry !== undefined)
       detail += ` (retry ${gatherer.retry.attempt}: ${gatherer.retry.message})`;
+    if (gatherer.timeoutExtensions !== undefined)
+      detail += ` (preserved ${gatherer.timeoutExtensions}x)`;
     if (gatherer.error !== undefined) detail += ` — ${gatherer.error}`;
     lines.push(`  ${detail}`);
   }
@@ -540,11 +647,17 @@ function progressSummary(
     let detail = `judge (${judge.model}) — ${judge.status}`;
     if (judge.retry !== undefined)
       detail += ` (retry ${judge.retry.attempt}: ${judge.retry.message})`;
+    if (judge.timeoutExtensions !== undefined)
+      detail += ` (preserved ${judge.timeoutExtensions}x)`;
     if (judge.error !== undefined) detail += ` — ${judge.error}`;
     lines.push(`  ${detail}`);
   }
   if (pollAfterMs !== undefined)
     lines.push(`poll again after ${Math.round(pollAfterMs / 1000)}s`);
+  if (pendingTimeouts(run).length > 0)
+    lines.push(
+      "timeout decision required: call cross_review_status with timeoutAction preserve or abort",
+    );
   return lines.join("\n");
 }
 
@@ -771,7 +884,22 @@ export function createCrossReviewProtocolTools(
     run: CrossReviewRun,
     reviewer: ReviewerRun,
     timestamp: number,
+    status: SessionStatus | undefined,
+    timeoutAction: TimeoutAction | undefined,
   ) {
+    if (timeoutAction === undefined) {
+      markTimeoutPending(
+        reviewer,
+        `Reviewer ${reviewer.reviewer}`,
+        run.reviewerTimeoutMs,
+        timestamp,
+      );
+      return;
+    }
+    if (timeoutAction === "preserve") {
+      preserveTimedRun(reviewer, status, run.reviewerTimeoutMs, timestamp);
+      return;
+    }
     let abortWarning: string | undefined;
     try {
       await abortSession(reviewer.sessionID, run.directory);
@@ -796,6 +924,7 @@ export function createCrossReviewProtocolTools(
     reviewer: ReviewerRun,
     statuses: Record<string, SessionStatus>,
     context: ProtocolContext,
+    timeoutAction?: TimeoutAction,
   ) {
     if (!ACTIVE_REVIEWER_STATUSES.has(reviewer.status)) return;
     const timestamp = now();
@@ -827,8 +956,8 @@ export function createCrossReviewProtocolTools(
       messages = await sessionMessages(reviewer.sessionID, run, context);
     } catch (error) {
       if (deadlineReached) {
-        await timeoutReviewer(run, reviewer, timestamp);
-        reviewer.error = `${reviewer.error}; status unavailable: ${errorMessage(error)}`;
+        await timeoutReviewer(run, reviewer, timestamp, status, timeoutAction);
+        reviewer.error = `${reviewer.error ?? "Reviewer timeout preserved"}; status unavailable: ${errorMessage(error)}`;
       } else {
         reviewer.error = `Reviewer status unavailable: ${errorMessage(error)}`;
       }
@@ -850,13 +979,14 @@ export function createCrossReviewProtocolTools(
       return;
     }
     if (deadlineReached) {
-      await timeoutReviewer(run, reviewer, timestamp);
+      await timeoutReviewer(run, reviewer, timestamp, status, timeoutAction);
       return;
     }
     const latest = messages.at(-1);
     if (latest !== undefined) reviewer.latestActivityAt = activityAt(latest);
     if (
       messages.length === 0 &&
+      reviewer.timeoutExtensions === undefined &&
       reviewer.startedAt !== undefined &&
       timestamp - reviewer.startedAt >= STARTING_GRACE_MS
     ) {
@@ -874,6 +1004,7 @@ export function createCrossReviewProtocolTools(
     statuses: Record<string, SessionStatus>,
     save: SaveRun,
     context: ProtocolContext,
+    timeoutAction?: TimeoutAction,
   ) {
     const judge = run.judge;
     if (judge === undefined) return;
@@ -914,16 +1045,20 @@ export function createCrossReviewProtocolTools(
       }
       return;
     }
-    if (
-      judge.status !== "starting" &&
-      judge.status !== "running" &&
-      judge.status !== "retrying"
-    )
+    if (!ACTIVE_REVIEWER_STATUSES.has(judge.status as ReviewerRunStatus))
       return;
     const timestamp = now();
     const deadlineReached =
       judge.deadlineAt !== undefined && timestamp >= judge.deadlineAt;
     const timeoutJudge = async () => {
+      if (timeoutAction === undefined) {
+        markTimeoutPending(judge, "Judge", run.reviewerTimeoutMs, timestamp);
+        return;
+      }
+      if (timeoutAction === "preserve") {
+        preserveTimedRun(judge, status, run.reviewerTimeoutMs, timestamp);
+        return;
+      }
       let abortWarning: string | undefined;
       try {
         await abortSession(judge.sessionID, run.directory);
@@ -958,7 +1093,7 @@ export function createCrossReviewProtocolTools(
     } catch (error) {
       if (deadlineReached) {
         await timeoutJudge();
-        judge.error = `${judge.error}; status unavailable: ${errorMessage(error)}`;
+        judge.error = `${judge.error ?? "Judge timeout preserved"}; status unavailable: ${errorMessage(error)}`;
       } else {
         judge.error = `Judge status unavailable: ${errorMessage(error)}`;
       }
@@ -991,6 +1126,7 @@ export function createCrossReviewProtocolTools(
     );
     if (
       !judgePromptVisible &&
+      judge.timeoutExtensions === undefined &&
       judge.startedAt !== undefined &&
       timestamp - judge.startedAt >= STARTING_GRACE_MS
     ) {
@@ -1005,6 +1141,7 @@ export function createCrossReviewProtocolTools(
     statuses: Record<string, SessionStatus>,
     save: SaveRun,
     context: ProtocolContext,
+    timeoutAction?: TimeoutAction,
   ) {
     const gatherer = run.gatherer;
     if (gatherer === undefined) return;
@@ -1063,16 +1200,25 @@ export function createCrossReviewProtocolTools(
       }
       return;
     }
-    if (
-      gatherer.status !== "starting" &&
-      gatherer.status !== "running" &&
-      gatherer.status !== "retrying"
-    )
+    if (!ACTIVE_REVIEWER_STATUSES.has(gatherer.status as ReviewerRunStatus))
       return;
     const timestamp = now();
     const deadlineReached =
       gatherer.deadlineAt !== undefined && timestamp >= gatherer.deadlineAt;
     const timeoutGatherer = async () => {
+      if (timeoutAction === undefined) {
+        markTimeoutPending(
+          gatherer,
+          "Gatherer",
+          run.reviewerTimeoutMs,
+          timestamp,
+        );
+        return false;
+      }
+      if (timeoutAction === "preserve") {
+        preserveTimedRun(gatherer, status, run.reviewerTimeoutMs, timestamp);
+        return false;
+      }
       let abortWarning: string | undefined;
       try {
         await abortSession(gatherer.sessionID, run.directory);
@@ -1083,6 +1229,7 @@ export function createCrossReviewProtocolTools(
       gatherer.completedAt = timestamp;
       gatherer.error = `Gatherer timed out after ${run.reviewerTimeoutMs}ms${abortWarning ?? ""}`;
       delete gatherer.retry;
+      return true;
     };
     const status = statuses[gatherer.sessionID];
     if (status?.type === "busy" && !deadlineReached) {
@@ -1106,9 +1253,9 @@ export function createCrossReviewProtocolTools(
       messages = await sessionMessages(gatherer.sessionID, run, context);
     } catch (error) {
       if (deadlineReached) {
-        await timeoutGatherer();
-        gatherer.error = `${gatherer.error}; status unavailable: ${errorMessage(error)}`;
-        await transitionToReviewing();
+        const timedOut = await timeoutGatherer();
+        gatherer.error = `${gatherer.error ?? "Gatherer timeout preserved"}; status unavailable: ${errorMessage(error)}`;
+        if (timedOut) await transitionToReviewing();
       } else {
         gatherer.error = `Gatherer status unavailable: ${errorMessage(error)}`;
       }
@@ -1131,14 +1278,15 @@ export function createCrossReviewProtocolTools(
       return;
     }
     if (deadlineReached) {
-      await timeoutGatherer();
-      await transitionToReviewing();
+      const timedOut = await timeoutGatherer();
+      if (timedOut) await transitionToReviewing();
       return;
     }
     const latest = messages.at(-1);
     if (latest !== undefined) gatherer.latestActivityAt = activityAt(latest);
     if (
       messages.length === 0 &&
+      gatherer.timeoutExtensions === undefined &&
       gatherer.startedAt !== undefined &&
       timestamp - gatherer.startedAt >= STARTING_GRACE_MS
     ) {
@@ -1164,6 +1312,7 @@ export function createCrossReviewProtocolTools(
     run: CrossReviewRun,
     save: SaveRun,
     context: ProtocolContext,
+    timeoutAction?: TimeoutAction,
   ) {
     if (
       run.phase === "completed" ||
@@ -1203,19 +1352,37 @@ export function createCrossReviewProtocolTools(
     }
 
     if (run.phase === "gathering") {
-      await reconcileGatherer(run, currentStatuses ?? {}, save, context);
+      await reconcileGatherer(
+        run,
+        currentStatuses ?? {},
+        save,
+        context,
+        timeoutAction,
+      );
       return;
     }
     if (run.phase === "reviewing") {
       await Promise.all(
         run.reviewers.map((reviewer) =>
-          reconcileReviewer(run, reviewer, currentStatuses ?? {}, context),
+          reconcileReviewer(
+            run,
+            reviewer,
+            currentStatuses ?? {},
+            context,
+            timeoutAction,
+          ),
         ),
       );
       await dispatchAvailable(run, save, context);
     }
     if (run.phase === "judging")
-      await reconcileJudge(run, currentStatuses ?? {}, save, context);
+      await reconcileJudge(
+        run,
+        currentStatuses ?? {},
+        save,
+        context,
+        timeoutAction,
+      );
   }
 
   async function withAuthorizedRun<T>(
@@ -1475,12 +1642,13 @@ export function createCrossReviewProtocolTools(
 
   const status = tool({
     description:
-      "Poll and advance one asynchronous cross-review run with optional server-side wait; invoke only with explicit user review intent from primary sessions",
+      "Poll and advance one asynchronous cross-review run, or resolve its pending timeout with an explicit preserve/abort action; invoke only with explicit user review intent from primary sessions",
     args: {
       runID: tool.schema.string().uuid(),
       detail: tool.schema.boolean().optional(),
       includeOutputs: tool.schema.boolean().optional(),
       waitMs: tool.schema.number().int().min(0).max(MAX_WAIT_MS).optional(),
+      timeoutAction: tool.schema.enum(["preserve", "abort"]).optional(),
     },
     async execute(args, context) {
       const waitBudgetMs = args.waitMs ?? configuredDefaultWaitMs;
@@ -1490,7 +1658,7 @@ export function createCrossReviewProtocolTools(
       let latestRun: CrossReviewRun | undefined;
 
       await withAuthorizedRun(args.runID, context, async (run, save) => {
-        await reconcile(run, save, context);
+        await reconcile(run, save, context, args.timeoutAction);
         latestRun = run;
         initialSnapshot = runSnapshot(run);
         finishedWaiting = runFinishedWaiting(run);
@@ -1581,9 +1749,9 @@ export function createCrossReviewProtocolTools(
         if (
           run.gatherer?.sessionID !== undefined &&
           (run.gatherer.status === "queued" ||
-            run.gatherer.status === "starting" ||
-            run.gatherer.status === "running" ||
-            run.gatherer.status === "retrying")
+            ACTIVE_REVIEWER_STATUSES.has(
+              run.gatherer.status as ReviewerRunStatus,
+            ))
         ) {
           try {
             await abortSession(run.gatherer.sessionID, run.directory);
@@ -1598,9 +1766,7 @@ export function createCrossReviewProtocolTools(
         let judgeAbortWarning: string | undefined;
         if (
           run.judge?.sessionID !== undefined &&
-          (run.judge.status === "starting" ||
-            run.judge.status === "running" ||
-            run.judge.status === "retrying")
+          ACTIVE_REVIEWER_STATUSES.has(run.judge.status as ReviewerRunStatus)
         ) {
           try {
             await abortSession(run.judge.sessionID, run.directory);

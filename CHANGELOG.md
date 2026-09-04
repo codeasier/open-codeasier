@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Preserve overdue cross-review sessions until the user explicitly chooses an
+  action. Reviewers, gatherers, and judges now enter `timeout_pending` and
+  return `actionRequired`; `cross_review_status` accepts `timeoutAction:
+"preserve"` to extend the same session or `"abort"` to terminate it.
 - Add server-side waiting (`waitMs`) to `cross_review_status` long polling.
   The tool holds active runs for up to `waitMs` (0-60000ms, default 30000ms)
   without holding the run lock across sleep intervals, returning early whenever
