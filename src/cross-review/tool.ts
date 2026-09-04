@@ -168,7 +168,7 @@ export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export const MAX_EMBEDDED_CONTEXT_LENGTH = 100_000;
+export const MAX_EMBEDDED_CONTEXT_LENGTH = 1_000_000;
 
 export function embeddedContext(context: string): string | undefined {
   if (context.length === 0) return undefined;
