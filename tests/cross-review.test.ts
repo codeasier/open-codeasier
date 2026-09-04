@@ -141,7 +141,9 @@ describe("cross_review tool", () => {
         { target: "HEAD" },
         context(),
       ),
-    ).rejects.toThrow("No review models configured");
+    ).rejects.toThrow(
+      "No review models configured: configure reviewers in .opencode/cross-review.json or pass --review-models",
+    );
     expect(mock.session.create).not.toHaveBeenCalled();
   });
 

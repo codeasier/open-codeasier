@@ -271,7 +271,7 @@ function resolveReviewerTargets(
       };
     });
   throw new Error(
-    "No review models configured: pass --review-models or create .opencode/cross-review.json",
+    "No review models configured: configure reviewers in .opencode/cross-review.json or pass --review-models",
   );
 }
 

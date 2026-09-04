@@ -268,50 +268,34 @@ export async function loadCrossReviewConfig(
   const projectPath = await resolveProjectConfigPath(directory);
   const globalPath = globalConfigPath(home);
 
+  // Sequential precedence: when the project config exists, use it exclusively
+  // and do not touch the global file at all. Only when the project config is
+  // absent do we fall back to the global config.
   const projectRaw = await readConfigContent(projectPath);
+  if (projectRaw !== undefined) {
+    const project = parseCrossReviewConfig(projectPath, projectRaw);
+    return {
+      config: project,
+      sources: {
+        project: "loaded",
+        global: "absent",
+      },
+      projectPath,
+      globalPath,
+    };
+  }
+
   const globalRaw = await readConfigContent(globalPath);
 
-  const project: CrossReviewConfig | undefined =
-    projectRaw === undefined
-      ? undefined
-      : parseCrossReviewConfig(projectPath, projectRaw);
   const global: CrossReviewConfig | undefined =
     globalRaw === undefined
       ? undefined
       : parseCrossReviewConfig(globalPath, globalRaw);
 
-  let config: CrossReviewConfig;
-  if (project !== undefined && global !== undefined) {
-    const merged: CrossReviewConfig = { ...global };
-    if (project.reviewers !== undefined) {
-      merged.reviewers = project.reviewers;
-      delete merged.reviewModels;
-    }
-    if (project.reviewModels !== undefined) {
-      merged.reviewModels = project.reviewModels;
-      delete merged.reviewers;
-    }
-    if (project.agents !== undefined) merged.agents = project.agents;
-    if (project.maxConcurrency !== undefined)
-      merged.maxConcurrency = project.maxConcurrency;
-    if (project.judgeModel !== undefined)
-      merged.judgeModel = project.judgeModel;
-    if (project.focus !== undefined) merged.focus = project.focus;
-    if (project.reviewerTimeoutMs !== undefined)
-      merged.reviewerTimeoutMs = project.reviewerTimeoutMs;
-    config = merged;
-  } else if (project !== undefined) {
-    config = project;
-  } else if (global !== undefined) {
-    config = global;
-  } else {
-    config = {};
-  }
-
   return {
-    config,
+    config: global ?? {},
     sources: {
-      project: projectRaw === undefined ? "absent" : "loaded",
+      project: "absent",
       global: globalRaw === undefined ? "absent" : "loaded",
     },
     projectPath,
