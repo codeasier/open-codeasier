@@ -40,7 +40,9 @@ async function defaultIsFile(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isFile();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "EACCES" || code === "EPERM")
+      return false;
     throw error;
   }
 }

@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -162,6 +169,35 @@ describe("discoverGitcodeCli", () => {
       }),
     ).resolves.toBe(await realpath(cli));
   });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "skips candidates inside unreadable PATH directories",
+    async () => {
+      const root = await fixture();
+      const bin = join(root, "bin");
+      await mkdir(bin);
+      await writeFile(
+        join(bin, "gitcode"),
+        "#!/bin/sh\necho gitcode, version test\n",
+        {
+          mode: 0o755,
+        },
+      );
+      await chmod(bin, 0o000);
+      try {
+        await expect(
+          discoverGitcodeCli({
+            platform: "darwin",
+            pathEnv: bin,
+            pathDelimiter: ":",
+            home: root,
+          }),
+        ).resolves.toBeUndefined();
+      } finally {
+        await chmod(bin, 0o755);
+      }
+    },
+  );
 });
 
 describe("detect-gitcode CLI", () => {
@@ -171,5 +207,55 @@ describe("detect-gitcode CLI", () => {
       "https://github.com/codeasier/gitcode-cli",
     );
     expect(await run(["detect-gitcode", "--bogus"])).toBe(2);
+  });
+
+  it("prints the found path and exits 0 when a candidate matches", async () => {
+    const { run } = await import("../src/cli.js");
+    const root = await fixture();
+    const bin = join(root, "bin");
+    const home = join(root, "home");
+    await mkdir(bin);
+    await mkdir(home);
+    const cli = join(bin, "gitcode");
+    await writeFile(cli, "#!/bin/sh\necho gitcode, version test\n", {
+      mode: 0o755,
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const previousPath = process.env.PATH;
+    const previousHome = process.env.HOME;
+    process.env.PATH = bin;
+    process.env.HOME = home;
+    try {
+      expect(await run(["detect-gitcode"])).toBe(0);
+    } finally {
+      process.env.PATH = previousPath;
+      process.env.HOME = previousHome;
+    }
+    expect(log).toHaveBeenCalledWith(`found: ${await realpath(cli)}`);
+  });
+
+  it("reports the install URL and exits 1 when nothing matches", async () => {
+    const { run } = await import("../src/cli.js");
+    const root = await fixture();
+    const bin = join(root, "bin");
+    const home = join(root, "home");
+    await mkdir(bin);
+    await mkdir(home);
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const previousPath = process.env.PATH;
+    const previousHome = process.env.HOME;
+    process.env.PATH = bin;
+    process.env.HOME = home;
+    try {
+      expect(await run(["detect-gitcode"])).toBe(1);
+    } finally {
+      process.env.PATH = previousPath;
+      process.env.HOME = previousHome;
+    }
+    expect(error).toHaveBeenCalledWith(
+      `gitcode-cli not found. Install from ${GITCODE_INSTALL_URL}`,
+    );
   });
 });
