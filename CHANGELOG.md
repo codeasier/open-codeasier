@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   PR/Issue details with that CLI in the parent session and always pass
   `context`; GitHub fetching still uses `gh`.
 
+### Changed
+
+- Load project `.opencode/cross-review.json` exclusively when present, without
+  reading or merging `~/.config/opencode/cross-review.json`. Global fallback
+  applies only when the project file is absent. A present-but-empty project
+  config, including the model-free `{}` created by `init`, is no longer
+  backfilled from global; tell callers to configure reviewers in the existing
+  project file or pass `--review-models`.
+
 ## [0.2.12] - 2026-09-04
 
 ### Added

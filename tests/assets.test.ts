@@ -61,6 +61,12 @@ describe("distributed workflow assets", () => {
     expect(content).toContain(
       "If `cross_review_start` reports that no review models are configured",
     );
+    expect(content).toContain(
+      "configure reviewers in `.opencode/cross-review.json` or pass `--review-models`",
+    );
+    expect(content).not.toContain(
+      "write a project `.opencode/cross-review.json`",
+    );
     expect(content).not.toContain("both canonical paths are absent");
     expect(content).toContain("ask whether GitCode support is needed");
     expect(content).toContain("npx open-codeasier detect-gitcode");

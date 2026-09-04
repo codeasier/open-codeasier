@@ -13,6 +13,7 @@ const DEFAULT_AGENTS = 3;
 const DEFAULT_CONCURRENCY = 3;
 export const PRIMARY_TOOL_IDS = [
   "cross_review",
+  "cross_review_config",
   "cross_review_start",
   "cross_review_status",
   "cross_review_cancel",
@@ -27,6 +28,7 @@ export const READ_ONLY_TOOLS = {
   task: false,
   write: false,
   cross_review: false,
+  cross_review_config: false,
   cross_review_start: false,
   cross_review_status: false,
   cross_review_cancel: false,
@@ -269,7 +271,7 @@ function resolveReviewerTargets(
       };
     });
   throw new Error(
-    "No review models configured: pass --review-models or create .opencode/cross-review.json",
+    "No review models configured: configure reviewers in .opencode/cross-review.json or pass --review-models",
   );
 }
 

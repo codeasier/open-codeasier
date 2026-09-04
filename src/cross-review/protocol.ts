@@ -16,10 +16,12 @@ import {
   resolveReviewers,
   splitModel,
   type CrossReviewConfigLoader,
+  type ReviewerTarget,
 } from "./tool.js";
 import {
   loadCrossReviewConfig,
   validateCrossReviewOverrides,
+  type LoadedCrossReviewConfig,
 } from "./config.js";
 import {
   FileCrossReviewRunStore,
@@ -686,6 +688,71 @@ function result(title: string, output: Record<string, unknown>) {
             globalConfigPath: config.globalConfigPath,
           }),
     },
+  };
+}
+
+type ReviewPlanArgs = {
+  reviewModels?: string[] | undefined;
+  agents?: number | undefined;
+  maxConcurrency?: number | undefined;
+  judgeModel?: string | undefined;
+  focus?: string | undefined;
+  reviewerTimeoutMs?: number | undefined;
+};
+
+/**
+ * Resolve reviewers, judge, and limits from overrides plus the loaded config,
+ * then verify every requested model is connected. Shared by `start` and the
+ * read-only config preview so both report the exact same plan. Creates no
+ * sessions.
+ */
+async function resolveReviewPlan(
+  args: ReviewPlanArgs,
+  loaded: LoadedCrossReviewConfig,
+  client: AsyncCrossReviewClient,
+  directory: string,
+  signal: AbortSignal,
+) {
+  const reviewers: ReviewerTarget[] = resolveReviewers(args, loaded.config);
+  const judgeModel =
+    args.judgeModel === undefined
+      ? loaded.config.judgeModel
+      : args.judgeModel.trim() || undefined;
+  const maxConcurrency =
+    args.maxConcurrency ?? loaded.config.maxConcurrency ?? DEFAULT_CONCURRENCY;
+  const reviewerTimeoutMs =
+    args.reviewerTimeoutMs ??
+    loaded.config.reviewerTimeoutMs ??
+    DEFAULT_REVIEWER_TIMEOUT_MS;
+  const requestedModels = [
+    ...new Set([
+      ...reviewers.map((reviewer) => reviewer.model),
+      ...(judgeModel === undefined ? [] : [judgeModel]),
+    ]),
+  ];
+  const parsedModels = new Map(
+    requestedModels.map((model) => [model, splitModel(model)]),
+  );
+  const catalog = responseData(
+    await client.provider.list({ query: { directory }, signal }),
+    "Provider discovery",
+  );
+  for (const [model, parsed] of parsedModels) {
+    const provider = catalog.all.find(
+      (candidate) => candidate.id === parsed.providerID,
+    );
+    if (
+      !catalog.connected.includes(parsed.providerID) ||
+      provider === undefined ||
+      !(parsed.modelID in provider.models)
+    )
+      throw new Error(`Unavailable model: ${model}`);
+  }
+  return {
+    reviewers,
+    judgeModel,
+    maxConcurrency,
+    reviewerTimeoutMs,
   };
 }
 
@@ -1473,6 +1540,71 @@ export function createCrossReviewProtocolTools(
     });
   }
 
+  const configPreview = tool({
+    description:
+      "Preview the resolved cross-review configuration without creating sessions; invoke from primary sessions to confirm the effective config before starting",
+    args: {
+      reviewModels: tool.schema
+        .array(tool.schema.string())
+        .min(1)
+        .max(8)
+        .optional(),
+      agents: tool.schema.number().int().min(1).max(8).optional(),
+      maxConcurrency: tool.schema.number().int().min(1).max(8).optional(),
+      judgeModel: tool.schema.string().optional(),
+      focus: tool.schema.string().max(2_000).optional(),
+      reviewerTimeoutMs: tool.schema
+        .number()
+        .int()
+        .min(5_000)
+        .max(60 * 60 * 1_000)
+        .optional(),
+    },
+    async execute(args, context) {
+      if (context.abort.aborted) throw new Error("Cross-review cancelled");
+      await assertPrimarySession(
+        client,
+        context,
+        "cross_review_config",
+        requestSignal(context.abort),
+      );
+      // Same fast-fail bounds as `start`, even when the host skips
+      // tool-schema validation.
+      validateCrossReviewOverrides(args);
+      const loaded = await loadConfig(context.directory);
+      const plan = await resolveReviewPlan(
+        args,
+        loaded,
+        client,
+        context.directory,
+        requestSignal(context.abort),
+      );
+      const warning = configWarning(loaded);
+      const sharedFocus = args.focus ?? loaded.config.focus;
+      return result("Cross-review config preview", {
+        config: {
+          sources: loaded.sources,
+          projectConfigPath: loaded.projectPath,
+          globalConfigPath: loaded.globalPath,
+        },
+        ...(warning === undefined ? {} : { warning }),
+        reviewers: plan.reviewers.map((reviewer, index) => ({
+          reviewer: index + 1,
+          model: reviewer.model,
+          ...(reviewer.focus === undefined ? {} : { focus: reviewer.focus }),
+        })),
+        quorum: Math.floor(plan.reviewers.length / 2) + 1,
+        judge:
+          plan.judgeModel === undefined
+            ? { model: "parent-session" }
+            : { model: plan.judgeModel },
+        maxConcurrency: plan.maxConcurrency,
+        reviewerTimeoutMs: plan.reviewerTimeoutMs,
+        ...(sharedFocus === undefined ? {} : { focus: sharedFocus }),
+      });
+    },
+  });
+
   const start = tool({
     description:
       "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user review intent from primary sessions",
@@ -1508,42 +1640,16 @@ export function createCrossReviewProtocolTools(
       validateCrossReviewOverrides(args);
       const directory = await canonicalize(context.directory);
       const loaded = await loadConfig(context.directory);
-      const reviewers = resolveReviewers(args, loaded.config);
-      const judgeModel =
-        args.judgeModel === undefined
-          ? loaded.config.judgeModel
-          : args.judgeModel.trim() || undefined;
-      const maxConcurrency =
-        args.maxConcurrency ??
-        loaded.config.maxConcurrency ??
-        DEFAULT_CONCURRENCY;
-      const requestedModels = [
-        ...new Set([
-          ...reviewers.map((reviewer) => reviewer.model),
-          ...(judgeModel === undefined ? [] : [judgeModel]),
-        ]),
-      ];
-      const parsedModels = new Map(
-        requestedModels.map((model) => [model, splitModel(model)]),
+      const plan = await resolveReviewPlan(
+        args,
+        loaded,
+        client,
+        context.directory,
+        requestSignal(context.abort),
       );
-      const catalog = responseData(
-        await client.provider.list({
-          query: { directory: context.directory },
-          signal: requestSignal(context.abort),
-        }),
-        "Provider discovery",
-      );
-      for (const [model, parsed] of parsedModels) {
-        const provider = catalog.all.find(
-          (candidate) => candidate.id === parsed.providerID,
-        );
-        if (
-          !catalog.connected.includes(parsed.providerID) ||
-          provider === undefined ||
-          !(parsed.modelID in provider.models)
-        )
-          throw new Error(`Unavailable model: ${model}`);
-      }
+      const reviewers = plan.reviewers;
+      const judgeModel = plan.judgeModel;
+      const maxConcurrency = plan.maxConcurrency;
 
       const runID = createRunID();
       const childSessions: string[] = [];
@@ -1608,10 +1714,7 @@ export function createCrossReviewProtocolTools(
           ...(warning === undefined ? {} : { warning }),
           quorum: Math.floor(reviewers.length / 2) + 1,
           maxConcurrency,
-          reviewerTimeoutMs:
-            args.reviewerTimeoutMs ??
-            loaded.config.reviewerTimeoutMs ??
-            DEFAULT_REVIEWER_TIMEOUT_MS,
+          reviewerTimeoutMs: plan.reviewerTimeoutMs,
           ...(judgeModel === undefined ? {} : { judgeModel }),
           configSources: loaded.sources,
           projectConfigPath: loaded.projectPath,
@@ -2016,6 +2119,7 @@ export function createCrossReviewProtocolTools(
   });
 
   return {
+    cross_review_config: configPreview,
     cross_review_start: start,
     cross_review_status: status,
     cross_review_cancel: cancel,
