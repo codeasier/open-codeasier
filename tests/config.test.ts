@@ -127,6 +127,33 @@ describe("cross-review configuration", () => {
         reviewerTimeoutMs: 5_000,
       }),
     ).not.toThrow();
+    expect(() =>
+      parseCrossReviewConfig("test", {
+        reviewModels: ["a/one"],
+        gitcodeCli: "gitcode",
+      }),
+    ).toThrow(/`gitcodeCli` must be an absolute path/);
+    expect(() =>
+      parseCrossReviewConfig("test", {
+        reviewModels: ["a/one"],
+        gitcodeCli: "./gc",
+      }),
+    ).toThrow(/`gitcodeCli` must be an absolute path/);
+    expect(() =>
+      parseCrossReviewConfig("test", {
+        reviewModels: ["a/one"],
+        gitcodeCli: 1,
+      }),
+    ).toThrow(/`gitcodeCli` must be an absolute path/);
+  });
+
+  it("parses an absolute gitcodeCli path", () => {
+    const gitcodeCli = join(tmpdir(), "gitcode");
+    const config = parseCrossReviewConfig("test", {
+      reviewModels: ["a/one"],
+      gitcodeCli,
+    });
+    expect(config).toEqual({ reviewModels: ["a/one"], gitcodeCli });
   });
 
   it("loads an empty config when no files exist", async () => {
@@ -175,6 +202,52 @@ describe("cross-review configuration", () => {
       reviewerTimeoutMs: 900_000,
     });
     expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
+  });
+
+  it("lets a project gitcodeCli override the global value", async () => {
+    const root = await fixture();
+    const globalCli = join(root, "global-gitcode");
+    const projectCli = join(root, "project-gitcode");
+    await mkdir(join(root, ".config", "opencode"), { recursive: true });
+    await writeFile(
+      globalConfigPath(root),
+      JSON.stringify({
+        reviewModels: ["a/one"],
+        gitcodeCli: globalCli,
+      }),
+    );
+    await mkdir(join(root, ".opencode"), { recursive: true });
+    await writeFile(
+      projectConfigPath(root),
+      JSON.stringify({ gitcodeCli: projectCli }),
+    );
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({
+      reviewModels: ["a/one"],
+      gitcodeCli: projectCli,
+    });
+    expect(loaded.sources).toEqual({ project: "loaded", global: "loaded" });
+  });
+
+  it("keeps a global gitcodeCli when the project omits it", async () => {
+    const root = await fixture();
+    const globalCli = join(root, "global-gitcode");
+    await mkdir(join(root, ".config", "opencode"), { recursive: true });
+    await writeFile(
+      globalConfigPath(root),
+      JSON.stringify({
+        reviewModels: ["a/one"],
+        gitcodeCli: globalCli,
+      }),
+    );
+    await mkdir(join(root, ".opencode"), { recursive: true });
+    await writeFile(projectConfigPath(root), JSON.stringify({ agents: 2 }));
+    const loaded = await loadCrossReviewConfig(root, root);
+    expect(loaded.config).toEqual({
+      reviewModels: ["a/one"],
+      agents: 2,
+      gitcodeCli: globalCli,
+    });
   });
 
   it("lets a project reviewerTimeoutMs override the global value", async () => {

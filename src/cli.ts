@@ -9,6 +9,10 @@ import {
   resolveProjectConfigPath,
 } from "./cross-review/config.js";
 import {
+  discoverGitcodeCli,
+  GITCODE_INSTALL_URL,
+} from "./cross-review/gitcode-cli.js";
+import {
   CrossReviewConfigConflictError,
   initializeCrossReviewConfig,
 } from "./cross-review/init.js";
@@ -70,6 +74,18 @@ export async function run(argv: string[]): Promise<number> {
       }
       throw error;
     }
+  }
+  if (command === "detect-gitcode") {
+    if (argv.length > 0) return 2;
+    const path = await discoverGitcodeCli();
+    if (path === undefined) {
+      console.error(
+        `gitcode-cli not found. Install from ${GITCODE_INSTALL_URL}`,
+      );
+      return 1;
+    }
+    console.log(`found: ${path}`);
+    return 0;
   }
   if (command === "validate") {
     let requested: string | undefined;
