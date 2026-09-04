@@ -13,6 +13,7 @@ import {
   discoverGitcodeCli,
   GITCODE_INSTALL_URL,
   isGitcodeCliPath,
+  isIgnorableFsError,
   type GitcodeCliDiscovery,
 } from "../src/cross-review/gitcode-cli.js";
 
@@ -64,6 +65,20 @@ function fakeDiscovery(
     ...extra,
   };
 }
+
+describe("isIgnorableFsError", () => {
+  it.each(["ENOENT", "EACCES", "EPERM", "ENOTDIR"] as const)(
+    "treats %s as skippable",
+    (code) => {
+      expect(isIgnorableFsError({ code })).toBe(true);
+    },
+  );
+
+  it("does not treat other errors as skippable", () => {
+    expect(isIgnorableFsError({ code: "EIO" })).toBe(false);
+    expect(isIgnorableFsError(new Error("boom"))).toBe(false);
+  });
+});
 
 describe("gitcodeCli path validation", () => {
   it("accepts absolute paths and rejects relative or empty values", () => {
@@ -279,13 +294,17 @@ describe("detect-gitcode CLI", () => {
       const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
       const previousPath = process.env.PATH;
       const previousHome = process.env.HOME;
+      const previousUserProfile = process.env.USERPROFILE;
       process.env.PATH = bin;
       process.env.HOME = home;
+      process.env.USERPROFILE = home;
       try {
         expect(await run(["detect-gitcode"])).toBe(0);
       } finally {
         process.env.PATH = previousPath;
         process.env.HOME = previousHome;
+        if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = previousUserProfile;
       }
       expect(log).toHaveBeenCalledWith(`found: ${await realpath(cli)}`);
     },
@@ -303,13 +322,17 @@ describe("detect-gitcode CLI", () => {
       .mockImplementation(() => undefined);
     const previousPath = process.env.PATH;
     const previousHome = process.env.HOME;
+    const previousUserProfile = process.env.USERPROFILE;
     process.env.PATH = bin;
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     try {
       expect(await run(["detect-gitcode"])).toBe(1);
     } finally {
       process.env.PATH = previousPath;
       process.env.HOME = previousHome;
+      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = previousUserProfile;
     }
     expect(error).toHaveBeenCalledWith(
       `gitcode-cli not found. Install from ${GITCODE_INSTALL_URL}`,

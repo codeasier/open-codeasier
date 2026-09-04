@@ -36,7 +36,7 @@ function condaBinDir(platform: NodeJS.Platform): string {
   return platform === "win32" ? "Scripts" : "bin";
 }
 
-function isIgnorableFsError(error: unknown): boolean {
+export function isIgnorableFsError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
   return (
     code === "ENOENT" ||
