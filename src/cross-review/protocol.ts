@@ -931,6 +931,19 @@ export function createCrossReviewProtocolTools(
     const status = statuses[reviewer.sessionID];
     const deadlineReached =
       reviewer.deadlineAt !== undefined && timestamp >= reviewer.deadlineAt;
+    // A previously preserved session can still be aborted before its
+    // extended deadline runs out: the user already saw the timeout decision
+    // and explicitly chose to stop it.
+    const abortExtended =
+      timeoutAction === "abort" && reviewer.timeoutExtensions !== undefined;
+    if (
+      abortExtended &&
+      !deadlineReached &&
+      (status?.type === "busy" || status?.type === "retry")
+    ) {
+      await timeoutReviewer(run, reviewer, timestamp, status, "abort");
+      return;
+    }
 
     if (status?.type === "busy" && !deadlineReached) {
       reviewer.status = "running";
@@ -955,14 +968,30 @@ export function createCrossReviewProtocolTools(
     try {
       messages = await sessionMessages(reviewer.sessionID, run, context);
     } catch (error) {
-      if (deadlineReached) {
-        await timeoutReviewer(run, reviewer, timestamp, status, timeoutAction);
-        reviewer.error = `${reviewer.error ?? "Reviewer timeout preserved"}; status unavailable: ${errorMessage(error)}`;
+      if (deadlineReached || abortExtended) {
+        await timeoutReviewer(
+          run,
+          reviewer,
+          timestamp,
+          status,
+          deadlineReached ? timeoutAction : "abort",
+        );
+        // A preserved session keeps running, so a transient fetch failure
+        // must not stick to it; later polls report fresh state instead.
+        if (
+          reviewer.status === "timeout_pending" ||
+          reviewer.status === "timed_out"
+        ) {
+          reviewer.error = `${reviewer.error}; status unavailable: ${errorMessage(error)}`;
+        }
       } else {
         reviewer.error = `Reviewer status unavailable: ${errorMessage(error)}`;
       }
       return;
     }
+    // A transient fetch failure must not linger once reads succeed again.
+    if (reviewer.error?.startsWith("Reviewer status unavailable") ?? false)
+      delete reviewer.error;
     const outcome = terminalOutcome(
       messages,
       `Reviewer ${reviewer.reviewer} prompt`,
@@ -978,15 +1007,20 @@ export function createCrossReviewProtocolTools(
       delete reviewer.retry;
       return;
     }
-    if (deadlineReached) {
-      await timeoutReviewer(run, reviewer, timestamp, status, timeoutAction);
+    if (deadlineReached || abortExtended) {
+      await timeoutReviewer(
+        run,
+        reviewer,
+        timestamp,
+        status,
+        deadlineReached ? timeoutAction : "abort",
+      );
       return;
     }
     const latest = messages.at(-1);
     if (latest !== undefined) reviewer.latestActivityAt = activityAt(latest);
     if (
       messages.length === 0 &&
-      reviewer.timeoutExtensions === undefined &&
       reviewer.startedAt !== undefined &&
       timestamp - reviewer.startedAt >= STARTING_GRACE_MS
     ) {
@@ -1050,6 +1084,10 @@ export function createCrossReviewProtocolTools(
     const timestamp = now();
     const deadlineReached =
       judge.deadlineAt !== undefined && timestamp >= judge.deadlineAt;
+    // See reconcileReviewer: a previously preserved session honors an
+    // explicit abort even before its extended deadline runs out.
+    const abortExtended =
+      timeoutAction === "abort" && judge.timeoutExtensions !== undefined;
     const timeoutJudge = async () => {
       if (timeoutAction === undefined) {
         markTimeoutPending(judge, "Judge", run.reviewerTimeoutMs, timestamp);
@@ -1071,6 +1109,14 @@ export function createCrossReviewProtocolTools(
       delete judge.retry;
     };
     const status = statuses[judge.sessionID];
+    if (
+      abortExtended &&
+      !deadlineReached &&
+      (status?.type === "busy" || status?.type === "retry")
+    ) {
+      await timeoutJudge();
+      return;
+    }
     if (status?.type === "busy" && !deadlineReached) {
       judge.status = "running";
       delete judge.retry;
@@ -1091,14 +1137,24 @@ export function createCrossReviewProtocolTools(
     try {
       messages = await sessionMessages(judge.sessionID, run, context);
     } catch (error) {
-      if (deadlineReached) {
+      if (deadlineReached || abortExtended) {
         await timeoutJudge();
-        judge.error = `${judge.error ?? "Judge timeout preserved"}; status unavailable: ${errorMessage(error)}`;
+        // A preserved session keeps running, so a transient fetch failure
+        // must not stick to it; later polls report fresh state instead.
+        if (
+          judge.status === "timeout_pending" ||
+          judge.status === "timed_out"
+        ) {
+          judge.error = `${judge.error}; status unavailable: ${errorMessage(error)}`;
+        }
       } else {
         judge.error = `Judge status unavailable: ${errorMessage(error)}`;
       }
       return;
     }
+    // A transient fetch failure must not linger once reads succeed again.
+    if (judge.error?.startsWith("Judge status unavailable") ?? false)
+      delete judge.error;
     const outcome = terminalOutcome(messages, "Judge prompt", judge.messageID);
     if (outcome !== undefined) {
       judge.status = outcome.status;
@@ -1110,7 +1166,7 @@ export function createCrossReviewProtocolTools(
       delete judge.retry;
       return;
     }
-    if (deadlineReached) {
+    if (deadlineReached || abortExtended) {
       await timeoutJudge();
       return;
     }
@@ -1126,7 +1182,6 @@ export function createCrossReviewProtocolTools(
     );
     if (
       !judgePromptVisible &&
-      judge.timeoutExtensions === undefined &&
       judge.startedAt !== undefined &&
       timestamp - judge.startedAt >= STARTING_GRACE_MS
     ) {
@@ -1205,6 +1260,10 @@ export function createCrossReviewProtocolTools(
     const timestamp = now();
     const deadlineReached =
       gatherer.deadlineAt !== undefined && timestamp >= gatherer.deadlineAt;
+    // See reconcileReviewer: a previously preserved session honors an
+    // explicit abort even before its extended deadline runs out.
+    const abortExtended =
+      timeoutAction === "abort" && gatherer.timeoutExtensions !== undefined;
     const timeoutGatherer = async () => {
       if (timeoutAction === undefined) {
         markTimeoutPending(
@@ -1232,6 +1291,14 @@ export function createCrossReviewProtocolTools(
       return true;
     };
     const status = statuses[gatherer.sessionID];
+    if (
+      abortExtended &&
+      !deadlineReached &&
+      (status?.type === "busy" || status?.type === "retry")
+    ) {
+      if (await timeoutGatherer()) await transitionToReviewing();
+      return;
+    }
     if (status?.type === "busy" && !deadlineReached) {
       gatherer.status = "running";
       delete gatherer.retry;
@@ -1252,15 +1319,25 @@ export function createCrossReviewProtocolTools(
     try {
       messages = await sessionMessages(gatherer.sessionID, run, context);
     } catch (error) {
-      if (deadlineReached) {
+      if (deadlineReached || abortExtended) {
         const timedOut = await timeoutGatherer();
-        gatherer.error = `${gatherer.error ?? "Gatherer timeout preserved"}; status unavailable: ${errorMessage(error)}`;
+        // A preserved session keeps running, so a transient fetch failure
+        // must not stick to it; later polls report fresh state instead.
+        if (
+          gatherer.status === "timeout_pending" ||
+          gatherer.status === "timed_out"
+        ) {
+          gatherer.error = `${gatherer.error}; status unavailable: ${errorMessage(error)}`;
+        }
         if (timedOut) await transitionToReviewing();
       } else {
         gatherer.error = `Gatherer status unavailable: ${errorMessage(error)}`;
       }
       return;
     }
+    // A transient fetch failure must not linger once reads succeed again.
+    if (gatherer.error?.startsWith("Gatherer status unavailable") ?? false)
+      delete gatherer.error;
     const outcome = terminalOutcome(
       messages,
       "Gather prompt",
@@ -1277,7 +1354,7 @@ export function createCrossReviewProtocolTools(
       await transitionToReviewing();
       return;
     }
-    if (deadlineReached) {
+    if (deadlineReached || abortExtended) {
       const timedOut = await timeoutGatherer();
       if (timedOut) await transitionToReviewing();
       return;
@@ -1286,7 +1363,6 @@ export function createCrossReviewProtocolTools(
     if (latest !== undefined) gatherer.latestActivityAt = activityAt(latest);
     if (
       messages.length === 0 &&
-      gatherer.timeoutExtensions === undefined &&
       gatherer.startedAt !== undefined &&
       timestamp - gatherer.startedAt >= STARTING_GRACE_MS
     ) {
@@ -1676,7 +1752,9 @@ export function createCrossReviewProtocolTools(
 
           let stateChanged = false;
           await withAuthorizedRun(args.runID, context, async (run, save) => {
-            await reconcile(run, save, context);
+            // Apply the caller's timeout decision to timeouts that arise
+            // while waiting, so no extra round trip is needed.
+            await reconcile(run, save, context, args.timeoutAction);
             latestRun = run;
             const currentSnap = runSnapshot(run);
             if (currentSnap !== initialSnapshot || runFinishedWaiting(run)) {
