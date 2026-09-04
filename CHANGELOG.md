@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Accept an optional `gitcodeCli` absolute path in cross-review config and
+  persist it from guided setup after `npx open-codeasier detect-gitcode`
+  locates gitcode-cli (PATH, then `~/miniconda3` / `~/anaconda3` including env
+  `bin`/`Scripts`; `--version` output must contain `gitcode`, so a Graphviz
+  `gc` is ignored). GitCode targets (`gitcode.com` URLs or remotes) fetch
+  PR/Issue details with that CLI in the parent session and always pass
+  `context`; GitHub fetching still uses `gh`.
+
 ### Changed
 
 - Load project `.opencode/cross-review.json` exclusively when present, without

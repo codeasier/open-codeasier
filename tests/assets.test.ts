@@ -68,6 +68,10 @@ describe("distributed workflow assets", () => {
       "write a project `.opencode/cross-review.json`",
     );
     expect(content).not.toContain("both canonical paths are absent");
+    expect(content).toContain("ask whether GitCode support is needed");
+    expect(content).toContain("npx open-codeasier detect-gitcode");
+    expect(content).toContain("`pr view`/`pr diff` or `issue view`");
+    expect(content).toContain("do not fall back to `gh` for a GitCode target");
   });
 
   it("packages the handoff skill and command for installation", async () => {
