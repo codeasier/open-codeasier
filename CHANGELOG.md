@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   backfilled from global; tell callers to configure reviewers in the existing
   project file or pass `--review-models`.
 
+### Fixed
+
+- Continue gitcode-cli discovery when a PATH entry is unreadable or not a
+  directory, and when listing conda env directories fails with `EPERM`, so
+  `detect-gitcode` no longer crashes on those filesystem errors.
+
 ## [0.2.12] - 2026-09-04
 
 ### Added
