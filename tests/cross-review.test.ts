@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewTool,
+  joinWarnings,
+  missingParentContextWarning,
+  MISSING_PARENT_CONTEXT_WARNING,
   resolveReviewers,
   type CrossReviewClient,
 } from "../src/cross-review/tool.js";
@@ -86,6 +89,44 @@ function client(prompt?: CrossReviewClient["session"]["prompt"]) {
     },
   } satisfies CrossReviewClient;
 }
+
+describe("missing parent-context warning", () => {
+  it("joins present warnings and skips empty ones", () => {
+    expect(joinWarnings("a", undefined, "b", "")).toBe("a; b");
+    expect(joinWarnings(undefined, "")).toBeUndefined();
+  });
+
+  it("warns only for non-PR parent-judged starts without context", () => {
+    expect(
+      missingParentContextWarning({
+        isPrSnapshot: false,
+      }),
+    ).toBe(MISSING_PARENT_CONTEXT_WARNING);
+    expect(
+      missingParentContextWarning({
+        judgeModel: "b/judge",
+        isPrSnapshot: false,
+      }),
+    ).toBeUndefined();
+    expect(
+      missingParentContextWarning({
+        context: "diff",
+        isPrSnapshot: false,
+      }),
+    ).toBeUndefined();
+    expect(
+      missingParentContextWarning({
+        isPrSnapshot: true,
+      }),
+    ).toBeUndefined();
+    expect(
+      missingParentContextWarning({
+        context: "",
+        isPrSnapshot: false,
+      }),
+    ).toBe(MISSING_PARENT_CONTEXT_WARNING);
+  });
+});
 
 describe("cross_review tool", () => {
   it("validates model identifiers, availability, and reviewer bounds", async () => {
@@ -920,7 +961,10 @@ describe("cross_review tool", () => {
     const mock = client();
     const result = await createCrossReviewTool(mock, () =>
       wrapConfig({ reviewers: [{ model: "a/one" }] }),
-    ).execute({ target: "HEAD", agents: 1 }, context());
+    ).execute(
+      { target: "HEAD", agents: 1, context: "already gathered" },
+      context(),
+    );
     const parsed = JSON.parse((result as any).output);
     expect(parsed.warning).toBeUndefined();
     expect(parsed.target).toBe("HEAD");
@@ -928,6 +972,15 @@ describe("cross_review tool", () => {
       project: "loaded",
       global: "absent",
     });
+  });
+
+  it("warns when parent-session judging starts a non-PR target without context", async () => {
+    const mock = client();
+    const result = await createCrossReviewTool(mock, () =>
+      wrapConfig({ reviewers: [{ model: "a/one" }] }),
+    ).execute({ target: "HEAD", agents: 1 }, context());
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.warning).toBe(MISSING_PARENT_CONTEXT_WARNING);
   });
 });
 

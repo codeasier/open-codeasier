@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewProtocolTools,
+  STRAY_TIMEOUT_ACTION_WARNING,
   type AsyncCrossReviewClient,
 } from "../src/cross-review/protocol.js";
+import { MISSING_PARENT_CONTEXT_WARNING } from "../src/cross-review/tool.js";
 import type {
   CrossReviewRun,
   CrossReviewRunStore,
@@ -388,7 +390,12 @@ describe("asynchronous cross-review protocol", () => {
       client,
       new MemoryRunStore(),
     ).cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
 
@@ -418,7 +425,12 @@ describe("asynchronous cross-review protocol", () => {
 
     const started = output(
       await tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       ),
     );
@@ -735,6 +747,7 @@ describe("asynchronous cross-review protocol", () => {
     );
     timestamp = 6_001;
 
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
     const status = output(
       await tools.cross_review_status.execute(
         { runID: RUN_ID, detail: true, timeoutAction: "abort" },
@@ -851,6 +864,7 @@ describe("asynchronous cross-review protocol", () => {
     client.session.messages.mockRejectedValueOnce(new Error("network down"));
     timestamp = 6_001;
 
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
     const preserved = output(
       await tools.cross_review_status.execute(
         { runID: RUN_ID, detail: true, timeoutAction: "preserve" },
@@ -951,6 +965,7 @@ describe("asynchronous cross-review protocol", () => {
     );
     timestamp = 6_001;
 
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
     const status = output(
       await tools.cross_review_status.execute(
         { runID: RUN_ID, detail: true, timeoutAction: "abort" },
@@ -1501,6 +1516,7 @@ describe("asynchronous cross-review protocol", () => {
     );
     timestamp = 6_001;
 
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
     const status = output(
       await tools.cross_review_status.execute(
         { runID: RUN_ID, detail: true, timeoutAction: "abort" },
@@ -1812,9 +1828,13 @@ describe("asynchronous cross-review protocol", () => {
     expect(judging.phase).toBe("judging");
 
     // The judge has not responded yet: the gatherer's assistant message must
-    // not resolve the judge outcome.
+    // not resolve the judge outcome. Poll status — finalize rejects while
+    // the judge is still active.
     status = output(
-      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
     expect(status.phase).toBe("judging");
     expect(status.judge.status).toBe("starting");
@@ -1858,7 +1878,10 @@ describe("asynchronous cross-review protocol", () => {
     messages.set("child-2", completed("gathered context"));
 
     const progressed = output(
-      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
     expect(progressed.phase).toBe("reviewing");
     expect(client.session.promptAsync).toHaveBeenCalledTimes(2);
@@ -2011,7 +2034,7 @@ describe("asynchronous cross-review protocol", () => {
       throw new Error("test judge run was not created");
     run.judge.messageID = "00000000-0000-4000-8000-000000000003";
     messages.set("child-2", completed("gathered context"));
-    await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
     messages.set("child-1", completed("candidate"));
 
     await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
@@ -2265,11 +2288,21 @@ describe("asynchronous cross-review protocol", () => {
         {
           target: "HEAD",
           reviewModels: ["a/one"],
-          agents: 1,
+          agents: 2,
+          maxConcurrency: 1,
           reviewerTimeoutMs: 5_000,
         },
         context(),
       );
+
+      currentTime = 6_001;
+      const pending = output(
+        await tools.cross_review_status.execute(
+          { runID: RUN_ID, waitMs: 0 },
+          context(),
+        ),
+      );
+      expect(pending.actionRequired).toBeDefined();
 
       const status = output(
         await tools.cross_review_status.execute(
@@ -2283,11 +2316,17 @@ describe("asynchronous cross-review protocol", () => {
         ),
       );
 
-      // The deadline (6_000) passes inside the wait window: the same call
-      // must abort instead of parking the session in timeout_pending.
-      expect(status.reviewers[0]).toMatchObject({ status: "timed_out" });
+      // Aborting the pending reviewer dispatches the queued one; that
+      // session's deadline also elapses inside waitMs and must abort.
+      expect(status.reviewers.map((reviewer: any) => reviewer.status)).toEqual([
+        "timed_out",
+        "timed_out",
+      ]);
       expect(client.session.abort).toHaveBeenCalledWith(
         expect.objectContaining({ path: { id: "child-1" } }),
+      );
+      expect(client.session.abort).toHaveBeenCalledWith(
+        expect.objectContaining({ path: { id: "child-2" } }),
       );
       expect(sleepMock).toHaveBeenCalled();
     });
@@ -2400,6 +2439,230 @@ describe("asynchronous cross-review protocol", () => {
       expect(status.phase).toBe("cancelled");
       expect(status.counts).toEqual({ cancelled: 1 });
     });
+
+    it("does not apply a stray timeoutAction to timeouts that arise while waiting", async () => {
+      const { client } = mockClient();
+      let currentTime = 1_000;
+      const sleepMock = vi.fn().mockImplementation(async (ms: number) => {
+        currentTime += ms;
+      });
+      const tools = protocol(
+        client,
+        new MemoryRunStore(),
+        () => currentTime,
+        loadedConfig,
+        30_000,
+        sleepMock,
+      );
+      await tools.cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+          reviewerTimeoutMs: 5_000,
+        },
+        context(),
+      );
+
+      const status = output(
+        await tools.cross_review_status.execute(
+          {
+            runID: RUN_ID,
+            detail: true,
+            waitMs: 10_000,
+            timeoutAction: "preserve",
+          },
+          context(),
+        ),
+      );
+
+      expect(status.warning).toBe(STRAY_TIMEOUT_ACTION_WARNING);
+      expect(status.reviewers[0]).toMatchObject({
+        status: "timeout_pending",
+      });
+      expect(status.reviewers[0].timeoutExtensions).toBeUndefined();
+      expect(status.actionRequired).toBeDefined();
+    });
+  });
+});
+
+describe("parent-session protocol defenses", () => {
+  it("describes optional overrides as omit-to-use-defaults", () => {
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    expect(tools.cross_review_start.args.reviewModels.description).toMatch(
+      /omit/i,
+    );
+    expect(tools.cross_review_start.args.agents.description).toMatch(/omit/i);
+    expect(tools.cross_review_start.args.maxConcurrency.description).toMatch(
+      /omit/i,
+    );
+    expect(tools.cross_review_status.args.timeoutAction.description).toMatch(
+      /actionRequired/,
+    );
+    expect(tools.cross_review_finalize.description).toMatch(/readyToFinalize/);
+  });
+
+  it("warns when a non-PR start has no judgeModel and no context", async () => {
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    const startedResult = await tools.cross_review_start.execute(
+      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+    const started = output(startedResult);
+    expect(started.warning).toBe(MISSING_PARENT_CONTEXT_WARNING);
+    expect(started.summary).toContain("Missing context");
+    expect(
+      (startedResult as { metadata: Record<string, unknown> }).metadata.warning,
+    ).toBe(MISSING_PARENT_CONTEXT_WARNING);
+
+    const compact = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+    expect(compact).not.toHaveProperty("warning");
+    expect(compact.summary).toContain("Missing context");
+
+    const detailed = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
+    );
+    expect(detailed.warning).toBe(MISSING_PARENT_CONTEXT_WARNING);
+  });
+
+  it("combines the config fallback warning with a missing-context warning", async () => {
+    const { client } = mockClient();
+    const started = output(
+      await protocol(
+        client,
+        new MemoryRunStore(),
+        () => 1_000,
+        globalFallbackConfig,
+      ).cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      ),
+    );
+    expect(started.warning).toContain(GLOBAL_FALLBACK_WARNING);
+    expect(started.warning).toContain("Missing context");
+  });
+
+  it("does not warn about missing context when the parent supplied it", async () => {
+    const { client } = mockClient();
+    const started = output(
+      await protocol(client, new MemoryRunStore()).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started).not.toHaveProperty("warning");
+  });
+
+  it("does not warn about missing context when a judge will gather", async () => {
+    const { client } = mockClient();
+    const started = output(
+      await protocol(client, new MemoryRunStore()).cross_review_start.execute(
+        {
+          target: "HEAD",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    );
+    expect(started).not.toHaveProperty("warning");
+    expect(started.phase).toBe("gathering");
+  });
+
+  it("ignores timeoutAction when no timeout is pending", async () => {
+    const { client, statuses } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+    statuses["child-1"] = { type: "busy" };
+
+    const status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, timeoutAction: "preserve" },
+        context(),
+      ),
+    );
+    expect(status.warning).toBe(STRAY_TIMEOUT_ACTION_WARNING);
+    expect(status.summary).toContain("timeoutAction ignored");
+    expect(status).not.toHaveProperty("actionRequired");
+    expect(status.counts).toEqual({ running: 1 });
+  });
+
+  it("rejects finalize while reviewers are still active", async () => {
+    const { client, statuses } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      context(),
+    );
+    statuses["child-1"] = { type: "busy" };
+
+    await expect(
+      tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    ).rejects.toThrow(
+      "Cannot finalize cross-review: reviewers are still active",
+    );
+  });
+
+  it("rejects finalize while gathering", async () => {
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+
+    await expect(
+      tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    ).rejects.toThrow(
+      "Cannot finalize cross-review: gathering is still active",
+    );
+  });
+
+  it("rejects finalize while the explicit judge is still active", async () => {
+    const { client, messages, statuses } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        context: "shared",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    messages.set("child-1", completed("candidate"));
+    const judging = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+    expect(judging.phase).toBe("judging");
+    statuses["child-2"] = { type: "busy" };
+
+    await expect(
+      tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    ).rejects.toThrow("Cannot finalize cross-review: judge is still active");
   });
 });
 
@@ -2736,6 +2999,7 @@ describe("cross-review PR snapshot protocol", () => {
     for (const call of client.session.create.mock.calls)
       expect(call[0].query.directory).toBe(WORKTREE);
     expect(started.phase).toBe("reviewing");
+    expect(started).not.toHaveProperty("warning");
     expect(started.gatherer).toMatchObject({
       kind: "adapter",
       forge: "github",
@@ -2803,6 +3067,25 @@ describe("cross-review PR snapshot protocol", () => {
       client.session.promptAsync.mock.calls[0][0].body.parts[0].text;
     expect(brief).not.toContain("watch the auth rewrite");
     expect(brief).not.toContain("Shared target context");
+  });
+
+  it("does not warn about missing context for a parent-judged PR snapshot", async () => {
+    const { client } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const { tools } = prProtocol(client, new MemoryRunStore(), classify);
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started.phase).toBe("reviewing");
+    expect(started).not.toHaveProperty("warning");
+    expect(started.gatherer).toMatchObject({ kind: "adapter" });
   });
 
   it("routes gitcode PRs to the adapter with gitcodeCli (S3)", async () => {

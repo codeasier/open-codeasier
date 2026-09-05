@@ -157,6 +157,38 @@ export function configWarning(
   return `warning: no cross-review config found at ${loaded.projectPath} or ${loaded.globalPath}`;
 }
 
+export const MISSING_PARENT_CONTEXT_WARNING =
+  "warning: Missing context for target without judgeModel: reviewers may lack information to evaluate target";
+
+export const OMIT_ARRAY_OVERRIDE_DESCRIPTION =
+  "Omit when using defaults; do not pass an empty array";
+export const OMIT_ZERO_OVERRIDE_DESCRIPTION =
+  "Omit when using defaults; do not pass 0";
+
+export function joinWarnings(
+  ...parts: Array<string | undefined>
+): string | undefined {
+  const present = parts.filter(
+    (part): part is string => typeof part === "string" && part.length > 0,
+  );
+  return present.length === 0 ? undefined : present.join("; ");
+}
+
+/**
+ * Parent-session judging cannot run the gatherer. A classified PR snapshot
+ * already has shared evidence, so an omitted `context` is expected there.
+ */
+export function missingParentContextWarning(input: {
+  judgeModel?: string | undefined;
+  context?: string | undefined;
+  isPrSnapshot: boolean;
+}): string | undefined {
+  if (input.isPrSnapshot) return undefined;
+  if (input.judgeModel !== undefined) return undefined;
+  if (input.context !== undefined && input.context.length > 0) return undefined;
+  return MISSING_PARENT_CONTEXT_WARNING;
+}
+
 export function splitModel(value: string) {
   if (!MODEL_ID.test(value))
     throw new Error(`Invalid model identifier: ${value}`);
@@ -393,9 +425,22 @@ export function createCrossReviewTool(
         .array(tool.schema.string())
         .min(1)
         .max(8)
-        .optional(),
-      agents: tool.schema.number().int().min(1).max(8).optional(),
-      maxConcurrency: tool.schema.number().int().min(1).max(8).optional(),
+        .optional()
+        .describe(OMIT_ARRAY_OVERRIDE_DESCRIPTION),
+      agents: tool.schema
+        .number()
+        .int()
+        .min(1)
+        .max(8)
+        .optional()
+        .describe(OMIT_ZERO_OVERRIDE_DESCRIPTION),
+      maxConcurrency: tool.schema
+        .number()
+        .int()
+        .min(1)
+        .max(8)
+        .optional()
+        .describe(OMIT_ZERO_OVERRIDE_DESCRIPTION),
       judgeModel: tool.schema.string().optional(),
       focus: tool.schema.string().max(2_000).optional(),
     },
@@ -442,7 +487,7 @@ export function createCrossReviewTool(
         const loaded = await loadConfig(context.directory);
         throwIfCancelled();
         const config = loaded.config;
-        const warning = configWarning(loaded);
+        const configNotice = configWarning(loaded);
         const reviewers = resolveReviewers(overrides, config);
         const judgeModel =
           overrides.judgeModel === undefined
@@ -639,6 +684,14 @@ export function createCrossReviewTool(
         // and the snapshot briefs; caller context is already notes.md.
         const sessionRoot = prSnapshot?.worktree ?? context.directory;
         childSessionDirectory = sessionRoot;
+        const warning = joinWarnings(
+          configNotice,
+          missingParentContextWarning({
+            judgeModel,
+            context: providedContext,
+            isPrSnapshot: prSnapshot !== undefined,
+          }),
+        );
         let completed = false;
         try {
           if (

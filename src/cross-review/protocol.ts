@@ -8,6 +8,10 @@ import {
   embeddedContext,
   errorMessage,
   gatherBrief,
+  joinWarnings,
+  missingParentContextWarning,
+  OMIT_ARRAY_OVERRIDE_DESCRIPTION,
+  OMIT_ZERO_OVERRIDE_DESCRIPTION,
   prSnapshotJudgeBrief,
   prSnapshotReviewBrief,
   type ApiResult,
@@ -169,6 +173,14 @@ type ProtocolOptions = {
 
 type TimeoutAction = "abort" | "preserve";
 type TimedRun = ReviewerRun | GathererRun | JudgeRun;
+
+export const STRAY_TIMEOUT_ACTION_WARNING =
+  "warning: timeoutAction ignored because no timeout is pending; pass it only after actionRequired, or use abort to stop a previously preserved session";
+
+const OMIT_COMPACT_DESCRIPTION =
+  "Omit for the default compact result; request only when full fields are needed";
+const TIMEOUT_ACTION_DESCRIPTION =
+  "Pass only after actionRequired, or abort a previously preserved session; do not send on ordinary polls";
 
 const ACTIVE_REVIEWER_STATUSES = new Set<ReviewerRunStatus>([
   "starting",
@@ -416,6 +428,33 @@ function pendingTimeouts(run: CrossReviewRun) {
         ]
       : []),
   ];
+}
+
+function hasPreservedSession(run: CrossReviewRun) {
+  return (
+    run.reviewers.some(
+      (reviewer) => reviewer.timeoutExtensions !== undefined,
+    ) ||
+    run.gatherer?.timeoutExtensions !== undefined ||
+    run.judge?.timeoutExtensions !== undefined
+  );
+}
+
+/**
+ * `timeoutAction` is a one-shot user decision. Apply it only when a
+ * timeout is already pending, or when aborting a previously preserved
+ * session. A stray value on an ordinary poll must not auto-extend a
+ * deadline that appears later in the same call.
+ */
+function resolveStatusTimeoutAction(
+  run: CrossReviewRun,
+  requested: TimeoutAction | undefined,
+): { action: TimeoutAction | undefined; warning?: string } {
+  if (requested === undefined) return { action: undefined };
+  if (pendingTimeouts(run).length > 0) return { action: requested };
+  if (requested === "abort" && hasPreservedSession(run))
+    return { action: requested };
+  return { action: undefined, warning: STRAY_TIMEOUT_ACTION_WARNING };
 }
 
 function timeoutActionRequired(run: CrossReviewRun) {
@@ -766,6 +805,7 @@ function progressSummary(
     lines.push(
       "timeout decision required: call cross_review_status with timeoutAction preserve or abort",
     );
+  if (run.warning !== undefined) lines.push(run.warning);
   return lines.join("\n");
 }
 
@@ -793,6 +833,9 @@ function result(title: string, output: Record<string, unknown>) {
             projectConfigPath: config.projectConfigPath,
             globalConfigPath: config.globalConfigPath,
           }),
+      ...(typeof output.warning === "string"
+        ? { warning: output.warning }
+        : {}),
     },
   };
 }
@@ -1717,9 +1760,22 @@ export function createCrossReviewProtocolTools(
         .array(tool.schema.string())
         .min(1)
         .max(8)
-        .optional(),
-      agents: tool.schema.number().int().min(1).max(8).optional(),
-      maxConcurrency: tool.schema.number().int().min(1).max(8).optional(),
+        .optional()
+        .describe(OMIT_ARRAY_OVERRIDE_DESCRIPTION),
+      agents: tool.schema
+        .number()
+        .int()
+        .min(1)
+        .max(8)
+        .optional()
+        .describe(OMIT_ZERO_OVERRIDE_DESCRIPTION),
+      maxConcurrency: tool.schema
+        .number()
+        .int()
+        .min(1)
+        .max(8)
+        .optional()
+        .describe(OMIT_ZERO_OVERRIDE_DESCRIPTION),
       judgeModel: tool.schema.string().optional(),
       focus: tool.schema.string().max(2_000).optional(),
       reviewerTimeoutMs: tool.schema
@@ -1727,7 +1783,8 @@ export function createCrossReviewProtocolTools(
         .int()
         .min(5_000)
         .max(60 * 60 * 1_000)
-        .optional(),
+        .optional()
+        .describe(OMIT_ZERO_OVERRIDE_DESCRIPTION),
     },
     async execute(args, context) {
       if (context.abort.aborted) throw new Error("Cross-review cancelled");
@@ -1776,7 +1833,7 @@ export function createCrossReviewProtocolTools(
 
   const start = tool({
     description:
-      "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user review intent from primary sessions",
+      "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user review intent from primary sessions. For a non-PR target without judgeModel, pass parent-gathered context; omit optional overrides instead of passing an empty array or 0",
     args: {
       target: tool.schema.string().min(1).max(4_000),
       context: tool.schema.string().min(1).max(1_000_000).optional(),
@@ -1784,9 +1841,22 @@ export function createCrossReviewProtocolTools(
         .array(tool.schema.string())
         .min(1)
         .max(8)
-        .optional(),
-      agents: tool.schema.number().int().min(1).max(8).optional(),
-      maxConcurrency: tool.schema.number().int().min(1).max(8).optional(),
+        .optional()
+        .describe(OMIT_ARRAY_OVERRIDE_DESCRIPTION),
+      agents: tool.schema
+        .number()
+        .int()
+        .min(1)
+        .max(8)
+        .optional()
+        .describe(OMIT_ZERO_OVERRIDE_DESCRIPTION),
+      maxConcurrency: tool.schema
+        .number()
+        .int()
+        .min(1)
+        .max(8)
+        .optional()
+        .describe(OMIT_ZERO_OVERRIDE_DESCRIPTION),
       judgeModel: tool.schema.string().optional(),
       focus: tool.schema.string().max(2_000).optional(),
       reviewerTimeoutMs: tool.schema
@@ -1794,7 +1864,8 @@ export function createCrossReviewProtocolTools(
         .int()
         .min(5_000)
         .max(60 * 60 * 1_000)
-        .optional(),
+        .optional()
+        .describe(OMIT_ZERO_OVERRIDE_DESCRIPTION),
     },
     async execute(args, context) {
       if (context.abort.aborted) throw new Error("Cross-review cancelled");
@@ -1965,13 +2036,20 @@ export function createCrossReviewProtocolTools(
             await assertSessionDirectory(prSnapshot, session.id);
         }
         const timestamp = now();
-        const warning = configWarning(loaded);
         // An empty context is treated as "not provided": it must not disable
         // gathering while embedding nothing into reviewer briefs.
         const providedContext =
           args.context === undefined || args.context.length === 0
             ? undefined
             : args.context;
+        const warning = joinWarnings(
+          configWarning(loaded),
+          missingParentContextWarning({
+            judgeModel,
+            context: providedContext,
+            isPrSnapshot: prSnapshot !== undefined,
+          }),
+        );
         // A classified PR always used the adapter; `context` became notes.md
         // and never suppresses gathering.
         const gathers =
@@ -2127,13 +2205,22 @@ export function createCrossReviewProtocolTools(
 
   const status = tool({
     description:
-      "Poll and advance one asynchronous cross-review run, or resolve its pending timeout with an explicit preserve/abort action; invoke only with explicit user review intent from primary sessions",
+      "Poll and advance one asynchronous cross-review run, or resolve its pending timeout with an explicit preserve/abort action; invoke only with explicit user review intent from primary sessions. Do not pass timeoutAction on ordinary polls; the default result is compact",
     args: {
       runID: tool.schema.string().uuid(),
-      detail: tool.schema.boolean().optional(),
-      includeOutputs: tool.schema.boolean().optional(),
+      detail: tool.schema
+        .boolean()
+        .optional()
+        .describe(OMIT_COMPACT_DESCRIPTION),
+      includeOutputs: tool.schema
+        .boolean()
+        .optional()
+        .describe(OMIT_COMPACT_DESCRIPTION),
       waitMs: tool.schema.number().int().min(0).max(MAX_WAIT_MS).optional(),
-      timeoutAction: tool.schema.enum(["preserve", "abort"]).optional(),
+      timeoutAction: tool.schema
+        .enum(["preserve", "abort"])
+        .optional()
+        .describe(TIMEOUT_ACTION_DESCRIPTION),
     },
     async execute(args, context) {
       const waitBudgetMs = args.waitMs ?? configuredDefaultWaitMs;
@@ -2141,9 +2228,14 @@ export function createCrossReviewProtocolTools(
       let finishedWaiting = false;
 
       let latestRun: CrossReviewRun | undefined;
+      let acceptedTimeoutAction: TimeoutAction | undefined;
+      let timeoutActionWarning: string | undefined;
 
       await withAuthorizedRun(args.runID, context, async (run, save) => {
-        await reconcile(run, save, context, args.timeoutAction);
+        const resolved = resolveStatusTimeoutAction(run, args.timeoutAction);
+        acceptedTimeoutAction = resolved.action;
+        timeoutActionWarning = resolved.warning;
+        await reconcile(run, save, context, acceptedTimeoutAction);
         latestRun = run;
         initialSnapshot = runSnapshot(run);
         finishedWaiting = runFinishedWaiting(run);
@@ -2161,9 +2253,10 @@ export function createCrossReviewProtocolTools(
 
           let stateChanged = false;
           await withAuthorizedRun(args.runID, context, async (run, save) => {
-            // Apply the caller's timeout decision to timeouts that arise
-            // while waiting, so no extra round trip is needed.
-            await reconcile(run, save, context, args.timeoutAction);
+            // A decision accepted at the start of this call also covers
+            // timeouts that arise while waiting. A stray timeoutAction
+            // stays ignored for the whole call.
+            await reconcile(run, save, context, acceptedTimeoutAction);
             latestRun = run;
             const currentSnap = runSnapshot(run);
             if (currentSnap !== initialSnapshot || runFinishedWaiting(run)) {
@@ -2178,14 +2271,29 @@ export function createCrossReviewProtocolTools(
         throw new Error(`Cross-review run unavailable: ${args.runID}`);
       }
 
+      const payload = progress(
+        latestRun,
+        args.includeOutputs ?? false,
+        args.detail ?? false,
+        now(),
+      );
+      const payloadWarning =
+        "warning" in payload && typeof payload.warning === "string"
+          ? payload.warning
+          : undefined;
+      const warning = joinWarnings(payloadWarning, timeoutActionWarning);
       return result(
         `Cross-review status: ${truncate(latestRun.target, STATUS_TARGET_LIMIT)}`,
-        progress(
-          latestRun,
-          args.includeOutputs ?? false,
-          args.detail ?? false,
-          now(),
-        ),
+        warning === undefined
+          ? payload
+          : {
+              ...payload,
+              warning,
+              summary:
+                timeoutActionWarning === undefined
+                  ? payload.summary
+                  : `${payload.summary}\n${timeoutActionWarning}`,
+            },
       );
     },
   });
@@ -2280,7 +2388,7 @@ export function createCrossReviewProtocolTools(
 
   const finalize = tool({
     description:
-      "Finalize an asynchronous cross-review run or start its explicit judge; invoke only with explicit user review intent from primary sessions",
+      "Finalize an asynchronous cross-review run or start its explicit judge once reviewers are terminal; rejects while reviewers or the judge are still active — poll cross_review_status until readyToFinalize=true",
     args: { runID: tool.schema.string().uuid() },
     async execute(args, context) {
       return withAuthorizedRun(args.runID, context, async (run, save) => {
@@ -2323,14 +2431,12 @@ export function createCrossReviewProtocolTools(
           return result(`Cross-review failed: ${run.target}`, run.finalResult);
         }
         if (run.phase === "gathering")
-          return result(
-            `Cross-review still running: ${run.target}`,
-            progress(run, false, true, now()),
+          throw new Error(
+            "Cannot finalize cross-review: gathering is still active; poll using cross_review_status until readyToFinalize=true",
           );
         if (run.phase === "reviewing" && !reviewersTerminal(run))
-          return result(
-            `Cross-review still running: ${run.target}`,
-            progress(run, false, true, now()),
+          throw new Error(
+            "Cannot finalize cross-review: reviewers are still active; poll using cross_review_status until readyToFinalize=true",
           );
 
         const successful = successfulReviewers(run);
@@ -2467,9 +2573,8 @@ export function createCrossReviewProtocolTools(
             );
           }
         }
-        return result(
-          `Cross-review still running: ${run.target}`,
-          progress(run, false, true, now()),
+        throw new Error(
+          "Cannot finalize cross-review: judge is still active; poll using cross_review_status until the judge is terminal",
         );
       });
     },
