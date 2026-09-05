@@ -34,21 +34,22 @@ npx open-codeasier uninstall --project .
 
 ## Commands
 
-| Command            | Arguments                                      | Purpose                              |
-| ------------------ | ---------------------------------------------- | ------------------------------------ |
-| `/understand-me`   | idea or document                               | Challenge and refine an idea         |
-| `/cross-review`    | `init\|setup\|[options] <target>`              | Configure or run independent reviews |
-| `/issue-resolve`   | `<issue-number>`                               | Resolve an issue in a worktree       |
-| `/issue-review`    | `<issue-number>`                               | Review an issue with evidence        |
-| `/issue-submit`    | `<owner/repo>`                                 | Submit a confirmed templated issue   |
-| `/pr-followup`     | `<pr-number> [focus]`                          | Address PR review feedback           |
-| `/worktree-clean`  | none                                           | Inspect and clean safe worktrees     |
-| `/docs-governance` | `[audit\|fix] [scope]`                         | Audit or repair documentation        |
-| `/release-prep`    | `[version]`                                    | Prepare a repository release         |
-| `/spec-write`      | `<change-description>`                         | Write a package under `specs/`       |
-| `/spec-run`        | `<change-id>`                                  | Execute an approved spec package     |
-| `/handoff`         | `[name]`                                       | Create or load a task handoff        |
-| `/session-review`  | `<summary\|troubleshoot> <session-id> [focus]` | Review one explicit session          |
+| Command               | Arguments                                      | Purpose                              |
+| --------------------- | ---------------------------------------------- | ------------------------------------ |
+| `/understand-me`      | idea or document                               | Challenge and refine an idea         |
+| `/cross-review`       | `init\|setup\|[options] <target>`              | Configure or run independent reviews |
+| `/issue-resolve`      | `<issue-number>`                               | Resolve an issue in a worktree       |
+| `/issue-review`       | `<issue-number>`                               | Review an issue with evidence        |
+| `/issue-submit`       | `<owner/repo>`                                 | Submit a confirmed templated issue   |
+| `/pr-followup`        | `<pr-number> [focus]`                          | Address PR review feedback           |
+| `/worktree-clean`     | none                                           | Inspect and clean safe worktrees     |
+| `/docs-governance`    | `[audit\|fix] [scope]`                         | Audit or repair documentation        |
+| `/release-prep`       | `[version]`                                    | Prepare a repository release         |
+| `/spec-write`         | `<change-description>`                         | Write a package under `specs/`       |
+| `/spec-run`           | `<change-id>`                                  | Execute an approved spec package     |
+| `/handoff`            | `[name]`                                       | Create or load a task handoff        |
+| `/session-review`     | `<summary\|troubleshoot> <session-id> [focus]` | Review one explicit session          |
+| `/cross-review-audit` | `<parent-session-id> [--run-id <id>] [focus]`  | Audit a cross-review parent session  |
 
 ## Cross Review
 
@@ -155,7 +156,7 @@ Handoff names contain only lowercase letters, digits, and hyphens. Handoff docum
 
 ## Session Safety
 
-`session_review` calls only the OpenCode SDK session get and messages APIs for the exact supplied session ID. It returns bounded normalized evidence and does not inspect internal storage. This package has no session archive, delete, trash, purge, restore, or automatic session-selection capability.
+`session_review` calls only the OpenCode SDK session get and messages APIs for the exact supplied session ID. It returns bounded normalized evidence and does not inspect internal storage. `cross_review_audit` reads the local cross-review run-store plus OpenCode SDK sessions named by the parent session ID. It does not inspect OpenCode internal storage and does not archive or delete sessions. This package has no session archive, delete, trash, purge, restore, or automatic session-selection capability.
 
 ## Development
 

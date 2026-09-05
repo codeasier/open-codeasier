@@ -49,8 +49,10 @@ describe("plugin module", () => {
       "cross_review_cancel",
       "cross_review_finalize",
       "session_review",
+      "cross_review_audit",
     ]);
     expect(hooks.tool).toHaveProperty("session_review");
+    expect(hooks.tool).toHaveProperty("cross_review_audit");
     const output = await hooks.tool?.session_review?.execute(
       { sessionID: "ses_123", mode: "summary" },
       {
@@ -105,6 +107,7 @@ describe("plugin module", () => {
       "cross_review_cancel",
       "cross_review_finalize",
       "session_review",
+      "cross_review_audit",
     ]);
 
     const emptyConfig: any = {};
@@ -117,6 +120,7 @@ describe("plugin module", () => {
       "cross_review_cancel",
       "cross_review_finalize",
       "session_review",
+      "cross_review_audit",
     ]);
   });
 });

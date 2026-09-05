@@ -20,6 +20,7 @@ export const PRIMARY_TOOL_IDS = [
   "cross_review_cancel",
   "cross_review_finalize",
   "session_review",
+  "cross_review_audit",
 ] as const;
 
 export const READ_ONLY_TOOLS = {
@@ -35,6 +36,7 @@ export const READ_ONLY_TOOLS = {
   cross_review_cancel: false,
   cross_review_finalize: false,
   session_review: false,
+  cross_review_audit: false,
 } as const;
 
 export type ApiResult<T> = { data?: T; error?: unknown };

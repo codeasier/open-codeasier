@@ -143,6 +143,79 @@ describe("cross-review run store", () => {
     ).rejects.toThrow("Unsupported cross-review run manifest");
   });
 
+  it("lists owner runs and reads without locking, saving, or deleting", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+    const store = new FileCrossReviewRunStore(root, () => 10);
+    const first = run();
+    const second: CrossReviewRun = {
+      ...run(),
+      runID: "00000000-0000-4000-8000-000000000002",
+      ownerSessionID: "parent",
+      createdAt: 5,
+      updatedAt: 5,
+      phase: "completed",
+    };
+    const other: CrossReviewRun = {
+      ...run(),
+      runID: "00000000-0000-4000-8000-000000000003",
+      ownerSessionID: "other",
+      createdAt: 2,
+      updatedAt: 2,
+    };
+    await store.create(first);
+    await writeFile(join(root, `${second.runID}.json`), JSON.stringify(second));
+    await writeFile(join(root, `${other.runID}.json`), JSON.stringify(other));
+    const corruptID = "00000000-0000-4000-8000-0000000000aa";
+    await writeFile(join(root, `${corruptID}.json`), "{");
+
+    const listed = await store.listByOwner("parent");
+    expect(listed.runs.map((item) => item.runID)).toEqual([
+      RUN_ID,
+      second.runID,
+    ]);
+    expect(listed.errors).toEqual([
+      {
+        code: "MANIFEST_CORRUPT",
+        runID: corruptID,
+        detail: "Corrupt or unsupported cross-review run manifest",
+      },
+    ]);
+    expect(listed.runs[0]?.updatedAt).toBe(1);
+    expect(
+      JSON.parse(await readFile(join(root, `${RUN_ID}.json`), "utf8")),
+    ).toEqual(first);
+    expect(
+      JSON.parse(await readFile(join(root, `${second.runID}.json`), "utf8")),
+    ).toEqual(second);
+
+    const read = await store.read(second.runID);
+    expect(read).toEqual({ run: second });
+    expect(
+      JSON.parse(await readFile(join(root, `${second.runID}.json`), "utf8"))
+        .updatedAt,
+    ).toBe(5);
+    await expect(store.read("../../escape")).rejects.toThrow(
+      "Invalid cross-review run ID",
+    );
+    expect(await store.read("00000000-0000-4000-8000-000000000099")).toEqual({
+      error: {
+        code: "MANIFEST_NOT_FOUND",
+        runID: "00000000-0000-4000-8000-000000000099",
+        detail:
+          "Cross-review run not found: 00000000-0000-4000-8000-000000000099",
+      },
+    });
+  });
+
+  it("returns an empty owner list when the state directory is absent", async () => {
+    const root = join(
+      await mkdtemp(join(tmpdir(), "cross-review-store-")),
+      "missing",
+    );
+    const store = new FileCrossReviewRunStore(root);
+    expect(await store.listByOwner("parent")).toEqual({ runs: [], errors: [] });
+  });
+
   it("serializes concurrent recovery of the same stale lock", async () => {
     const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
     const initial = new FileCrossReviewRunStore(root);

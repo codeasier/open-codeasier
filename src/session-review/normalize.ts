@@ -91,7 +91,7 @@ function normalizePart(part: Part, maxPartBytes: number): ReviewPart {
   };
 }
 
-function normalizeMessage(
+export function toReviewMessage(
   message: NormalizeInput["messages"][number],
   maxPartBytes: number,
 ): ReviewMessage | undefined {
@@ -109,7 +109,7 @@ function normalizeMessage(
 export function normalizeSession(input: NormalizeInput): NormalizedSession {
   const limits = { ...DEFAULT_LIMITS, ...input.limits };
   const all = input.messages
-    .map((message) => normalizeMessage(message, limits.maxPartBytes))
+    .map((message) => toReviewMessage(message, limits.maxPartBytes))
     .filter((message): message is ReviewMessage => message !== undefined);
   const order =
     input.mode === "troubleshoot"

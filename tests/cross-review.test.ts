@@ -327,6 +327,9 @@ describe("cross_review tool", () => {
     expect(
       calls.every((call) => call.body.tools.session_review === false),
     ).toBe(true);
+    expect(
+      calls.every((call) => call.body.tools.cross_review_audit === false),
+    ).toBe(true);
     expect(JSON.parse((output as any).output)).toMatchObject({
       quorum: 3,
       judge: { model: "parent-session" },
@@ -534,6 +537,7 @@ describe("cross_review tool", () => {
       cross_review_cancel: false,
       cross_review_finalize: false,
       session_review: false,
+      cross_review_audit: false,
     });
   });
 

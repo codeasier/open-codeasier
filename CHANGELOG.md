@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Add `/cross-review-audit` and the `cross_review_audit` tool to inspect a
+  parent session's owned runs through the local run-store and SDK sessions,
+  reporting protocol checks and role behavior without reading OpenCode
+  internal storage.
 - Accept an optional `gitcodeCli` absolute path in cross-review config and
   persist it from guided setup after `npx open-codeasier detect-gitcode`
   locates gitcode-cli (PATH, then `~/miniconda3` / `~/anaconda3` including env

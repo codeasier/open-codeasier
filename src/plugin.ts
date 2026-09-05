@@ -8,6 +8,7 @@ import {
   createCrossReviewProtocolTools,
   type AsyncCrossReviewClient,
 } from "./cross-review/protocol.js";
+import { createCrossReviewAuditTool } from "./cross-review/audit.js";
 import type { SessionClient } from "./session-review/fetch.js";
 import { createSessionReviewTool } from "./session-review/tool.js";
 
@@ -28,6 +29,7 @@ export const server: Plugin = async ({ client }) => {
       cross_review: createCrossReviewTool(client as CrossReviewClient),
       ...protocol,
       session_review: createSessionReviewTool(client as SessionClient),
+      cross_review_audit: createCrossReviewAuditTool(client as SessionClient),
     },
   };
 };
