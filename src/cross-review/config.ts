@@ -97,36 +97,88 @@ function isModelList(value: unknown): value is string[] {
   );
 }
 
+export type CrossReviewOverrides = {
+  reviewModels?: string[] | undefined;
+  agents?: number | undefined;
+  maxConcurrency?: number | undefined;
+  reviewerTimeoutMs?: number | undefined;
+};
+
+const OMIT_OVERRIDE_HINT = "omit this argument to use the loaded config";
+
+/**
+ * Host/model serialization fills omitted optional args with type defaults
+ * (`[]`, `0`). Those values can never be legal overrides, so treat them as
+ * absent before validation and resolve.
+ */
+export function normalizeHostDefaultOverrides<T extends CrossReviewOverrides>(
+  overrides: T,
+): T {
+  const next = { ...overrides };
+  if (Array.isArray(next.reviewModels) && next.reviewModels.length === 0)
+    delete next.reviewModels;
+  if (next.agents === 0) delete next.agents;
+  if (next.maxConcurrency === 0) delete next.maxConcurrency;
+  if (next.reviewerTimeoutMs === 0) delete next.reviewerTimeoutMs;
+  return next;
+}
+
+/**
+ * Strip host type-defaults, then enforce the loader's bounds so an
+ * out-of-range value fails fast even when the host skips tool-schema
+ * validation. Shared by start, preview, and the legacy blocking tool.
+ */
+export function prepareCrossReviewOverrides<T extends CrossReviewOverrides>(
+  overrides: T,
+): T {
+  const normalized = normalizeHostDefaultOverrides(overrides);
+  validateCrossReviewOverrides(normalized);
+  return normalized;
+}
+
 /**
  * Enforce the loader's bounds on per-invocation tool overrides so an
  * out-of-range value fails fast even when the host skips tool-schema
  * validation.
  */
-export function validateCrossReviewOverrides(overrides: {
-  reviewModels?: string[] | undefined;
-  agents?: number | undefined;
-  maxConcurrency?: number | undefined;
-  reviewerTimeoutMs?: number | undefined;
-}): void {
-  if (
-    overrides.reviewModels !== undefined &&
-    !isModelList(overrides.reviewModels)
-  )
-    throw new Error("`reviewModels` must be 1-8 `provider/model` identifiers");
-  if (overrides.agents !== undefined && !isBound(overrides.agents))
+export function validateCrossReviewOverrides(
+  overrides: CrossReviewOverrides,
+): void {
+  if (overrides.reviewModels !== undefined) {
+    if (overrides.reviewModels.length === 0)
+      throw new Error(
+        `\`reviewModels\` received an empty override; ${OMIT_OVERRIDE_HINT}`,
+      );
+    if (!isModelList(overrides.reviewModels))
+      throw new Error(
+        "`reviewModels` must be 1-8 `provider/model` identifiers",
+      );
+  }
+  if (overrides.agents !== undefined && !isBound(overrides.agents)) {
+    if (overrides.agents === 0)
+      throw new Error(`\`agents\` received 0; ${OMIT_OVERRIDE_HINT}`);
     throw new Error("`agents` must be an integer from 1 to 8");
+  }
   if (
     overrides.maxConcurrency !== undefined &&
     !isBound(overrides.maxConcurrency)
-  )
+  ) {
+    if (overrides.maxConcurrency === 0)
+      throw new Error(`\`maxConcurrency\` received 0; ${OMIT_OVERRIDE_HINT}`);
     throw new Error("`maxConcurrency` must be an integer from 1 to 8");
+  }
   if (
     overrides.reviewerTimeoutMs !== undefined &&
     !isReviewerTimeoutMs(overrides.reviewerTimeoutMs)
-  )
+  ) {
+    if (overrides.reviewerTimeoutMs === 0)
+      throw new Error(
+        `\`reviewerTimeoutMs\` received 0; ${OMIT_OVERRIDE_HINT}`,
+      );
     throw new Error(
       "`reviewerTimeoutMs` must be an integer from 5000 to 3600000",
     );
+  }
 }
 
 export function parseCrossReviewConfig(

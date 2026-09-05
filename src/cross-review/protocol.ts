@@ -23,7 +23,8 @@ import {
 import {
   findGitRoot,
   loadCrossReviewConfig,
-  validateCrossReviewOverrides,
+  normalizeHostDefaultOverrides,
+  prepareCrossReviewOverrides,
   type LoadedCrossReviewConfig,
 } from "./config.js";
 import {
@@ -774,15 +775,21 @@ async function resolveReviewPlan(
   directory: string,
   signal: AbortSignal,
 ) {
-  const reviewers: ReviewerTarget[] = resolveReviewers(args, loaded.config);
+  const overrides = normalizeHostDefaultOverrides(args);
+  const reviewers: ReviewerTarget[] = resolveReviewers(
+    overrides,
+    loaded.config,
+  );
   const judgeModel =
-    args.judgeModel === undefined
+    overrides.judgeModel === undefined
       ? loaded.config.judgeModel
-      : args.judgeModel.trim() || undefined;
+      : overrides.judgeModel.trim() || undefined;
   const maxConcurrency =
-    args.maxConcurrency ?? loaded.config.maxConcurrency ?? DEFAULT_CONCURRENCY;
+    overrides.maxConcurrency ??
+    loaded.config.maxConcurrency ??
+    DEFAULT_CONCURRENCY;
   const reviewerTimeoutMs =
-    args.reviewerTimeoutMs ??
+    overrides.reviewerTimeoutMs ??
     loaded.config.reviewerTimeoutMs ??
     DEFAULT_REVIEWER_TIMEOUT_MS;
   const requestedModels = [
@@ -1696,18 +1703,18 @@ export function createCrossReviewProtocolTools(
         requestSignal(context.abort),
       );
       // Same fast-fail bounds as `start`, even when the host skips
-      // tool-schema validation.
-      validateCrossReviewOverrides(args);
+      // tool-schema validation. Host type-defaults are stripped first.
+      const overrides = prepareCrossReviewOverrides(args);
       const loaded = await loadConfig(context.directory);
       const plan = await resolveReviewPlan(
-        args,
+        overrides,
         loaded,
         client,
         context.directory,
         requestSignal(context.abort),
       );
       const warning = configWarning(loaded);
-      const sharedFocus = args.focus ?? loaded.config.focus;
+      const sharedFocus = overrides.focus ?? loaded.config.focus;
       return result("Cross-review config preview", {
         config: {
           sources: loaded.sources,
@@ -1762,13 +1769,14 @@ export function createCrossReviewProtocolTools(
         "cross_review_start",
         requestSignal(context.abort),
       );
-      // The host may not enforce the declared tool schema, so out-of-range
-      // overrides are revalidated here with the loader's bounds.
-      validateCrossReviewOverrides(args);
+      // The host may not enforce the declared tool schema, so type-default
+      // empty overrides are stripped and remaining values are revalidated
+      // against the loader's bounds.
+      const overrides = prepareCrossReviewOverrides(args);
       const directory = await canonicalize(context.directory);
       const loaded = await loadConfig(context.directory);
       const plan = await resolveReviewPlan(
-        args,
+        overrides,
         loaded,
         client,
         context.directory,
@@ -1835,7 +1843,7 @@ export function createCrossReviewProtocolTools(
               target: args.target,
               brief: prSnapshotReviewBrief(
                 args.target,
-                args.focus ?? loaded.config.focus,
+                overrides.focus ?? loaded.config.focus,
               ),
               quorum: Math.floor(reviewers.length / 2) + 1,
               maxConcurrency,
@@ -1938,12 +1946,12 @@ export function createCrossReviewProtocolTools(
             prSnapshot === undefined
               ? reviewBrief(
                   args.target,
-                  args.focus ?? loaded.config.focus,
+                  overrides.focus ?? loaded.config.focus,
                   providedContext,
                 )
               : prSnapshotReviewBrief(
                   args.target,
-                  args.focus ?? loaded.config.focus,
+                  overrides.focus ?? loaded.config.focus,
                 ),
           ...(providedContext === undefined || prSnapshot !== undefined
             ? {}

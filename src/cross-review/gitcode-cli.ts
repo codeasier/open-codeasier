@@ -36,11 +36,21 @@ function condaBinDir(platform: NodeJS.Platform): string {
   return platform === "win32" ? "Scripts" : "bin";
 }
 
+export function isIgnorableFsError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return (
+    code === "ENOENT" ||
+    code === "EACCES" ||
+    code === "EPERM" ||
+    code === "ENOTDIR"
+  );
+}
+
 async function defaultIsFile(path: string): Promise<boolean> {
   try {
     return (await stat(path)).isFile();
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if (isIgnorableFsError(error)) return false;
     throw error;
   }
 }
@@ -49,8 +59,7 @@ async function defaultListDir(path: string): Promise<string[]> {
   try {
     return await readdir(path);
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "EACCES" || code === "ENOTDIR") return [];
+    if (isIgnorableFsError(error)) return [];
     throw error;
   }
 }
