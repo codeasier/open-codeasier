@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 import { assertPrimarySession } from "../primary-session.js";
 import {
@@ -34,7 +34,6 @@ import {
 import {
   createDefaultPrAdapterRunner,
   defaultRemoveSnapshot,
-  snapshotPaths,
   type PrAdapterRunner,
 } from "./pr-gather.js";
 import {
@@ -196,6 +195,51 @@ async function canonicalizeDirectory(directory: string) {
       return resolve(directory);
     throw error;
   }
+}
+
+export type SessionDirectoryClient = {
+  session: {
+    get(input: {
+      path: { id: string };
+      query?: { directory?: string };
+      signal?: AbortSignal;
+    }): Promise<
+      ApiResult<{ id: string; parentID?: string; directory?: string }>
+    >;
+  };
+};
+
+/**
+ * Fail closed (S10) when the runtime does not bind a child session to the
+ * requested PR snapshot worktree. Shared by the protocol tools and the
+ * legacy blocking tool so both paths enforce the same invariant.
+ */
+export async function assertSessionDirectoryBinding(
+  client: SessionDirectoryClient,
+  snapshot: NonNullable<CrossReviewRun["snapshot"]>,
+  sessionID: string,
+  canonicalize: (directory: string) => Promise<string> = canonicalizeDirectory,
+): Promise<void> {
+  const session = responseData(
+    await client.session.get({
+      path: { id: sessionID },
+      query: { directory: snapshot.worktree },
+      signal: AbortSignal.timeout(SDK_REQUEST_TIMEOUT_MS),
+    }),
+    "Session inspection",
+  );
+  const requested = await canonicalize(snapshot.worktree);
+  // A missing `directory` on the session record is not evidence of the
+  // correct binding; fail closed instead of defaulting to the expectation.
+  if (session.directory === undefined)
+    throw new Error(
+      `Session ${sessionID} reports no bound directory; refusing to review the wrong checkout (expected the PR snapshot ${requested})`,
+    );
+  const boundReal = await canonicalize(session.directory);
+  if (boundReal !== requested)
+    throw new Error(
+      `Session ${sessionID} is bound to ${boundReal} instead of the PR snapshot ${requested}; refusing to review the wrong checkout`,
+    );
 }
 
 function asyncResponse(result: ApiResult<void>, operation: string) {
@@ -954,30 +998,16 @@ export function createCrossReviewProtocolTools(
    * Fail closed (S10) when the runtime does not bind the child session to
    * the requested snapshot directory.
    */
-  async function assertSessionDirectory(
+  function assertSessionDirectory(
     snapshot: NonNullable<CrossReviewRun["snapshot"]>,
     sessionID: string,
   ) {
-    const session = responseData(
-      await client.session.get({
-        path: { id: sessionID },
-        query: { directory: snapshot.worktree },
-        signal: AbortSignal.timeout(SDK_REQUEST_TIMEOUT_MS),
-      }),
-      "Session inspection",
+    return assertSessionDirectoryBinding(
+      client,
+      snapshot,
+      sessionID,
+      canonicalize,
     );
-    const requested = await canonicalize(snapshot.worktree);
-    // A missing `directory` on the session record is not evidence of the
-    // correct binding; fail closed instead of defaulting to the expectation.
-    if (session.directory === undefined)
-      throw new Error(
-        `Session ${sessionID} reports no bound directory; refusing to review the wrong checkout (expected the PR snapshot ${requested})`,
-      );
-    const boundReal = await canonicalize(session.directory);
-    if (boundReal !== requested)
-      throw new Error(
-        `Session ${sessionID} is bound to ${boundReal} instead of the PR snapshot ${requested}; refusing to review the wrong checkout`,
-      );
   }
 
   async function abortSession(sessionID: string, directory: string) {
@@ -1810,7 +1840,6 @@ export function createCrossReviewProtocolTools(
         if (classification.kind === "pr") {
           const repo =
             (await findGitRoot(context.directory)) ?? context.directory;
-          const paths = snapshotPaths(stateRoot, runID);
           const gatherStartedAt = now();
           const gather = await runPrAdapter({
             forge: classification.forge,
@@ -1864,9 +1893,12 @@ export function createCrossReviewProtocolTools(
                       // The runner-reported path (where the snapshot really
                       // lives), not the derived expectation: a custom
                       // runner must keep the manifest pointing at reality
-                      // so cleanup removes the right directory.
+                      // so cleanup removes the right directory. The
+                      // snapshotDir derives from that same worktree so the
+                      // `snapshotDir == join(worktree, ".cross-review")`
+                      // invariant holds even for custom runners.
                       worktree: gather.snapshotPath,
-                      snapshotDir: paths.snapshotDir,
+                      snapshotDir: join(gather.snapshotPath, ".cross-review"),
                       forge: classification.forge,
                     },
                   }),
@@ -2263,6 +2295,33 @@ export function createCrossReviewProtocolTools(
             `Cross-review cancelled: ${run.target}`,
             progress(run, false, true, now()),
           );
+        // A terminal phase with no finalResult (e.g. the failed manifests
+        // persisted when a gather fails and the snapshot is retained) must
+        // report a definite failure, not "still running". The snapshot is
+        // intentionally left for the 7-day terminal cleanup (S5).
+        if (run.phase === "failed") {
+          run.finalResult = {
+            ...(run.warning === undefined ? {} : { warning: run.warning }),
+            runID: run.runID,
+            phase: run.phase,
+            status: "gather-failed",
+            target: run.target,
+            brief: run.brief,
+            quorum: run.quorum,
+            ...(run.gatherer === undefined && run.adapterGatherer === undefined
+              ? {}
+              : run.gatherer !== undefined
+                ? { gatherer: publicGatherer(run.gatherer, true) }
+                : {
+                    gatherer: publicAdapterGatherer(run.adapterGatherer),
+                  }),
+            reviewers: run.reviewers.map((reviewer) =>
+              publicReviewer(reviewer, true),
+            ),
+          };
+          await save();
+          return result(`Cross-review failed: ${run.target}`, run.finalResult);
+        }
         if (run.phase === "gathering")
           return result(
             `Cross-review still running: ${run.target}`,

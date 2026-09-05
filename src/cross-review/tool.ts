@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 import { assertPrimarySession } from "../primary-session.js";
 import {
@@ -22,6 +23,7 @@ import {
   type PrAdapterRunner,
   type SnapshotRemover,
 } from "./pr-gather.js";
+import { assertSessionDirectoryBinding } from "./protocol.js";
 import {
   defaultCrossReviewStateDirectory,
   FileCrossReviewRunStore,
@@ -92,7 +94,9 @@ export type CrossReviewClient = {
       path: { id: string };
       query?: { directory?: string };
       signal?: AbortSignal;
-    }): Promise<ApiResult<{ id: string; parentID?: string }>>;
+    }): Promise<
+      ApiResult<{ id: string; parentID?: string; directory?: string }>
+    >;
     create(input: {
       body: { parentID: string; title: string };
       query: { directory: string };
@@ -555,7 +559,6 @@ export function createCrossReviewTool(
           reason: string,
         ): Promise<void> => {
           if (gatherRunID === undefined) return;
-          const paths = snapshotPaths(stateRoot, gatherRunID);
           const timestamp = Date.now();
           const failedRun: CrossReviewRun = {
             schemaVersion: RUN_SCHEMA_VERSION,
@@ -574,9 +577,12 @@ export function createCrossReviewTool(
             projectConfigPath: loaded.projectPath,
             globalConfigPath: loaded.globalPath,
             reviewers: [],
+            // Derive the snapshotDir from the retained worktree itself (not
+            // the derived stateRoot layout) so the manifest keeps pointing
+            // at reality for custom runners, mirroring protocol.ts.
             snapshot: {
               worktree,
-              snapshotDir: paths.snapshotDir,
+              snapshotDir: join(worktree, ".cross-review"),
               forge:
                 classification.kind === "pr" ? classification.forge : "github",
             },
@@ -720,6 +726,14 @@ export function createCrossReviewTool(
                 );
                 sessionID = session.id;
                 sessions.add(session.id);
+                // Fail closed (S10): the child must actually be bound to the
+                // snapshot worktree, not the parent checkout.
+                if (prSnapshot !== undefined)
+                  await assertSessionDirectoryBinding(
+                    client,
+                    prSnapshot,
+                    session.id,
+                  );
                 progress[index] = {
                   reviewer: index + 1,
                   model: reviewer.model,
@@ -880,6 +894,14 @@ export function createCrossReviewTool(
                   "Judge session creation",
                 );
                 sessions.add(session.id);
+                // Fail closed (S10): the judge must be bound to the same
+                // snapshot worktree as the reviewers.
+                if (prSnapshot !== undefined)
+                  await assertSessionDirectoryBinding(
+                    client,
+                    prSnapshot,
+                    session.id,
+                  );
               } else {
                 session = { id: judgeSessionID };
               }

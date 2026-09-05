@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { stat, rm } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { PrSnapshotMeta } from "./pr-snapshot.js";
@@ -160,17 +160,23 @@ export type SnapshotRemover = (worktree: string) => Promise<void>;
  * the `<state>/<runID>/` directory that contained it.
  */
 export const defaultRemoveSnapshot: SnapshotRemover = async (worktree) => {
-  // `-C <worktree>` keeps the call independent of the plugin process cwd,
+  // Resolve first: with a relative worktree (e.g. a relative stateRoot from a
+  // custom embed), `-C <worktree>` changes the cwd before the positional
+  // path argument is resolved, so a relative path would point inside the
+  // worktree itself and the removal would fail, leaving a
+  // `.git/worktrees/<id>` entry behind.
+  const absolute = resolve(worktree);
+  // `-C <absolute>` keeps the call independent of the plugin process cwd,
   // so removal still works when the plugin runs outside the repository;
   // otherwise the `.git/worktrees/<id>` entry lingers until a manual
   // `git worktree prune`.
   await execFileAsync(
     "git",
-    ["-C", worktree, "worktree", "remove", "--force", worktree],
+    ["-C", absolute, "worktree", "remove", "--force", absolute],
     {
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
     },
   ).catch(() => undefined);
-  await rm(dirname(worktree), { recursive: true, force: true });
+  await rm(dirname(absolute), { recursive: true, force: true });
 };

@@ -64,7 +64,15 @@ function client(prompt?: CrossReviewClient["session"]["prompt"]) {
     },
     session: {
       get: vi.fn().mockImplementation(async (input) => ({
-        data: { id: input.path.id },
+        // Child sessions report themselves bound to the PR snapshot
+        // worktree so the S10 assertion passes; hostile-binding tests
+        // override `session.get` themselves.
+        data: {
+          id: input.path.id,
+          ...(input.path.id.startsWith("child-")
+            ? { directory: "/state/run/worktree" }
+            : {}),
+        },
       })),
       create: vi.fn().mockImplementation(async () => ({
         data: { id: `child-${++nextID}` },
@@ -1001,6 +1009,69 @@ describe("cross_review tool PR snapshot path", () => {
     expect(brief).toContain("isolated git worktree snapshot");
     expect(brief).not.toContain("Shared target context");
     expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+  });
+
+  it("fails closed when a reviewer session binds to the parent checkout instead of the snapshot (S10)", async () => {
+    const mock = client();
+    // The runtime binds child sessions to the parent checkout rather than
+    // the requested snapshot worktree.
+    mock.session.get.mockImplementation(async (input) => ({
+      data: {
+        id: input.path.id,
+        ...(input.path.id.startsWith("child-")
+          ? { directory: "/repo" }
+          : {}),
+      },
+    }));
+    const { tool, removeSnapshot } = legacyPrTool(mock);
+
+    const result = await tool.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+
+    // The reviewer failed closed with the S10 message instead of reviewing
+    // the wrong checkout, so quorum was never met.
+    expect(parsed.status).toBe("quorum-not-met");
+    expect(parsed.reviewers[0]).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("refusing to review the wrong checkout"),
+    });
+    // No reviewer prompt ran against the wrong checkout.
+    expect(mock.session.prompt).not.toHaveBeenCalled();
+    // The snapshot stays retained with a terminal failed manifest (the
+    // 7-day cleanup reclaims it), mirroring other pre-quorum failures.
+    expect(removeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the session record reports no bound directory (S10)", async () => {
+    const mock = client();
+    mock.session.get.mockImplementation(async (input) => ({
+      data: { id: input.path.id },
+    }));
+    const { tool } = legacyPrTool(mock);
+
+    const result = await tool.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+
+    expect(parsed.status).toBe("quorum-not-met");
+    expect(parsed.reviewers[0]).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("reports no bound directory"),
+    });
+    expect(mock.session.prompt).not.toHaveBeenCalled();
   });
 
   it("forwards context as notes and never embeds it in briefs", async () => {

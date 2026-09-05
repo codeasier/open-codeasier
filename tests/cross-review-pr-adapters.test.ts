@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -14,6 +14,7 @@ import {
   gitcodeSetupGuidance,
   runGitcodePrSnapshot,
 } from "../src/cross-review/adapters/gitcode-pr-snapshot.js";
+import { defaultRemoveSnapshot } from "../src/cross-review/pr-gather.js";
 
 const execFileAsync = promisify(execFile);
 const tracked = [] as string[];
@@ -567,5 +568,39 @@ describe("ensureCommit ref hardening", () => {
       expect(dashIndex).toBeGreaterThan(-1);
       expect(entry.args.slice(2, dashIndex)).toEqual(["fetch", "origin"]);
     }
+  });
+});
+
+describe("defaultRemoveSnapshot path resolution", () => {
+  it("removes a real worktree and its registry entry even for a relative path", async () => {
+    // A relative stateRoot (custom embed) makes the worktree path relative;
+    // without resolving first, `git -C <worktree> worktree remove <worktree>`
+    // re-resolves the positional argument against the new cwd, fails, and
+    // the fallback rm leaves a `.git/worktrees/<id>` entry behind.
+    const repo = await mkdtemp(join(tmpdir(), "pr-remove-repo-"));
+    tracked.push(repo);
+    const git = (args: string[]) =>
+      execFileAsync("git", args, { cwd: repo, encoding: "utf8" });
+    await git(["init", "-q", "--initial-branch=main"]);
+    await git(["config", "user.email", "test@example.com"]);
+    await git(["config", "user.name", "Test"]);
+    await git(["config", "commit.gpgsign", "false"]);
+    await writeFile(join(repo, "base.txt"), "base\n", "utf8");
+    await git(["add", "."]);
+    await git(["commit", "-q", "-m", "base"]);
+
+    const runDir = join(repo, "state", "run-id");
+    const worktree = join(runDir, "worktree");
+    await git(["worktree", "add", "--detach", worktree, "HEAD"]);
+    expect((await git(["worktree", "list"])).stdout).toContain(worktree);
+
+    // Hand the remover a path relative to the process cwd.
+    await defaultRemoveSnapshot(relative(process.cwd(), worktree));
+
+    // The worktree and its run directory are gone, and git's registry no
+    // longer lists the entry (no manual `git worktree prune` needed).
+    await expect(stat(worktree)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(runDir)).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await git(["worktree", "list"])).stdout).not.toContain(worktree);
   });
 });

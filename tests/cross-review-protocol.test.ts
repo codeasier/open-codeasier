@@ -2858,10 +2858,87 @@ describe("cross-review PR snapshot protocol", () => {
     expect(run?.snapshot).toMatchObject({
       worktree: WORKTREE,
     });
+    // The snapshotDir derives from the reported worktree, preserving the
+    // snapshotDir == join(worktree, ".cross-review") invariant.
+    expect(run?.snapshot).toMatchObject({
+      snapshotDir: `${WORKTREE}/.cross-review`,
+    });
     expect(run?.adapterGatherer).toMatchObject({
       kind: "adapter",
       status: "failed",
     });
+  });
+
+  it("finalize reports a definite failure for terminal failed manifests, not still-running", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    // Simulate a failed manifest persisted by an earlier gather failure: a
+    // terminal phase with no finalResult (the legacy tool and the failed
+    // gather path both persist this shape).
+    await store.create({
+      schemaVersion: 1,
+      runID: RUN_ID,
+      directory: "/repo",
+      ownerSessionID: "parent",
+      createdAt: 1_000,
+      updatedAt: 1_000,
+      phase: "failed",
+      target: "https://github.com/org/repo/pull/69",
+      brief: "PR snapshot run failed: gh not authenticated",
+      quorum: 1,
+      maxConcurrency: 1,
+      reviewerTimeoutMs: 0,
+      configSources: { project: "loaded", global: "absent" },
+      projectConfigPath: "/repo/.opencode/cross-review.json",
+      globalConfigPath: "/home/.config/opencode/cross-review.json",
+      reviewers: [],
+      snapshot: {
+        worktree: WORKTREE,
+        snapshotDir: SNAPSHOT_DIR,
+        forge: "github",
+      },
+      adapterGatherer: {
+        kind: "adapter",
+        forge: "github",
+        status: "failed",
+        startedAt: 1_000,
+        completedAt: 1_000,
+        error: "gh not authenticated",
+      },
+    });
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const { tools } = prProtocol(
+      client,
+      store,
+      classify,
+      okAdapter(),
+      removeSnapshot,
+    );
+
+    const finalized = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+
+    // Not "still running": a terminal failed run reports a definite
+    // failure with adapter gatherer provenance.
+    expect(finalized).toMatchObject({
+      runID: RUN_ID,
+      phase: "failed",
+      status: "gather-failed",
+      target: "https://github.com/org/repo/pull/69",
+      reviewers: [],
+      gatherer: {
+        kind: "adapter",
+        forge: "github",
+        status: "failed",
+      },
+    });
+    // The retained snapshot stays for the 7-day terminal cleanup (S5).
+    expect(removeSnapshot).not.toHaveBeenCalled();
+    // The finalResult is persisted so later calls return it directly.
+    const stored = store.runs.get(RUN_ID);
+    expect(stored?.finalResult).toMatchObject({ status: "gather-failed" });
   });
 
   it("rejects unknown forges before any adapter or session activity (S8)", async () => {
