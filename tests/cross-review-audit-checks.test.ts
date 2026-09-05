@@ -8,8 +8,10 @@ import {
   checkPromptModel,
   checkSilentModelReplace,
   checkToolsDeny,
+  evaluateRoleChecks,
   persistedContext,
   roleNeverDispatched,
+  roleNeverPrompted,
 } from "../src/cross-review/audit-checks.js";
 import { READ_ONLY_TOOLS } from "../src/cross-review/tool.js";
 import type { AuditSessionEvidence } from "../src/cross-review/audit-types.js";
@@ -313,6 +315,116 @@ describe("deterministic audit checks", () => {
         sessions: new Map([["child-1", empty]]),
       }).result,
     ).toBe("pass");
+    expect(
+      roleNeverPrompted(
+        {
+          status: "cancelled",
+          startedAt: 10,
+          messageID: "msg-1",
+        },
+        empty,
+      ),
+    ).toBe(true);
+    expect(
+      evaluateRoleChecks({
+        run: run({ phase: "cancelled" }),
+        role: "reviewer:1",
+        messageID: "msg-1",
+        model: "a/one",
+        status: "cancelled",
+        startedAt: 10,
+        evidence: empty,
+      })
+        .filter((item) => item.id.startsWith("role.prompt."))
+        .every((item) => item.result === "insufficient-evidence"),
+    ).toBe(true);
+  });
+
+  it("fails a visible model mismatch inside a truncated session", () => {
+    expect(
+      checkSilentModelReplace({
+        run: run({
+          reviewers: [
+            {
+              reviewer: 1,
+              model: "a/one",
+              sessionID: "child-1",
+              messageID: "msg-1",
+              status: "succeeded",
+            },
+          ],
+        }),
+        sessions: new Map([
+          [
+            "child-1",
+            evidence({
+              messages: [
+                {
+                  id: "msg-1",
+                  role: "user",
+                  model: { providerID: "z", modelID: "wrong" },
+                  parts: [{ type: "text", text: "x" }],
+                },
+              ],
+              omittedMessages: 2,
+              truncated: true,
+            }),
+          ],
+        ]),
+      }),
+    ).toMatchObject({
+      result: "fail",
+      detail: expect.stringContaining("z/wrong"),
+    });
+  });
+
+  it("does not let another session's truncation hide a terminal missing prompt", () => {
+    expect(
+      checkSilentModelReplace({
+        run: run({
+          reviewers: [
+            {
+              reviewer: 1,
+              model: "a/one",
+              sessionID: "child-1",
+              messageID: "msg-1",
+              status: "succeeded",
+            },
+            {
+              reviewer: 2,
+              model: "a/two",
+              sessionID: "child-2",
+              messageID: "msg-2",
+              status: "succeeded",
+            },
+          ],
+        }),
+        sessions: new Map([
+          [
+            "child-1",
+            evidence({
+              sessionID: "child-1",
+              messages: [],
+              retainedMessageIDs: [],
+              includedMessages: 0,
+              omittedMessages: 1,
+              truncated: true,
+            }),
+          ],
+          [
+            "child-2",
+            evidence({
+              sessionID: "child-2",
+              messages: [],
+              retainedMessageIDs: [],
+              includedMessages: 0,
+              omittedMessages: 0,
+              truncated: false,
+            }),
+          ],
+        ]),
+      }).result,
+    ).toBe("fail");
   });
 
   it("fails silent model replace even when an earlier session is truncated", () => {

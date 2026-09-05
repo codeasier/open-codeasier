@@ -161,6 +161,10 @@ async function loadAuditSession(
   });
 }
 
+function sessionCacheKey(directory: string, sessionID: string): string {
+  return `${directory}\0${sessionID}`;
+}
+
 function uniqueDirectories(
   callerDirectory: string,
   runs: CrossReviewRun[],
@@ -274,7 +278,9 @@ function buildRunResult(input: {
   const gathererError =
     run.gatherer === undefined
       ? undefined
-      : input.fetchErrors.get(run.gatherer.sessionID);
+      : input.fetchErrors.get(
+          sessionCacheKey(run.directory, run.gatherer.sessionID),
+        );
   const gatherer =
     run.gatherer === undefined
       ? undefined
@@ -299,7 +305,9 @@ function buildRunResult(input: {
   const judgeError =
     run.judge === undefined
       ? undefined
-      : input.fetchErrors.get(run.judge.sessionID);
+      : input.fetchErrors.get(
+          sessionCacheKey(run.directory, run.judge.sessionID),
+        );
   const judge =
     run.judge === undefined
       ? undefined
@@ -314,7 +322,9 @@ function buildRunResult(input: {
   if (judge !== undefined) truncatedRoles.judge = judge.truncated;
   const reviewers = run.reviewers.map((reviewer) => {
     const reviewerEvidence = input.sessions.get(reviewer.sessionID);
-    const reviewerError = input.fetchErrors.get(reviewer.sessionID);
+    const reviewerError = input.fetchErrors.get(
+      sessionCacheKey(run.directory, reviewer.sessionID),
+    );
     const report = roleReport({
       role: `reviewer:${reviewer.reviewer}`,
       sessionID: reviewer.sessionID,
@@ -390,7 +400,7 @@ export async function auditCrossReview(input: {
   const cache = new Map<string, Promise<AuditSessionEvidence>>();
   const fetchErrors = new Map<string, { code: string; detail: string }>();
   const load = (sessionID: string, directory: string, pins: string[]) => {
-    const key = `${directory}\0${sessionID}`;
+    const key = sessionCacheKey(directory, sessionID);
     const pending = cache.get(key);
     if (pending !== undefined) return pending;
     const request = loadAuditSession(input.client, sessionID, directory, {
@@ -398,7 +408,7 @@ export async function auditCrossReview(input: {
       ...(input.focus === undefined ? {} : { focus: input.focus }),
     }).catch((error: unknown) => {
       const mapped = asAuditError(error);
-      fetchErrors.set(sessionID, {
+      fetchErrors.set(key, {
         code: mapped?.code ?? "SDK_FAILURE",
         detail:
           mapped?.message ??

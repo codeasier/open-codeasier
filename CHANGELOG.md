@@ -36,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `/cross-review-audit`, keep per-run protocol timelines attributed by
   `runID`, and let a later silent-model-replace `fail` win over an earlier
   truncated session.
+- Fail `/cross-review-audit` silent-model-replace on a visible prompt-model
+  mismatch even when that session is truncated, and treat cancelled/failed
+  roles that never landed a prompt as `insufficient-evidence`.
 - Continue gitcode-cli discovery when a PATH entry is unreadable or not a
   directory, and when listing conda env directories fails with `EPERM`, so
   `detect-gitcode` no longer crashes on those filesystem errors.

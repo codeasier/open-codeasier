@@ -33,6 +33,16 @@ export function roleNeverDispatched(role: {
   return role.status === "cancelled" && role.startedAt === undefined;
 }
 
+export function roleNeverPrompted(
+  role: { status: string; startedAt?: number; messageID: string },
+  evidence?: AuditSessionEvidence,
+): boolean {
+  if (roleNeverDispatched(role)) return true;
+  if (role.status !== "cancelled" && role.status !== "failed") return false;
+  if (evidence === undefined) return false;
+  return linkedMessage(evidence, role.messageID).status === "missing";
+}
+
 function annotated(
   id: string,
   result: CheckResult,
@@ -544,7 +554,7 @@ export function checkSilentModelReplace(input: {
   const extra = { runID: input.run.runID };
   const expected = new Map<string, Set<string>>();
   const add = (role: ReviewerRun | GathererRun | JudgeRun) => {
-    if (roleNeverDispatched(role)) return;
+    if (roleNeverPrompted(role, input.sessions.get(role.sessionID))) return;
     const models = expected.get(role.sessionID) ?? new Set<string>();
     models.add(role.model);
     expected.set(role.sessionID, models);
@@ -564,25 +574,33 @@ export function checkSilentModelReplace(input: {
       else failed = `Role session ${sessionID} was not readable`;
       continue;
     }
+    const actual = promptModels(evidence);
+    const unexpected = actual.filter((model) => !models.has(model));
+    if (unexpected.length > 0)
+      failed = `Dispatched model(s) not in the manifest: ${unexpected.join(", ")}`;
     if (evidence.truncated) {
-      insufficient =
-        "Role session omitted messages needed to compare dispatched models";
+      if (unexpected.length === 0)
+        insufficient =
+          "Role session omitted messages needed to compare dispatched models";
       continue;
     }
-    const actual = promptModels(evidence);
     if (actual.length === 0) {
       missingPrompt = true;
       continue;
     }
-    const unexpected = actual.filter((model) => !models.has(model));
-    if (unexpected.length > 0)
-      failed = `Dispatched model(s) not in the manifest: ${unexpected.join(", ")}`;
     for (const model of models) {
       if (!actual.includes(model)) missingPrompt = true;
     }
   }
   if (failed !== undefined)
     return annotated("run.silent_model_replace.absent", "fail", failed, extra);
+  if (missingPrompt && !inProgress)
+    return annotated(
+      "run.silent_model_replace.absent",
+      "fail",
+      "A role prompt model is missing or does not match the manifest",
+      extra,
+    );
   if (insufficient !== undefined)
     return annotated(
       "run.silent_model_replace.absent",
@@ -590,18 +608,11 @@ export function checkSilentModelReplace(input: {
       insufficient,
       extra,
     );
-  if (missingPrompt && inProgress)
+  if (missingPrompt)
     return annotated(
       "run.silent_model_replace.absent",
       "insufficient-evidence",
       "Not every role prompt has been dispatched yet",
-      extra,
-    );
-  if (missingPrompt)
-    return annotated(
-      "run.silent_model_replace.absent",
-      "fail",
-      "A role prompt model is missing or does not match the manifest",
       extra,
     );
   return annotated(
@@ -624,10 +635,14 @@ export function evaluateRoleChecks(input: {
   evidence?: AuditSessionEvidence;
 }): AuditCheck[] {
   const inProgress = !isTerminalPhase(input.run.phase);
-  const neverDispatched = roleNeverDispatched({
-    status: input.status,
-    ...(input.startedAt === undefined ? {} : { startedAt: input.startedAt }),
-  });
+  const neverDispatched = roleNeverPrompted(
+    {
+      status: input.status,
+      messageID: input.messageID,
+      ...(input.startedAt === undefined ? {} : { startedAt: input.startedAt }),
+    },
+    input.evidence,
+  );
   const evidence =
     input.evidence === undefined ? {} : { evidence: input.evidence };
   const pending = neverDispatched ? { neverDispatched: true } : {};

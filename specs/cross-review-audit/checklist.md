@@ -23,6 +23,8 @@ Mark only after verification on the implementation branch.
 - [x] Truncated or omitted messages force `insufficient-evidence` rather than a guessed `pass`.
 - [x] Never-dispatched roles (`queued`, or `cancelled` without `startedAt`) do not hard-fail prompt checks.
 - [x] `run.silent_model_replace.absent` returns `fail` if any session fails, even when an earlier session is truncated.
+- [x] A visible prompt-model mismatch fails even when that role session is truncated.
+- [x] `cancelled`/`failed` with `startedAt` and no linked prompt is `insufficient-evidence`, not a P1 fail.
 - [x] Shared gatherer/judge behavior windows stay in original session order and do not bleed.
 - [x] Per-run `protocolTimeline` is attributed by `runID`; parent `run.legacy_tool.absent` stays unbounded.
 - [x] Parent fetch tries each distinct matching run directory after caller `SESSION_NOT_FOUND`.

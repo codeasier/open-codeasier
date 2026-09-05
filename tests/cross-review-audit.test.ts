@@ -805,6 +805,7 @@ describe("cross_review_audit tool", () => {
           sessionID: `rev-${index}`,
           messageID: `msg-rev-${index}`,
           status: "cancelled" as const,
+          ...(index === 1 ? { startedAt: 10 } : {}),
         })),
       }),
     );
