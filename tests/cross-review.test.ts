@@ -1018,9 +1018,7 @@ describe("cross_review tool PR snapshot path", () => {
     mock.session.get.mockImplementation(async (input) => ({
       data: {
         id: input.path.id,
-        ...(input.path.id.startsWith("child-")
-          ? { directory: "/repo" }
-          : {}),
+        ...(input.path.id.startsWith("child-") ? { directory: "/repo" } : {}),
       },
     }));
     const { tool, removeSnapshot } = legacyPrTool(mock);
