@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Continue gitcode-cli discovery when a PATH entry is unreadable or not a
+  directory, and when listing conda env directories fails with `EPERM`, so
+  `detect-gitcode` no longer crashes on those filesystem errors.
 - Treat host type-default cross-review overrides (`reviewModels: []` and `0`
   for `agents`, `maxConcurrency`, and `reviewerTimeoutMs`) as omitted so they
   fall back to the loaded config instead of failing validation before it is
