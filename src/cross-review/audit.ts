@@ -13,7 +13,9 @@ import {
   persistedContext,
 } from "./audit-checks.js";
 import {
+  boundProtocolCalls,
   projectAuditSession,
+  protocolCallsForRun,
   roleBehavior,
   sliceFromMessage,
 } from "./audit-project.js";
@@ -21,6 +23,7 @@ import type {
   AuditRunResult,
   AuditSessionEvidence,
   CrossReviewAuditPayload,
+  ProtocolCall,
   RoleReport,
 } from "./audit-types.js";
 import {
@@ -158,34 +161,63 @@ async function loadAuditSession(
   });
 }
 
+function uniqueDirectories(
+  callerDirectory: string,
+  runs: CrossReviewRun[],
+): string[] {
+  const directories: string[] = [];
+  const seen = new Set<string>();
+  for (const directory of [
+    callerDirectory,
+    ...runs.map((run) => run.directory),
+  ]) {
+    if (seen.has(directory)) continue;
+    seen.add(directory);
+    directories.push(directory);
+  }
+  return directories;
+}
+
 async function fetchParentBundle(
   client: SessionClient,
   parentSessionID: string,
   callerDirectory: string,
   runs: CrossReviewRun[],
 ) {
-  try {
-    return await fetchSessionBundle({
-      client,
-      sessionID: parentSessionID,
-      directory: callerDirectory,
-    });
-  } catch (error) {
-    if (
-      !(error instanceof SessionReviewError) ||
-      error.code !== "SESSION_NOT_FOUND"
-    )
-      throw error;
-    const alternate = runs.find(
-      (run) => run.directory !== callerDirectory,
-    )?.directory;
-    if (alternate === undefined) throw error;
-    return await fetchSessionBundle({
-      client,
-      sessionID: parentSessionID,
-      directory: alternate,
-    });
+  let lastNotFound: unknown;
+  for (const directory of uniqueDirectories(callerDirectory, runs)) {
+    try {
+      return await fetchSessionBundle({
+        client,
+        sessionID: parentSessionID,
+        directory,
+      });
+    } catch (error) {
+      if (
+        !(error instanceof SessionReviewError) ||
+        error.code !== "SESSION_NOT_FOUND"
+      )
+        throw error;
+      lastNotFound = error;
+    }
   }
+  throw lastNotFound;
+}
+
+function timelineFields(
+  calls: ProtocolCall[],
+): Pick<
+  AuditRunResult,
+  "protocolTimeline" | "protocolCallCount" | "protocolTimelineOmitted"
+> {
+  const bounded = boundProtocolCalls(calls);
+  return {
+    protocolTimeline: bounded.calls,
+    protocolCallCount: calls.length,
+    ...(bounded.omitted === 0
+      ? {}
+      : { protocolTimelineOmitted: bounded.omitted }),
+  };
 }
 
 function roleReport(input: {
@@ -312,7 +344,9 @@ function buildRunResult(input: {
       ...publicRole(reviewer),
     })),
     checks,
-    protocolTimeline: input.parent.protocolCalls,
+    ...timelineFields(
+      protocolCallsForRun(input.parent.protocolCalls, run.runID),
+    ),
     roles: {
       ...(gatherer === undefined ? {} : { gatherer }),
       ...(judge === undefined ? {} : { judge }),
@@ -413,7 +447,7 @@ export async function auditCrossReview(input: {
       totalMessages: parent.totalMessages,
       includedMessages: parent.includedMessages,
       omittedMessages: parent.omittedMessages,
-      protocolTimeline: parent.protocolCalls,
+      ...timelineFields(parent.protocolCalls),
     },
     runs,
     checks: [

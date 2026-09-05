@@ -16,6 +16,7 @@ import {
 } from "./audit-types.js";
 
 const PROTOCOL_TOOLS = new Set<string>(PROTOCOL_TOOL_NAMES);
+export const MAX_PROTOCOL_CALLS = 80;
 const SELECTED_ARGS = [
   "timeoutAction",
   "detail",
@@ -70,6 +71,7 @@ function compactArgs(input: unknown): {
         record.context.length === 0 ? "omitted" : record.context.length;
     else omitted.push("context");
   }
+  if (typeof record.runID === "string") args.runID = record.runID;
   for (const key of SELECTED_ARGS) {
     if (!(key in record)) continue;
     const value = record[key];
@@ -93,6 +95,7 @@ function compactResult(output: unknown): Record<string, unknown> {
   return {
     ...(typeof record.phase === "string" ? { phase: record.phase } : {}),
     ...(typeof record.status === "string" ? { status: record.status } : {}),
+    ...(typeof record.runID === "string" ? { runID: record.runID } : {}),
   };
 }
 
@@ -127,6 +130,35 @@ export function extractProtocolCalls(
     }
   }
   return calls;
+}
+
+export function protocolCallRunID(call: ProtocolCall): string | undefined {
+  if (typeof call.args.runID === "string") return call.args.runID;
+  if (typeof call.result.runID === "string") return call.result.runID;
+  return undefined;
+}
+
+export function protocolCallsForRun(
+  calls: ProtocolCall[],
+  runID: string,
+): ProtocolCall[] {
+  return calls.filter((call) => {
+    const attributed = protocolCallRunID(call);
+    return attributed === undefined || attributed === runID;
+  });
+}
+
+export function boundProtocolCalls(calls: ProtocolCall[]): {
+  calls: ProtocolCall[];
+  omitted: number;
+} {
+  if (calls.length <= MAX_PROTOCOL_CALLS) return { calls, omitted: 0 };
+  const head = Math.floor(MAX_PROTOCOL_CALLS / 2);
+  const tail = MAX_PROTOCOL_CALLS - head;
+  return {
+    calls: [...calls.slice(0, head), ...calls.slice(calls.length - tail)],
+    omitted: calls.length - MAX_PROTOCOL_CALLS,
+  };
 }
 
 export function roleBehavior(messages: AuditMessage[]): RoleBehavior {
@@ -235,7 +267,19 @@ export function projectAuditSession(input: {
   const retainedMessageIDs = [
     ...new Set([...normalized.retainedMessageIDs, ...projected.keys()]),
   ];
-  const messages = [...projected.values()];
+  const seen = new Set<string>();
+  const messages: AuditMessage[] = [];
+  for (const raw of input.bundle.messages) {
+    const message = projected.get(raw.info.id);
+    if (message === undefined || seen.has(raw.info.id)) continue;
+    seen.add(raw.info.id);
+    messages.push(message);
+  }
+  for (const [id, message] of projected) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    messages.push(message);
+  }
   const includedMessages = messages.length;
   const omittedMessages = Math.max(
     normalized.totalMessages - includedMessages,

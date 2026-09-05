@@ -16,7 +16,7 @@ Write a report from the payload only:
 1. Executive Summary
 2. Run list
 3. Check table (`id`, result, detail, run, role)
-4. Parent protocol behavior (timeline counts and selected args; never invent omitted `timeoutAction` or other omitted fields)
+4. Parent protocol behavior (timeline counts, `protocolCallCount` / `protocolTimelineOmitted`, and selected args; never invent omitted `timeoutAction` or other omitted fields). Grade polling from counts, not only the capped list. Per-run timelines are attributed by `runID`; unattributed calls may appear on every run.
 5. Gatherer / reviewer / judge behavior (tool histograms, denied or `invalid` attempts, shared-context marker, final assistant text or `finish=tool-calls`)
 6. Worst severity
 7. Assumptions
@@ -31,4 +31,4 @@ Severity (worst item wins):
 - **P2** context contract broken; reviewer wander, bash, or search loop without shared context; `timeout_pending` resolved without a user `timeoutAction`; gatherer/judge role bleed.
 - **P3** polling waste (repeated finalize while non-terminal, client-side sleep instead of `waitMs`), extra starts that did not replace a cancelled run.
 
-If `runs.found` failed and a blocking `cross_review` call exists, explain that there is no protocol tree. If `runs.found` failed and there are no protocol tools, say this session did not use cross-review. Never claim omitted or truncated content.
+If `runs.found` failed and a blocking `cross_review` call exists, explain that there is no protocol tree. If `runs.found` failed and there are no protocol tools, say this session did not use cross-review. Never claim omitted or truncated content. Treat `errors[]` as directory-scoped: a corrupt manifest from the whole run-store can appear even when it belongs to another owner. Prompt-level fails on `queued` or never-started `cancelled` roles are not protocol breaks.

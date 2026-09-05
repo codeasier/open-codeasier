@@ -468,7 +468,9 @@ describe("cross_review_audit tool", () => {
           userMessage("msg-g", "gather", {
             model: { providerID: "b", modelID: "judge" },
           }),
-          assistantMessage("msg-g-a", "gathered diff"),
+          assistantMessage("msg-g-a", "gathered diff", [
+            toolPart("read", { path: "diff" }),
+          ]),
           userMessage("msg-j", "judge", {
             model: { providerID: "b", modelID: "judge" },
           }),
@@ -495,6 +497,14 @@ describe("cross_review_audit tool", () => {
         (call: any) => call[0].path.id === "judge",
       ),
     ).toHaveLength(1);
+    expect(payload.runs[0].roles.gatherer.behavior.toolHistogram.read).toBe(1);
+    expect(payload.runs[0].roles.gatherer.behavior.hasFinalAssistantText).toBe(
+      true,
+    );
+    expect(payload.runs[0].roles.judge.behavior.hasFinalAssistantText).toBe(
+      true,
+    );
+    expect(payload.runs[0].roles.judge.behavior.toolHistogram).toEqual({});
   });
 
   it("lists every owner run by createdAt and filters unique or ambiguous prefixes", async () => {
@@ -782,5 +792,221 @@ describe("cross_review_audit tool", () => {
       metadata: { error: "SESSION_ACCESS_DENIED" },
     });
     expect((result as any).output).not.toMatch(/token|secret/);
+  });
+
+  it("does not fail prompt checks for cancelled roles that were never prompted", async () => {
+    const store = new MemoryRunStore();
+    await store.create(
+      run({
+        phase: "cancelled",
+        reviewers: [1, 2, 3].map((index) => ({
+          reviewer: index,
+          model: "a/one",
+          sessionID: `rev-${index}`,
+          messageID: `msg-rev-${index}`,
+          status: "cancelled" as const,
+        })),
+      }),
+    );
+    const emptyRole = (id: string) => ({
+      session: {
+        id,
+        projectID: "p",
+        directory: "/repo",
+        parentID: PARENT,
+        title: `Cross-review ${RUN_A.slice(0, 8)} reviewer 1: HEAD`,
+        version: "1",
+        time: { created: 1, updated: 2 },
+      },
+      messages: [],
+      children: [],
+    });
+    const { payload } = await execute(
+      store,
+      {
+        [PARENT]: {
+          session: {
+            id: PARENT,
+            directory: "/repo",
+            title: "parent",
+            version: "1",
+            time: { created: 1, updated: 2 },
+            projectID: "p",
+          },
+          messages: parentMessages([
+            toolPart("cross_review_start", { target: "HEAD" }),
+            toolPart("cross_review_cancel", { runID: RUN_A }),
+          ]),
+        },
+        "rev-1": emptyRole("rev-1"),
+        "rev-2": emptyRole("rev-2"),
+        "rev-3": emptyRole("rev-3"),
+      },
+      { parentSessionID: PARENT },
+    );
+    const promptChecks = payload.runs[0].checks.filter((item: any) =>
+      item.id.startsWith("role.prompt."),
+    );
+    expect(promptChecks.length).toBeGreaterThan(0);
+    expect(
+      promptChecks.every(
+        (item: any) => item.result === "insufficient-evidence",
+      ),
+    ).toBe(true);
+    expect(
+      payload.runs[0].checks.find(
+        (item: any) => item.id === "run.silent_model_replace.absent",
+      ),
+    ).toMatchObject({ result: "pass" });
+  });
+
+  it("attributes each run timeline by runID and keeps parent legacy checks unbounded", async () => {
+    const store = new MemoryRunStore();
+    await store.create(run({ reviewers: [] }));
+    await store.create(
+      run({
+        runID: RUN_B,
+        createdAt: 20,
+        reviewers: [],
+      }),
+    );
+    const { payload } = await execute(
+      store,
+      {
+        [PARENT]: {
+          session: {
+            id: PARENT,
+            directory: "/repo",
+            title: "parent",
+            version: "1",
+            time: { created: 1, updated: 2 },
+            projectID: "p",
+          },
+          messages: parentMessages([
+            toolPart(
+              "cross_review_start",
+              { target: "HEAD" },
+              JSON.stringify({ runID: RUN_A, phase: "reviewing" }),
+            ),
+            toolPart(
+              "cross_review_status",
+              { runID: RUN_A },
+              JSON.stringify({ runID: RUN_A, phase: "reviewing" }),
+            ),
+            toolPart(
+              "cross_review_start",
+              { target: "other" },
+              JSON.stringify({ runID: RUN_B, phase: "reviewing" }),
+            ),
+          ]),
+        },
+      },
+      { parentSessionID: PARENT },
+    );
+    expect(payload.parent.protocolCallCount).toBe(3);
+    expect(
+      payload.runs.find((item: any) => item.runID === RUN_A)?.protocolTimeline,
+    ).toEqual([
+      expect.objectContaining({
+        name: "cross_review_start",
+        result: expect.objectContaining({ runID: RUN_A }),
+      }),
+      expect.objectContaining({
+        name: "cross_review_status",
+        args: expect.objectContaining({ runID: RUN_A }),
+      }),
+    ]);
+    expect(
+      payload.runs.find((item: any) => item.runID === RUN_B)?.protocolTimeline,
+    ).toEqual([
+      expect.objectContaining({
+        name: "cross_review_start",
+        result: expect.objectContaining({ runID: RUN_B }),
+      }),
+    ]);
+  });
+
+  it("retries parent fetch across every distinct run directory", async () => {
+    const store = new MemoryRunStore();
+    await store.create(run({ directory: "/wrong", reviewers: [] }));
+    await store.create(
+      run({
+        runID: RUN_B,
+        createdAt: 20,
+        directory: "/other",
+        reviewers: [],
+      }),
+    );
+    const sessions = {
+      [PARENT]: {
+        session: {
+          id: PARENT,
+          directory: "/other",
+          title: "parent",
+          version: "1",
+          time: { created: 1, updated: 2 },
+          projectID: "p",
+        },
+        messages: parentMessages([]),
+      },
+    };
+    const client = {
+      session: {
+        get: vi.fn(
+          async (input: {
+            path: { id: string };
+            query?: { directory?: string };
+          }) => {
+            if (input.path.id === "auditor")
+              return { data: { id: "auditor" }, response: { status: 200 } };
+            if (input.path.id === PARENT && input.query?.directory !== "/other")
+              return {
+                error: { name: "NotFoundError", data: { message: "missing" } },
+                response: { status: 404 },
+              };
+            const found = sessions[input.path.id];
+            if (found === undefined)
+              return {
+                error: { name: "NotFoundError", data: { message: "missing" } },
+                response: { status: 404 },
+              };
+            return { data: found.session, response: { status: 200 } };
+          },
+        ),
+        messages: vi.fn(
+          async (input: {
+            path: { id: string };
+            query?: { directory?: string };
+          }) => {
+            if (input.path.id === PARENT && input.query?.directory !== "/other")
+              return {
+                error: { name: "NotFoundError", data: { message: "missing" } },
+                response: { status: 404 },
+              };
+            const found = sessions[input.path.id];
+            if (found === undefined)
+              return {
+                error: { name: "NotFoundError", data: { message: "missing" } },
+                response: { status: 404 },
+              };
+            return { data: found.messages, response: { status: 200 } };
+          },
+        ),
+        children: vi.fn(async () => ({
+          error: { name: "NotFoundError", data: { message: "missing" } },
+          response: { status: 404 },
+        })),
+      },
+    };
+    const result = await createCrossReviewAuditTool(client as any, {
+      store,
+    }).execute({ parentSessionID: PARENT }, context());
+    const payload = JSON.parse((result as any).output);
+    expect(payload.runs).toHaveLength(2);
+    expect(
+      client.session.get.mock.calls.map(
+        (call: any) => call[0].query?.directory,
+      ),
+    ).toEqual(expect.arrayContaining(["/repo", "/wrong", "/other"]));
   });
 });

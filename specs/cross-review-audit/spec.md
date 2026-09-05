@@ -29,9 +29,9 @@ Out of scope: judging review findings, mutating or cancelling runs, Codex workfl
 
 7. Default: every manifest whose `ownerSessionID` equals the supplied parent ID, sorted by `createdAt` ascending. `--run-id` filters that set.
 8. Directory is recorded, not used as a hard filter. If some matching runs have a different `directory` than the caller, include them and set `directoryMismatch: true` on those runs.
-9. Listing and reading manifests must not call `withRun` (that path saves and updates `updatedAt`) and must not delete files. Corrupt manifests become `errors[]` entries; they do not fail the whole audit.
+9. Listing and reading manifests must not call `withRun` (that path saves and updates `updatedAt`) and must not delete files. Corrupt manifests become `errors[]` entries; they do not fail the whole audit. `errors[]` is directory-scoped: an unparseable file from the whole run-store appears even when it belongs to another owner.
 10. A parent with zero manifests is a successful tool result with `runs: []` and check `runs.found` = `fail`, plus any parent protocol-tool evidence (including legacy `cross_review`). Do not throw.
-11. Parent session unreadable through the SDK maps to the same safe error family as `session_review` (`SESSION_NOT_FOUND`, `SESSION_ACCESS_DENIED`, `SESSION_EMPTY`, `SDK_FAILURE`) without leaking paths or tokens.
+11. Parent session unreadable through the SDK maps to the same safe error family as `session_review` (`SESSION_NOT_FOUND`, `SESSION_ACCESS_DENIED`, `SESSION_EMPTY`, `SDK_FAILURE`) without leaking paths or tokens. If the parent is `SESSION_NOT_FOUND` in the caller directory, try each distinct matching run directory before failing.
 
 ### Evidence
 
@@ -40,7 +40,7 @@ Out of scope: judging review findings, mutating or cancelling runs, Codex workfl
 14. Do not fetch a session ID that is not the parent or a manifest role ID. Isolation is inferred from: role `parentID` equals the owner; prompt `tools.task === false`; no successful `task` tool part. If the SDK cannot list children of a role session, check `role.no_children` is `insufficient-evidence` unless a successful `task` part is present (then `fail`).
 15. Parent evidence keeps every `cross_review`, `cross_review_start`, `cross_review_status`, `cross_review_cancel`, and `cross_review_finalize` tool part (input + status). Other parent messages follow existing byte/message caps. Child evidence keeps the linked user prompt and tool parts (including `invalid` / denied `bash`).
 16. Never claim omitted or truncated content. Each role session and the parent carry `truncated` / omitted counts. A check that needs omitted data is `insufficient-evidence`.
-17. In-progress runs (`phase` not in `completed`, `quorum-not-met`, `failed`, `cancelled`) are included. Checks about terminal wrap-up are `insufficient-evidence`.
+17. In-progress runs (`phase` not in `completed`, `quorum-not-met`, `failed`, `cancelled`) are included. Checks about terminal wrap-up are `insufficient-evidence`. Roles that were never dispatched (`queued`, or `cancelled` without `startedAt`) yield `insufficient-evidence` on prompt-level checks; fail only when a dispatched role is missing or mismatched.
 
 ### Deterministic checks (tool)
 
@@ -65,7 +65,7 @@ Empty `context` is omitted, matching start/gather rules.
 
 ### Behavioral evidence (tool emits, skill judges)
 
-18. Per run, emit a compact parent protocol timeline: each start/status/cancel/finalize/legacy call with time, selected args (`context` length or omitted, `timeoutAction`, `detail`, `includeOutputs`, `waitMs`), and result phase/status — not full status payloads.
+18. Per run, emit a compact parent protocol timeline attributed by `runID` from start outputs and status/cancel/finalize args. Unattributed calls remain on every run. Each start/status/cancel/finalize/legacy call includes time, selected args (`context` length or omitted, `timeoutAction`, `detail`, `includeOutputs`, `waitMs`, `runID` when present), and result phase/status/`runID` — not full status payloads. The emitted list is capped (first/last); omitted entries are counted and must not be invented. `run.legacy_tool.absent` stays parent-scoped over the unbounded call list.
 19. Per reviewer/gatherer/judge: tool-name histogram, denied/`invalid` attempts (especially `bash`), whether the linked user text contains the shared-context marker from `reviewBrief`, and whether a final assistant text exists (`finish=tool-calls` / no text is evidence, not a finding verdict).
 20. The skill does not re-fetch. It writes: executive summary; run list; check table; parent / gatherer / reviewer / judge behavior; worst severity; assumptions; residual gaps.
 

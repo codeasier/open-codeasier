@@ -25,6 +25,14 @@ export function isTerminalPhase(phase: CrossReviewRun["phase"]): boolean {
   return TERMINAL_AUDIT_PHASES.has(phase);
 }
 
+export function roleNeverDispatched(role: {
+  status: string;
+  startedAt?: number;
+}): boolean {
+  if (role.status === "queued") return true;
+  return role.status === "cancelled" && role.startedAt === undefined;
+}
+
 function annotated(
   id: string,
   result: CheckResult,
@@ -190,12 +198,32 @@ export function checkGathererJudgeSession(
   );
 }
 
+function pendingPromptResult(input: {
+  inProgress: boolean;
+  neverDispatched?: boolean;
+}): CheckResult {
+  return input.inProgress || input.neverDispatched === true
+    ? "insufficient-evidence"
+    : "fail";
+}
+
+function pendingPromptDetail(input: {
+  inProgress: boolean;
+  neverDispatched?: boolean;
+}): string {
+  if (input.neverDispatched === true)
+    return "Role was never dispatched, so the linked user message is absent";
+  if (input.inProgress) return "Linked user message is not present yet";
+  return "Linked user message is missing";
+}
+
 export function checkPromptMessageID(input: {
   runID: string;
   role: string;
   messageID: string;
   evidence?: AuditSessionEvidence;
   inProgress: boolean;
+  neverDispatched?: boolean;
 }): AuditCheck {
   const extra = { runID: input.runID, role: input.role };
   const found = linkedMessage(input.evidence, input.messageID);
@@ -209,10 +237,8 @@ export function checkPromptMessageID(input: {
   if (found.status === "missing")
     return annotated(
       "role.prompt.messageID",
-      input.inProgress ? "insufficient-evidence" : "fail",
-      input.inProgress
-        ? "Linked user message is not present yet"
-        : "Linked user message is missing",
+      pendingPromptResult(input),
+      pendingPromptDetail(input),
       extra,
     );
   if (found.message.id === input.messageID)
@@ -237,6 +263,7 @@ export function checkPromptModel(input: {
   expectedModel: string;
   evidence?: AuditSessionEvidence;
   inProgress: boolean;
+  neverDispatched?: boolean;
 }): AuditCheck {
   const extra = { runID: input.runID, role: input.role };
   const found = linkedMessage(input.evidence, input.messageID);
@@ -250,10 +277,8 @@ export function checkPromptModel(input: {
   if (found.status === "missing")
     return annotated(
       "role.prompt.model",
-      input.inProgress ? "insufficient-evidence" : "fail",
-      input.inProgress
-        ? "Linked user message is not present yet"
-        : "Linked user message is missing",
+      pendingPromptResult(input),
+      pendingPromptDetail(input),
       extra,
     );
   if (found.message.model === undefined)
@@ -285,6 +310,7 @@ export function checkToolsDeny(input: {
   messageID: string;
   evidence?: AuditSessionEvidence;
   inProgress: boolean;
+  neverDispatched?: boolean;
 }): AuditCheck {
   const extra = { runID: input.runID, role: input.role };
   const found = linkedMessage(input.evidence, input.messageID);
@@ -298,10 +324,8 @@ export function checkToolsDeny(input: {
   if (found.status === "missing")
     return annotated(
       "role.prompt.tools_deny",
-      input.inProgress ? "insufficient-evidence" : "fail",
-      input.inProgress
-        ? "Linked user message is not present yet"
-        : "Linked user message is missing",
+      pendingPromptResult(input),
+      pendingPromptDetail(input),
       extra,
     );
   if (found.message.tools === undefined)
@@ -335,13 +359,16 @@ export function checkRoleSessionLinked(input: {
   ownerSessionID: string;
   evidence?: AuditSessionEvidence;
   messageID: string;
+  neverDispatched?: boolean;
 }): AuditCheck {
   const extra = { runID: input.runID, role: input.role };
   if (input.evidence === undefined)
     return annotated(
       "role.session.linked",
-      "fail",
-      "Role session was not readable",
+      input.neverDispatched === true ? "insufficient-evidence" : "fail",
+      input.neverDispatched === true
+        ? "Role was never dispatched and its session was not readable"
+        : "Role session was not readable",
       extra,
     );
   const prefix = input.runID.slice(0, 8);
@@ -373,6 +400,13 @@ export function checkRoleSessionLinked(input: {
       "Role session parent and title match, but agent was omitted",
       extra,
     );
+  if (input.neverDispatched === true && parentOk && titleOk)
+    return annotated(
+      "role.session.linked",
+      "insufficient-evidence",
+      "Role session parent and title match, but the role was never prompted",
+      extra,
+    );
   return annotated(
     "role.session.linked",
     "fail",
@@ -386,13 +420,16 @@ export function checkOrchestrationAbsent(input: {
   role: string;
   evidence?: AuditSessionEvidence;
   inProgress: boolean;
+  neverDispatched?: boolean;
 }): AuditCheck {
   const extra = { runID: input.runID, role: input.role };
   if (input.evidence === undefined)
     return annotated(
       "role.orchestration.absent",
-      input.inProgress ? "insufficient-evidence" : "fail",
-      "Role session was not readable",
+      pendingPromptResult(input),
+      input.neverDispatched === true
+        ? "Role was never dispatched and its session was not readable"
+        : "Role session was not readable",
       extra,
     );
   const forbidden = input.evidence.messages.flatMap((message) =>
@@ -507,6 +544,7 @@ export function checkSilentModelReplace(input: {
   const extra = { runID: input.run.runID };
   const expected = new Map<string, Set<string>>();
   const add = (role: ReviewerRun | GathererRun | JudgeRun) => {
+    if (roleNeverDispatched(role)) return;
     const models = expected.get(role.sessionID) ?? new Set<string>();
     models.add(role.model);
     expected.set(role.sessionID, models);
@@ -517,26 +555,20 @@ export function checkSilentModelReplace(input: {
 
   const inProgress = !isTerminalPhase(input.run.phase);
   let missingPrompt = false;
+  let failed: string | undefined;
+  let insufficient: string | undefined;
   for (const [sessionID, models] of expected) {
     const evidence = input.sessions.get(sessionID);
     if (evidence === undefined) {
       if (inProgress) missingPrompt = true;
-      else
-        return annotated(
-          "run.silent_model_replace.absent",
-          "fail",
-          `Role session ${sessionID} was not readable`,
-          extra,
-        );
+      else failed = `Role session ${sessionID} was not readable`;
       continue;
     }
-    if (evidence.truncated)
-      return annotated(
-        "run.silent_model_replace.absent",
-        "insufficient-evidence",
-        "Role session omitted messages needed to compare dispatched models",
-        extra,
-      );
+    if (evidence.truncated) {
+      insufficient =
+        "Role session omitted messages needed to compare dispatched models";
+      continue;
+    }
     const actual = promptModels(evidence);
     if (actual.length === 0) {
       missingPrompt = true;
@@ -544,16 +576,20 @@ export function checkSilentModelReplace(input: {
     }
     const unexpected = actual.filter((model) => !models.has(model));
     if (unexpected.length > 0)
-      return annotated(
-        "run.silent_model_replace.absent",
-        "fail",
-        `Dispatched model(s) not in the manifest: ${unexpected.join(", ")}`,
-        extra,
-      );
+      failed = `Dispatched model(s) not in the manifest: ${unexpected.join(", ")}`;
     for (const model of models) {
       if (!actual.includes(model)) missingPrompt = true;
     }
   }
+  if (failed !== undefined)
+    return annotated("run.silent_model_replace.absent", "fail", failed, extra);
+  if (insufficient !== undefined)
+    return annotated(
+      "run.silent_model_replace.absent",
+      "insufficient-evidence",
+      insufficient,
+      extra,
+    );
   if (missingPrompt && inProgress)
     return annotated(
       "run.silent_model_replace.absent",
@@ -571,7 +607,9 @@ export function checkSilentModelReplace(input: {
   return annotated(
     "run.silent_model_replace.absent",
     "pass",
-    "Every role prompt model matches the manifest with no extras",
+    expected.size === 0
+      ? "No dispatched role prompts to compare"
+      : "Every role prompt model matches the manifest with no extras",
     extra,
   );
 }
@@ -581,17 +619,25 @@ export function evaluateRoleChecks(input: {
   role: string;
   messageID: string;
   model: string;
+  status: string;
+  startedAt?: number;
   evidence?: AuditSessionEvidence;
 }): AuditCheck[] {
   const inProgress = !isTerminalPhase(input.run.phase);
+  const neverDispatched = roleNeverDispatched({
+    status: input.status,
+    ...(input.startedAt === undefined ? {} : { startedAt: input.startedAt }),
+  });
   const evidence =
     input.evidence === undefined ? {} : { evidence: input.evidence };
+  const pending = neverDispatched ? { neverDispatched: true } : {};
   return [
     checkRoleSessionLinked({
       runID: input.run.runID,
       role: input.role,
       ownerSessionID: input.run.ownerSessionID,
       messageID: input.messageID,
+      ...pending,
       ...evidence,
     }),
     checkPromptMessageID({
@@ -599,6 +645,7 @@ export function evaluateRoleChecks(input: {
       role: input.role,
       messageID: input.messageID,
       inProgress,
+      ...pending,
       ...evidence,
     }),
     checkPromptModel({
@@ -607,6 +654,7 @@ export function evaluateRoleChecks(input: {
       messageID: input.messageID,
       expectedModel: input.model,
       inProgress,
+      ...pending,
       ...evidence,
     }),
     checkToolsDeny({
@@ -614,12 +662,14 @@ export function evaluateRoleChecks(input: {
       role: input.role,
       messageID: input.messageID,
       inProgress,
+      ...pending,
       ...evidence,
     }),
     checkOrchestrationAbsent({
       runID: input.run.runID,
       role: input.role,
       inProgress,
+      ...pending,
       ...evidence,
     }),
     checkNoChildren({
@@ -648,6 +698,10 @@ export function evaluateRunChecks(input: {
         role: "gatherer",
         messageID: input.run.gatherer.messageID,
         model: input.run.gatherer.model,
+        status: input.run.gatherer.status,
+        ...(input.run.gatherer.startedAt === undefined
+          ? {}
+          : { startedAt: input.run.gatherer.startedAt }),
         ...(gathererEvidence === undefined
           ? {}
           : { evidence: gathererEvidence }),
@@ -662,6 +716,10 @@ export function evaluateRunChecks(input: {
         role: "judge",
         messageID: input.run.judge.messageID,
         model: input.run.judge.model,
+        status: input.run.judge.status,
+        ...(input.run.judge.startedAt === undefined
+          ? {}
+          : { startedAt: input.run.judge.startedAt }),
         ...(judgeEvidence === undefined ? {} : { evidence: judgeEvidence }),
       }),
     );
@@ -674,6 +732,10 @@ export function evaluateRunChecks(input: {
         role: `reviewer:${reviewer.reviewer}`,
         messageID: reviewer.messageID,
         model: reviewer.model,
+        status: reviewer.status,
+        ...(reviewer.startedAt === undefined
+          ? {}
+          : { startedAt: reviewer.startedAt }),
         ...(reviewerEvidence === undefined
           ? {}
           : { evidence: reviewerEvidence }),

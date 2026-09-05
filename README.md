@@ -156,7 +156,7 @@ Handoff names contain only lowercase letters, digits, and hyphens. Handoff docum
 
 ## Session Safety
 
-`session_review` calls only the OpenCode SDK session get and messages APIs for the exact supplied session ID. It returns bounded normalized evidence and does not inspect internal storage. `cross_review_audit` reads the local cross-review run-store plus OpenCode SDK sessions named by the parent session ID. It does not inspect OpenCode internal storage and does not archive or delete sessions. This package has no session archive, delete, trash, purge, restore, or automatic session-selection capability.
+`session_review` calls only the OpenCode SDK session get and messages APIs for the exact supplied session ID. It returns bounded normalized evidence and does not inspect internal storage. `cross_review_audit` reads the local cross-review run-store plus OpenCode SDK sessions named by the parent session ID. It does not inspect OpenCode internal storage and does not archive or delete sessions. Corrupt manifests from the whole run-store directory appear in `errors[]` even when they belong to another owner. This package has no session archive, delete, trash, purge, restore, or automatic session-selection capability.
 
 ## Development
 

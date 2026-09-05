@@ -85,6 +85,8 @@ describe("distributed workflow assets", () => {
     expect(content).toContain(
       "Do not call `session_review` for IDs the audit tool did not return",
     );
+    expect(content).toContain("directory-scoped");
+    expect(content).toContain("protocolTimelineOmitted");
     const generated = await readdir("workflow-source/skills");
     expect(generated).not.toContain("cross-review-audit.md");
   });

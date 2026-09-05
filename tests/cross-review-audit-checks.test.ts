@@ -9,6 +9,7 @@ import {
   checkSilentModelReplace,
   checkToolsDeny,
   persistedContext,
+  roleNeverDispatched,
 } from "../src/cross-review/audit-checks.js";
 import { READ_ONLY_TOOLS } from "../src/cross-review/tool.js";
 import type { AuditSessionEvidence } from "../src/cross-review/audit-types.js";
@@ -16,7 +17,15 @@ import {
   RUN_SCHEMA_VERSION,
   type CrossReviewRun,
 } from "../src/cross-review/run-store.js";
-import { projectAuditSession } from "../src/cross-review/audit-project.js";
+import {
+  MAX_PROTOCOL_CALLS,
+  boundProtocolCalls,
+  extractProtocolCalls,
+  projectAuditSession,
+  protocolCallsForRun,
+  roleBehavior,
+  sliceFromMessage,
+} from "../src/cross-review/audit-project.js";
 
 const RUN_ID = "00000000-0000-4000-8000-000000000001";
 
@@ -253,6 +262,114 @@ describe("deterministic audit checks", () => {
     ).toBe("insufficient-evidence");
   });
 
+  it("does not hard-fail prompt checks for roles that were never dispatched", () => {
+    expect(roleNeverDispatched({ status: "queued" })).toBe(true);
+    expect(roleNeverDispatched({ status: "cancelled" })).toBe(true);
+    expect(roleNeverDispatched({ status: "cancelled", startedAt: 10 })).toBe(
+      false,
+    );
+    const empty = evidence({
+      messages: [],
+      retainedMessageIDs: [],
+      includedMessages: 0,
+      omittedMessages: 0,
+      truncated: false,
+    });
+    expect(
+      checkPromptMessageID({
+        runID: RUN_ID,
+        role: "reviewer:2",
+        messageID: "msg-queued",
+        evidence: empty,
+        inProgress: false,
+        neverDispatched: true,
+      }).result,
+    ).toBe("insufficient-evidence");
+    expect(
+      checkPromptModel({
+        runID: RUN_ID,
+        role: "judge",
+        messageID: "msg-judge",
+        expectedModel: "b/judge",
+        evidence: empty,
+        inProgress: false,
+        neverDispatched: true,
+      }).result,
+    ).toBe("insufficient-evidence");
+    expect(
+      checkSilentModelReplace({
+        run: run({
+          phase: "cancelled",
+          reviewers: [
+            {
+              reviewer: 1,
+              model: "a/one",
+              sessionID: "child-1",
+              messageID: "msg-1",
+              status: "cancelled",
+            },
+          ],
+        }),
+        sessions: new Map([["child-1", empty]]),
+      }).result,
+    ).toBe("pass");
+  });
+
+  it("fails silent model replace even when an earlier session is truncated", () => {
+    expect(
+      checkSilentModelReplace({
+        run: run({
+          reviewers: [
+            {
+              reviewer: 1,
+              model: "a/one",
+              sessionID: "child-1",
+              messageID: "msg-1",
+              status: "succeeded",
+            },
+            {
+              reviewer: 2,
+              model: "a/two",
+              sessionID: "child-2",
+              messageID: "msg-2",
+              status: "succeeded",
+            },
+          ],
+        }),
+        sessions: new Map([
+          [
+            "child-1",
+            evidence({
+              sessionID: "child-1",
+              messages: [],
+              retainedMessageIDs: [],
+              includedMessages: 0,
+              omittedMessages: 1,
+              truncated: true,
+            }),
+          ],
+          [
+            "child-2",
+            evidence({
+              sessionID: "child-2",
+              messages: [
+                {
+                  id: "msg-2",
+                  role: "user",
+                  model: { providerID: "z", modelID: "wrong" },
+                  parts: [{ type: "text", text: "x" }],
+                },
+              ],
+            }),
+          ],
+        ]),
+      }),
+    ).toMatchObject({
+      result: "fail",
+      detail: expect.stringContaining("z/wrong"),
+    });
+  });
+
   it("marks wrap-up model comparison insufficient while a run is in progress", () => {
     const inProgress = run({ phase: "reviewing" });
     expect(
@@ -336,5 +453,184 @@ describe("audit session projection", () => {
         cross_review_audit: false,
       }),
     });
+  });
+
+  it("keeps shared gatherer/judge windows in original session order", () => {
+    const projected = projectAuditSession({
+      bundle: {
+        session: {
+          id: "judge",
+          projectID: "p",
+          directory: "/repo",
+          parentID: "parent",
+          title: "Cross-review 00000000 judge: HEAD",
+          version: "1",
+          time: { created: 1, updated: 2 },
+        },
+        messages: [
+          {
+            info: {
+              id: "msg-g",
+              sessionID: "judge",
+              role: "user",
+              time: { created: 1 },
+            },
+            parts: [{ type: "text", text: "gather" }],
+          },
+          {
+            info: {
+              id: "msg-g-a",
+              sessionID: "judge",
+              role: "assistant",
+              time: { created: 2, completed: 3 },
+              finish: "stop",
+              parentID: "msg-g",
+              modelID: "judge",
+              providerID: "b",
+              mode: "build",
+              path: { cwd: "/repo", root: "/repo" },
+              cost: 0,
+              tokens: {
+                input: 0,
+                output: 0,
+                reasoning: 0,
+                cache: { read: 0, write: 0 },
+              },
+            },
+            parts: [
+              { type: "text", text: "gathered" },
+              {
+                type: "tool",
+                tool: "read",
+                state: { status: "completed", input: {}, output: "ok" },
+              },
+            ],
+          },
+          {
+            info: {
+              id: "msg-j",
+              sessionID: "judge",
+              role: "user",
+              time: { created: 3 },
+            },
+            parts: [{ type: "text", text: "judge" }],
+          },
+          {
+            info: {
+              id: "msg-j-a",
+              sessionID: "judge",
+              role: "assistant",
+              time: { created: 4, completed: 5 },
+              finish: "stop",
+              parentID: "msg-j",
+              modelID: "judge",
+              providerID: "b",
+              mode: "build",
+              path: { cwd: "/repo", root: "/repo" },
+              cost: 0,
+              tokens: {
+                input: 0,
+                output: 0,
+                reasoning: 0,
+                cache: { read: 0, write: 0 },
+              },
+            },
+            parts: [{ type: "text", text: "verified" }],
+          },
+        ],
+      },
+      pinMessageIDs: ["msg-g", "msg-j"],
+    });
+    expect(projected.messages.map((message) => message.id)).toEqual([
+      "msg-g",
+      "msg-g-a",
+      "msg-j",
+      "msg-j-a",
+    ]);
+    const gatherer = roleBehavior(
+      sliceFromMessage(projected.messages, "msg-g", "msg-j"),
+    );
+    const judge = roleBehavior(sliceFromMessage(projected.messages, "msg-j"));
+    expect(gatherer.hasFinalAssistantText).toBe(true);
+    expect(gatherer.toolHistogram.read).toBe(1);
+    expect(judge.hasFinalAssistantText).toBe(true);
+    expect(judge.toolHistogram).toEqual({});
+  });
+
+  it("attributes protocol calls by runID and caps the emitted timeline", () => {
+    const calls = extractProtocolCalls([
+      {
+        info: {
+          id: "a",
+          sessionID: "p",
+          role: "assistant",
+          time: { created: 1, completed: 2 },
+          finish: "tool-calls",
+          parentID: "u",
+          modelID: "p",
+          providerID: "a",
+          mode: "build",
+          path: { cwd: "/repo", root: "/repo" },
+          cost: 0,
+          tokens: {
+            input: 0,
+            output: 0,
+            reasoning: 0,
+            cache: { read: 0, write: 0 },
+          },
+        },
+        parts: [
+          {
+            type: "tool",
+            tool: "cross_review_start",
+            state: {
+              status: "completed",
+              input: { target: "HEAD" },
+              output: JSON.stringify({ runID: RUN_ID, phase: "reviewing" }),
+            },
+          },
+          {
+            type: "tool",
+            tool: "cross_review_status",
+            state: {
+              status: "completed",
+              input: { runID: RUN_ID },
+              output: JSON.stringify({ runID: RUN_ID, phase: "reviewing" }),
+            },
+          },
+          {
+            type: "tool",
+            tool: "cross_review_start",
+            state: {
+              status: "completed",
+              input: { target: "other" },
+              output: JSON.stringify({
+                runID: "00000000-0000-4000-8000-000000000002",
+                phase: "reviewing",
+              }),
+            },
+          },
+        ],
+      },
+    ]);
+    expect(protocolCallsForRun(calls, RUN_ID).map((call) => call.name)).toEqual(
+      ["cross_review_start", "cross_review_status"],
+    );
+    const many = Array.from(
+      { length: MAX_PROTOCOL_CALLS + 20 },
+      (_, index) => ({
+        name: "cross_review_status",
+        status: "completed",
+        createdAt: index,
+        args: { waitMs: index },
+        omitted: [],
+        result: {},
+      }),
+    );
+    const bounded = boundProtocolCalls(many);
+    expect(bounded.calls).toHaveLength(MAX_PROTOCOL_CALLS);
+    expect(bounded.omitted).toBe(20);
+    expect(bounded.calls[0]?.args.waitMs).toBe(0);
+    expect(bounded.calls.at(-1)?.args.waitMs).toBe(MAX_PROTOCOL_CALLS + 19);
   });
 });

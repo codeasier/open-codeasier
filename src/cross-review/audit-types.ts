@@ -106,6 +106,8 @@ export type AuditRunResult = {
   }>;
   checks: AuditCheck[];
   protocolTimeline: ProtocolCall[];
+  protocolCallCount?: number;
+  protocolTimelineOmitted?: number;
   roles: {
     gatherer?: RoleReport;
     judge?: RoleReport;
@@ -128,6 +130,8 @@ export type CrossReviewAuditPayload = {
     includedMessages: number;
     omittedMessages: number;
     protocolTimeline: ProtocolCall[];
+    protocolCallCount?: number;
+    protocolTimelineOmitted?: number;
   };
   runs: AuditRunResult[];
   checks: AuditCheck[];
