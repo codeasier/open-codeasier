@@ -5,8 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   globalConfigPath,
   loadCrossReviewConfig,
+  normalizeHostDefaultOverrides,
   parseCrossReviewConfig,
+  prepareCrossReviewOverrides,
   projectConfigPath,
+  validateCrossReviewOverrides,
 } from "../src/cross-review/config.js";
 
 const temporaryRoots: string[] = [];
@@ -432,5 +435,91 @@ describe("cross-review configuration", () => {
     const loaded = await loadCrossReviewConfig(worktreeRoot, mainRoot);
     expect(loaded.config).toEqual({ reviewers: [{ model: "a/worktree" }] });
     expect(loaded.projectPath).toBe(projectConfigPath(worktreeRoot));
+  });
+});
+
+describe("cross-review host default overrides", () => {
+  it("strips empty reviewModels and zero numeric overrides", () => {
+    expect(
+      normalizeHostDefaultOverrides({
+        target: "HEAD",
+        reviewModels: [],
+        agents: 0,
+        maxConcurrency: 0,
+        reviewerTimeoutMs: 0,
+        judgeModel: "",
+        focus: "",
+      }),
+    ).toEqual({
+      target: "HEAD",
+      judgeModel: "",
+      focus: "",
+    });
+  });
+
+  it("preserves legal overrides and does not touch blank judge or focus", () => {
+    expect(
+      normalizeHostDefaultOverrides({
+        reviewModels: ["a/one"],
+        agents: 2,
+        maxConcurrency: 1,
+        reviewerTimeoutMs: 5_000,
+        judgeModel: "  ",
+        focus: "",
+      }),
+    ).toEqual({
+      reviewModels: ["a/one"],
+      agents: 2,
+      maxConcurrency: 1,
+      reviewerTimeoutMs: 5_000,
+      judgeModel: "  ",
+      focus: "",
+    });
+  });
+
+  it("prepares host type-defaults as absent and accepts them", () => {
+    expect(
+      prepareCrossReviewOverrides({
+        reviewModels: [],
+        agents: 0,
+        maxConcurrency: 0,
+        reviewerTimeoutMs: 0,
+      }),
+    ).toEqual({});
+  });
+
+  it("explains empty or zero overrides that still reach validation", () => {
+    expect(() => validateCrossReviewOverrides({ reviewModels: [] })).toThrow(
+      "`reviewModels` received an empty override; omit this argument to use the loaded config",
+    );
+    expect(() => validateCrossReviewOverrides({ agents: 0 })).toThrow(
+      "`agents` received 0; omit this argument to use the loaded config",
+    );
+    expect(() => validateCrossReviewOverrides({ maxConcurrency: 0 })).toThrow(
+      "`maxConcurrency` received 0; omit this argument to use the loaded config",
+    );
+    expect(() =>
+      validateCrossReviewOverrides({ reviewerTimeoutMs: 0 }),
+    ).toThrow(
+      "`reviewerTimeoutMs` received 0; omit this argument to use the loaded config",
+    );
+  });
+
+  it("still rejects truly illegal overrides", () => {
+    expect(() =>
+      validateCrossReviewOverrides({ reviewModels: ["malformed"] }),
+    ).toThrow("`reviewModels` must be 1-8 `provider/model` identifiers");
+    expect(() => validateCrossReviewOverrides({ agents: 9 })).toThrow(
+      "`agents` must be an integer from 1 to 8",
+    );
+    expect(() => validateCrossReviewOverrides({ maxConcurrency: 9 })).toThrow(
+      "`maxConcurrency` must be an integer from 1 to 8",
+    );
+    expect(() =>
+      validateCrossReviewOverrides({ reviewerTimeoutMs: 1 }),
+    ).toThrow("`reviewerTimeoutMs` must be an integer from 5000 to 3600000");
+    expect(() => prepareCrossReviewOverrides({ agents: 9 })).toThrow(
+      "`agents` must be an integer from 1 to 8",
+    );
   });
 });
