@@ -8,6 +8,8 @@ import {
   embeddedContext,
   errorMessage,
   gatherBrief,
+  prSnapshotJudgeBrief,
+  prSnapshotReviewBrief,
   type ApiResult,
   READ_ONLY_TOOLS,
   responseData,
@@ -19,13 +21,26 @@ import {
   type ReviewerTarget,
 } from "./tool.js";
 import {
+  findGitRoot,
   loadCrossReviewConfig,
   validateCrossReviewOverrides,
   type LoadedCrossReviewConfig,
 } from "./config.js";
 import {
+  classifyPrTargetInRepository,
+  type PrTargetClassification,
+} from "./pr-target.js";
+import {
+  createDefaultPrAdapterRunner,
+  defaultRemoveSnapshot,
+  snapshotPaths,
+  type PrAdapterRunner,
+} from "./pr-gather.js";
+import {
+  defaultCrossReviewStateDirectory,
   FileCrossReviewRunStore,
   RUN_SCHEMA_VERSION,
+  type AdapterGathererRun,
   type CrossReviewRun,
   type CrossReviewRunPhase,
   type CrossReviewRunStore,
@@ -99,7 +114,9 @@ export type AsyncCrossReviewClient = {
       path: { id: string };
       query?: { directory?: string };
       signal?: AbortSignal;
-    }): Promise<ApiResult<{ id: string; parentID?: string }>>;
+    }): Promise<
+      ApiResult<{ id: string; parentID?: string; directory?: string }>
+    >;
     create(input: {
       body: { parentID: string; title: string };
       query: { directory: string };
@@ -137,6 +154,17 @@ type ProtocolOptions = {
   canonicalize?: (directory: string) => Promise<string>;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   defaultWaitMs?: number;
+  /** Override PR classification (tests) or provide a custom classifier. */
+  classifyTarget?: (
+    target: string,
+    directory: string,
+  ) => Promise<PrTargetClassification>;
+  /** Override the PR snapshot adapter runner (tests inject fakes here). */
+  runPrAdapter?: PrAdapterRunner;
+  /** Root that hosts `<runID>/` snapshot directories. */
+  stateRoot?: string;
+  /** Remove a snapshot worktree + its run directory (tests). */
+  removeSnapshot?: (worktree: string) => Promise<void>;
 };
 
 type TimeoutAction = "abort" | "preserve";
@@ -479,6 +507,23 @@ function publicGatherer(
   };
 }
 
+/** Adapter gatherer has no model and no session; `kind: "adapter"` (R4). */
+function publicAdapterGatherer(adapter: AdapterGathererRun | undefined) {
+  if (adapter === undefined) return undefined;
+  return {
+    kind: "adapter" as const,
+    forge: adapter.forge,
+    status: adapter.status,
+    ...(adapter.startedAt === undefined
+      ? {}
+      : { startedAt: adapter.startedAt }),
+    ...(adapter.completedAt === undefined
+      ? {}
+      : { completedAt: adapter.completedAt }),
+    ...(adapter.error === undefined ? {} : { error: adapter.error }),
+  };
+}
+
 function publicJudge(judge: JudgeRun | undefined, includeOutput: boolean) {
   if (judge === undefined) return undefined;
   return {
@@ -585,12 +630,28 @@ function progress(
     reviewers: run.reviewers.map((reviewer) =>
       publicReviewer(reviewer, includeOutputs),
     ),
-    ...(run.gatherer === undefined
+    ...(run.gatherer === undefined && run.adapterGatherer === undefined
       ? {}
-      : { gatherer: publicGatherer(run.gatherer, includeOutputs) }),
+      : run.gatherer !== undefined
+        ? { gatherer: publicGatherer(run.gatherer, includeOutputs) }
+        : { gatherer: publicAdapterGatherer(run.adapterGatherer) }),
     ...(run.judge === undefined
       ? {}
       : { judge: publicJudge(run.judge, includeOutputs) }),
+    ...(run.snapshot === undefined
+      ? {}
+      : {
+          snapshot: {
+            worktree: run.snapshot.worktree,
+            forge: run.snapshot.forge,
+            ...(run.snapshot.url === undefined
+              ? {}
+              : { url: run.snapshot.url }),
+            ...(run.snapshot.headSha === undefined
+              ? {}
+              : { headSha: run.snapshot.headSha }),
+          },
+        }),
   };
 }
 
@@ -767,11 +828,15 @@ function reviewerPrompt(
     parts: [
       {
         type: "text",
-        text: reviewBrief(
-          run.target,
-          reviewer.focus,
-          run.context ?? run.gatherer?.output,
-        ),
+        text:
+          run.snapshot === undefined
+            ? reviewBrief(
+                run.target,
+                reviewer.focus,
+                run.context ?? run.gatherer?.output,
+              )
+            : // PR snapshot runs never embed the diff or caller context.
+              prSnapshotReviewBrief(run.target, reviewer.focus),
       },
     ],
     tools: READ_ONLY_TOOLS,
@@ -802,14 +867,18 @@ function judgePrompt(run: CrossReviewRun): AsyncPrompt["body"] {
       {
         type: "text",
         text: [
-          "Act as the read-only cross-review judge.",
-          `Target: ${run.target}`,
-          ...(run.context === undefined || run.context.length === 0
+          run.snapshot === undefined
+            ? "Act as the read-only cross-review judge."
+            : prSnapshotJudgeBrief(run.target),
+          run.snapshot === undefined ? `Target: ${run.target}` : "",
+          ...(run.snapshot !== undefined
             ? []
-            : [
-                "Shared target context (already gathered; verify findings against it):",
-                embeddedContext(run.context) ?? "",
-              ]),
+            : run.context === undefined || run.context.length === 0
+              ? []
+              : [
+                  "Shared target context (already gathered; verify findings against it):",
+                  embeddedContext(run.context) ?? "",
+                ]),
           "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
           "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
           JSON.stringify(
@@ -817,7 +886,9 @@ function judgePrompt(run: CrossReviewRun): AsyncPrompt["body"] {
               publicReviewer(reviewer, true),
             ),
           ),
-        ].join("\n"),
+        ]
+          .filter((line) => line.length > 0)
+          .join("\n"),
       },
     ],
     tools: READ_ONLY_TOOLS,
@@ -857,6 +928,45 @@ export function createCrossReviewProtocolTools(
   const canonicalize = options.canonicalize ?? canonicalizeDirectory;
   const sleep = options.sleep ?? defaultSleep;
   const configuredDefaultWaitMs = options.defaultWaitMs ?? DEFAULT_WAIT_MS;
+  const classifyTarget = options.classifyTarget ?? classifyPrTargetInRepository;
+  const runPrAdapter = options.runPrAdapter ?? createDefaultPrAdapterRunner();
+  const stateRoot = options.stateRoot ?? defaultCrossReviewStateDirectory();
+  const removeSnapshot = options.removeSnapshot ?? defaultRemoveSnapshot;
+
+  /**
+   * Sessions for reviewer/judge of a snapshot run use the snapshot
+   * worktree as `query.directory`; every other run uses the parent project.
+   * Authorization, config loading, and `assertAuthorized` keep using
+   * `run.directory` (the parent project).
+   */
+  function sessionDirectory(run: CrossReviewRun) {
+    return run.snapshot === undefined ? run.directory : run.snapshot.worktree;
+  }
+
+  /**
+   * Fail closed (S10) when the runtime does not bind the child session to
+   * the requested snapshot directory.
+   */
+  async function assertSessionDirectory(
+    snapshot: NonNullable<CrossReviewRun["snapshot"]>,
+    sessionID: string,
+  ) {
+    const session = responseData(
+      await client.session.get({
+        path: { id: sessionID },
+        query: { directory: snapshot.worktree },
+        signal: AbortSignal.timeout(SDK_REQUEST_TIMEOUT_MS),
+      }),
+      "Session inspection",
+    );
+    const requested = await canonicalize(snapshot.worktree);
+    const bound = session.directory ?? snapshot.worktree;
+    const boundReal = await canonicalize(bound);
+    if (boundReal !== requested)
+      throw new Error(
+        `Session ${sessionID} is bound to ${boundReal} instead of the PR snapshot ${requested}; refusing to review the wrong checkout`,
+      );
+  }
 
   async function abortSession(sessionID: string, directory: string) {
     const aborted = responseData(
@@ -871,6 +981,23 @@ export function createCrossReviewProtocolTools(
       throw new Error(`Session abort was not confirmed: ${sessionID}`);
   }
 
+  /**
+   * Snapshot cleanup after a terminal transition (R6): remove the worktree
+   * and the `<state>/<runID>/` directory. Returns a warning suffix when the
+   * best-effort removal fails so callers can surface it.
+   */
+  async function cleanupSnapshot(
+    run: CrossReviewRun,
+  ): Promise<string | undefined> {
+    if (run.snapshot === undefined) return undefined;
+    try {
+      await removeSnapshot(run.snapshot.worktree);
+      return undefined;
+    } catch (error) {
+      return `; snapshot cleanup failed: ${errorMessage(error)}`;
+    }
+  }
+
   async function dispatchReviewer(
     run: CrossReviewRun,
     reviewer: ReviewerRun,
@@ -881,7 +1008,7 @@ export function createCrossReviewProtocolTools(
         await client.session.promptAsync({
           body: reviewerPrompt(run, reviewer),
           path: { id: reviewer.sessionID },
-          query: { directory: run.directory },
+          query: { directory: sessionDirectory(run) },
           signal: requestSignal(context.abort),
         }),
         `Reviewer ${reviewer.reviewer} prompt`,
@@ -889,7 +1016,7 @@ export function createCrossReviewProtocolTools(
     } catch (error) {
       const dispatchError = errorMessage(error);
       try {
-        await abortSession(reviewer.sessionID, run.directory);
+        await abortSession(reviewer.sessionID, sessionDirectory(run));
         reviewer.status = context.abort.aborted ? "cancelled" : "failed";
         reviewer.completedAt = now();
         reviewer.error = dispatchError;
@@ -940,7 +1067,7 @@ export function createCrossReviewProtocolTools(
     return responseData(
       await client.session.messages({
         path: { id: sessionID },
-        query: { directory: run.directory, limit: 100 },
+        query: { directory: sessionDirectory(run), limit: 100 },
         signal: requestSignal(context.abort),
       }),
       "Session messages",
@@ -969,7 +1096,7 @@ export function createCrossReviewProtocolTools(
     }
     let abortWarning: string | undefined;
     try {
-      await abortSession(reviewer.sessionID, run.directory);
+      await abortSession(reviewer.sessionID, sessionDirectory(run));
     } catch (error) {
       abortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
       for (const queued of run.reviewers) {
@@ -1126,7 +1253,7 @@ export function createCrossReviewProtocolTools(
           await client.session.promptAsync({
             body: judgePrompt(run),
             path: { id: judge.sessionID },
-            query: { directory: run.directory },
+            query: { directory: sessionDirectory(run) },
             signal: requestSignal(context.abort),
           }),
           "Judge prompt",
@@ -1134,7 +1261,7 @@ export function createCrossReviewProtocolTools(
       } catch (error) {
         const dispatchError = errorMessage(error);
         try {
-          await abortSession(judge.sessionID, run.directory);
+          await abortSession(judge.sessionID, sessionDirectory(run));
           judge.status = context.abort.aborted ? "cancelled" : "failed";
           judge.completedAt = now();
           judge.error = dispatchError;
@@ -1166,7 +1293,7 @@ export function createCrossReviewProtocolTools(
       }
       let abortWarning: string | undefined;
       try {
-        await abortSession(judge.sessionID, run.directory);
+        await abortSession(judge.sessionID, sessionDirectory(run));
       } catch (error) {
         abortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
       }
@@ -1294,7 +1421,7 @@ export function createCrossReviewProtocolTools(
           await client.session.promptAsync({
             body: gatherPrompt(run, gatherer),
             path: { id: gatherer.sessionID },
-            query: { directory: run.directory },
+            query: { directory: sessionDirectory(run) },
             signal: requestSignal(context.abort),
           }),
           "Gather prompt",
@@ -1302,7 +1429,7 @@ export function createCrossReviewProtocolTools(
       } catch (error) {
         const dispatchError = errorMessage(error);
         try {
-          await abortSession(gatherer.sessionID, run.directory);
+          await abortSession(gatherer.sessionID, sessionDirectory(run));
           gatherer.status = context.abort.aborted ? "cancelled" : "failed";
           gatherer.completedAt = now();
           gatherer.error = dispatchError;
@@ -1347,7 +1474,7 @@ export function createCrossReviewProtocolTools(
       }
       let abortWarning: string | undefined;
       try {
-        await abortSession(gatherer.sessionID, run.directory);
+        await abortSession(gatherer.sessionID, sessionDirectory(run));
       } catch (error) {
         abortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
       }
@@ -1444,7 +1571,7 @@ export function createCrossReviewProtocolTools(
   async function statuses(run: CrossReviewRun, context: ProtocolContext) {
     return responseData(
       await client.session.status({
-        query: { directory: run.directory },
+        query: { directory: sessionDirectory(run) },
         signal: requestSignal(context.abort),
       }),
       "Session status",
@@ -1653,7 +1780,103 @@ export function createCrossReviewProtocolTools(
 
       const runID = createRunID();
       const childSessions: string[] = [];
+      let prSnapshot: NonNullable<CrossReviewRun["snapshot"]> | undefined;
+      let runPersisted = false;
       try {
+        // Classify the target first: a GitHub/GitCode pull request must be
+        // materialized as a pinned snapshot before any reviewer session
+        // exists (fail closed, no LLM gatherer, no reviewer concurrency).
+        const classification = await classifyTarget(
+          args.target,
+          context.directory,
+        );
+        if (classification.kind === "error")
+          throw new Error(classification.message);
+
+        let adapterGatherer: AdapterGathererRun | undefined;
+        if (classification.kind === "pr") {
+          const repo =
+            (await findGitRoot(context.directory)) ?? context.directory;
+          const paths = snapshotPaths(stateRoot, runID);
+          const gatherStartedAt = now();
+          const gather = await runPrAdapter({
+            forge: classification.forge,
+            repo,
+            target: args.target,
+            runID,
+            stateRoot,
+            ...(args.context === undefined || args.context.length === 0
+              ? {}
+              : { notes: args.context }),
+            ...(loaded.config.gitcodeCli === undefined
+              ? {}
+              : { gitcodeCli: loaded.config.gitcodeCli }),
+          });
+          if (!gather.ok) {
+            const error = `${gather.error}${gather.snapshotPath === undefined ? "" : ` (snapshot retained at ${gather.snapshotPath})`}`;
+            adapterGatherer = {
+              kind: "adapter",
+              forge: classification.forge,
+              status: "failed",
+              startedAt: gatherStartedAt,
+              completedAt: now(),
+              error,
+            };
+            // Persist a failed run so the snapshot is discoverable for
+            // diagnosis, then surface the error without any reviewers.
+            await store.create({
+              schemaVersion: RUN_SCHEMA_VERSION,
+              runID,
+              directory,
+              ownerSessionID: context.sessionID,
+              createdAt: now(),
+              updatedAt: now(),
+              phase: "failed",
+              target: args.target,
+              brief: prSnapshotReviewBrief(
+                args.target,
+                args.focus ?? loaded.config.focus,
+              ),
+              quorum: Math.floor(reviewers.length / 2) + 1,
+              maxConcurrency,
+              reviewerTimeoutMs: plan.reviewerTimeoutMs,
+              configSources: loaded.sources,
+              projectConfigPath: loaded.projectPath,
+              globalConfigPath: loaded.globalPath,
+              reviewers: [],
+              ...(gather.snapshotPath === undefined
+                ? {}
+                : {
+                    snapshot: {
+                      worktree: paths.worktree,
+                      snapshotDir: paths.snapshotDir,
+                      forge: classification.forge,
+                    },
+                  }),
+              adapterGatherer,
+            } as CrossReviewRun);
+            runPersisted = true;
+            throw new Error(error);
+          }
+          prSnapshot = {
+            worktree: gather.worktree,
+            snapshotDir: gather.snapshotDir,
+            forge: classification.forge,
+            url: gather.meta.url,
+            headSha: gather.meta.headSha,
+            mergeBaseSha: gather.meta.mergeBaseSha,
+          };
+          adapterGatherer = {
+            kind: "adapter",
+            forge: classification.forge,
+            status: "succeeded",
+            startedAt: gatherStartedAt,
+            completedAt: now(),
+          };
+        }
+
+        const sessionRoot =
+          prSnapshot === undefined ? context.directory : prSnapshot.worktree;
         for (const [index] of reviewers.entries()) {
           const session = responseData(
             await client.session.create({
@@ -1661,12 +1884,16 @@ export function createCrossReviewProtocolTools(
                 parentID: context.sessionID,
                 title: `Cross-review ${runID.slice(0, 8)} reviewer ${index + 1}: ${args.target.slice(0, 120)}`,
               },
-              query: { directory: context.directory },
+              query: { directory: sessionRoot },
               signal: requestSignal(context.abort),
             }),
             `Reviewer ${index + 1} session creation`,
           );
           childSessions.push(session.id);
+          // Fail closed (S10) when the runtime binds the child to another
+          // directory than the PR snapshot.
+          if (prSnapshot !== undefined)
+            await assertSessionDirectory(prSnapshot, session.id);
         }
         let judgeSessionID: string | undefined;
         if (judgeModel !== undefined) {
@@ -1676,7 +1903,7 @@ export function createCrossReviewProtocolTools(
                 parentID: context.sessionID,
                 title: `Cross-review ${runID.slice(0, 8)} judge: ${args.target.slice(0, 120)}`,
               },
-              query: { directory: context.directory },
+              query: { directory: sessionRoot },
               signal: requestSignal(context.abort),
             }),
             "Judge session creation",
@@ -1692,8 +1919,12 @@ export function createCrossReviewProtocolTools(
           args.context === undefined || args.context.length === 0
             ? undefined
             : args.context;
+        // A classified PR always used the adapter; `context` became notes.md
+        // and never suppresses gathering.
         const gathers =
-          judgeModel !== undefined && providedContext === undefined;
+          judgeModel !== undefined &&
+          providedContext === undefined &&
+          prSnapshot === undefined;
         const run: CrossReviewRun = {
           schemaVersion: RUN_SCHEMA_VERSION,
           runID,
@@ -1703,12 +1934,18 @@ export function createCrossReviewProtocolTools(
           updatedAt: timestamp,
           phase: gathers ? "gathering" : "reviewing",
           target: args.target,
-          brief: reviewBrief(
-            args.target,
-            args.focus ?? loaded.config.focus,
-            providedContext,
-          ),
-          ...(providedContext === undefined
+          brief:
+            prSnapshot === undefined
+              ? reviewBrief(
+                  args.target,
+                  args.focus ?? loaded.config.focus,
+                  providedContext,
+                )
+              : prSnapshotReviewBrief(
+                  args.target,
+                  args.focus ?? loaded.config.focus,
+                ),
+          ...(providedContext === undefined || prSnapshot !== undefined
             ? {}
             : { context: providedContext }),
           ...(warning === undefined ? {} : { warning }),
@@ -1719,6 +1956,8 @@ export function createCrossReviewProtocolTools(
           configSources: loaded.sources,
           projectConfigPath: loaded.projectPath,
           globalConfigPath: loaded.globalPath,
+          ...(prSnapshot === undefined ? {} : { snapshot: prSnapshot }),
+          ...(adapterGatherer === undefined ? {} : { adapterGatherer }),
           reviewers: reviewers.map((reviewer, index) => ({
             reviewer: index + 1,
             model: reviewer.model,
@@ -1749,6 +1988,7 @@ export function createCrossReviewProtocolTools(
               }),
         };
         await store.create(run);
+        runPersisted = true;
         return store.withRun(runID, async (stored, save) => {
           assertAuthorized(stored, context, directory);
           if (stored.phase === "gathering" && stored.gatherer !== undefined) {
@@ -1765,7 +2005,10 @@ export function createCrossReviewProtocolTools(
             ) {
               let abortWarning: string | undefined;
               try {
-                await abortSession(stored.gatherer.sessionID, stored.directory);
+                await abortSession(
+                  stored.gatherer.sessionID,
+                  sessionDirectory(stored),
+                );
               } catch (error) {
                 abortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
               }
@@ -1777,7 +2020,10 @@ export function createCrossReviewProtocolTools(
               let abortWarning: string | undefined;
               if (ACTIVE_REVIEWER_STATUSES.has(reviewer.status)) {
                 try {
-                  await abortSession(reviewer.sessionID, stored.directory);
+                  await abortSession(
+                    reviewer.sessionID,
+                    sessionDirectory(stored),
+                  );
                 } catch (error) {
                   abortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
                 }
@@ -1798,8 +2044,9 @@ export function createCrossReviewProtocolTools(
             }
             stored.phase = "cancelled";
             await save();
+            const cleanupWarning = await cleanupSnapshot(stored);
             return result(
-              `Cross-review cancelled: ${args.target}`,
+              `Cross-review cancelled: ${args.target}${cleanupWarning ?? ""}`,
               progress(stored, false, true, now()),
             );
           }
@@ -1809,11 +2056,17 @@ export function createCrossReviewProtocolTools(
           );
         });
       } catch (error) {
+        const abortDirectory = prSnapshot?.worktree ?? context.directory;
         await Promise.all(
           childSessions.map((sessionID) =>
-            abortSession(sessionID, context.directory).catch(() => undefined),
+            abortSession(sessionID, abortDirectory).catch(() => undefined),
           ),
         );
+        // A materialized snapshot that no manifest references must not be
+        // orphaned; failed gathers persist their run first and keep the
+        // snapshot for diagnosis (S5).
+        if (prSnapshot !== undefined && !runPersisted)
+          await removeSnapshot(prSnapshot.worktree).catch(() => undefined);
         throw error;
       }
     },
@@ -1916,7 +2169,7 @@ export function createCrossReviewProtocolTools(
           if (ACTIVE_REVIEWER_STATUSES.has(reviewer.status)) {
             let abortWarning: string | undefined;
             try {
-              await abortSession(reviewer.sessionID, run.directory);
+              await abortSession(reviewer.sessionID, sessionDirectory(run));
             } catch (error) {
               abortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
             }
@@ -1935,7 +2188,7 @@ export function createCrossReviewProtocolTools(
             ))
         ) {
           try {
-            await abortSession(run.gatherer.sessionID, run.directory);
+            await abortSession(run.gatherer.sessionID, sessionDirectory(run));
           } catch (error) {
             gathererAbortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
           }
@@ -1950,7 +2203,7 @@ export function createCrossReviewProtocolTools(
           ACTIVE_REVIEWER_STATUSES.has(run.judge.status as ReviewerRunStatus)
         ) {
           try {
-            await abortSession(run.judge.sessionID, run.directory);
+            await abortSession(run.judge.sessionID, sessionDirectory(run));
           } catch (error) {
             judgeAbortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
           }
@@ -1962,8 +2215,10 @@ export function createCrossReviewProtocolTools(
           await save();
         }
         run.phase = "cancelled";
+        await save();
+        const cleanupWarning = await cleanupSnapshot(run);
         return result(
-          `Cross-review cancelled: ${run.target}`,
+          `Cross-review cancelled: ${run.target}${cleanupWarning ?? ""}`,
           progress(run, false, true, now()),
         );
       });
@@ -2039,8 +2294,10 @@ export function createCrossReviewProtocolTools(
               status: "pending-parent-consolidation",
             },
           };
+          await save();
+          const cleanupWarning = await cleanupSnapshot(run);
           return result(
-            `Cross-review finalized: ${run.target}`,
+            `Cross-review finalized: ${run.target}${cleanupWarning ?? ""}`,
             run.finalResult,
           );
         }
@@ -2078,8 +2335,10 @@ export function createCrossReviewProtocolTools(
               ),
               judge: publicJudge(judge, true),
             };
+            await save();
+            const cleanupWarning = await cleanupSnapshot(run);
             return result(
-              `Cross-review finalized: ${run.target}`,
+              `Cross-review finalized: ${run.target}${cleanupWarning ?? ""}`,
               run.finalResult,
             );
           }

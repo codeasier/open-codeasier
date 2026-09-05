@@ -872,3 +872,162 @@ describe("cross_review tool", () => {
     });
   });
 });
+
+describe("cross_review tool PR snapshot path", () => {
+  const WORKTREE = "/state/run/worktree";
+
+  function okAdapter() {
+    return vi.fn().mockResolvedValue({
+      ok: true,
+      worktree: WORKTREE,
+      snapshotDir: `${WORKTREE}/.cross-review`,
+      meta: {
+        schemaVersion: 1,
+        forge: "github",
+        target: "https://github.com/org/repo/pull/69",
+        url: "https://github.com/org/repo/pull/69",
+        baseSha: "a".repeat(40),
+        headSha: "b".repeat(40),
+        mergeBaseSha: "c".repeat(40),
+        fetchedAt: "2026-09-05T00:00:00.000Z",
+      },
+    });
+  }
+
+  function legacyPrTool(
+    mock: CrossReviewClient,
+    options: {
+      classify?: any;
+      runPrAdapter?: any;
+      removeSnapshot?: any;
+      loadConfig?: () => Promise<LoadedCrossReviewConfig>;
+    } = {},
+  ) {
+    const runPrAdapter = options.runPrAdapter ?? okAdapter();
+    const removeSnapshot =
+      options.removeSnapshot ?? vi.fn().mockResolvedValue(undefined);
+    const tool = createCrossReviewTool(
+      mock,
+      options.loadConfig ?? emptyConfig,
+      {
+        classifyTarget:
+          options.classify ??
+          vi.fn().mockResolvedValue({ kind: "pr", forge: "github" }),
+        runPrAdapter,
+        stateRoot: "/state",
+        removeSnapshot,
+      },
+    );
+    return { tool, runPrAdapter, removeSnapshot };
+  }
+
+  it("runs the adapter, binds sessions to the snapshot, and cleans up on success", async () => {
+    const mock = client();
+    const { tool, runPrAdapter, removeSnapshot } = legacyPrTool(mock);
+
+    const result = await tool.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+
+    expect(runPrAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forge: "github",
+        target: "https://github.com/org/repo/pull/69",
+        stateRoot: "/state",
+      }),
+    );
+    // No gatherer LLM session: one reviewer + one judge.
+    expect(mock.session.create).toHaveBeenCalledTimes(2);
+    for (const call of mock.session.create.mock.calls)
+      expect(call[0].query.directory).toBe(WORKTREE);
+    for (const call of mock.session.prompt.mock.calls)
+      expect(call[0].query.directory).toBe(WORKTREE);
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.gatherer).toBeUndefined();
+    // Reviewer brief points at the snapshot, not embedded context.
+    const brief = mock.session.prompt.mock.calls[0][0].body.parts[0].text;
+    expect(brief).toContain("isolated git worktree snapshot");
+    expect(brief).not.toContain("Shared target context");
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+  });
+
+  it("forwards context as notes and never embeds it in briefs", async () => {
+    const mock = client();
+    const { tool, runPrAdapter } = legacyPrTool(mock);
+
+    await tool.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+        context: "watch the auth rewrite",
+      },
+      context(),
+    );
+
+    expect(runPrAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ notes: "watch the auth rewrite" }),
+    );
+    const brief = mock.session.prompt.mock.calls[0][0].body.parts[0].text;
+    expect(brief).not.toContain("watch the auth rewrite");
+    expect(brief).not.toContain("Shared target context");
+  });
+
+  it("fails before reviewer sessions on adapter failure and retains the snapshot", async () => {
+    const mock = client();
+    const failing = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "gh not authenticated",
+      snapshotPath: "/state/failed/worktree",
+    });
+    const { tool, removeSnapshot } = legacyPrTool(mock, {
+      runPrAdapter: failing,
+    });
+
+    await expect(
+      tool.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    ).rejects.toThrow(
+      "gh not authenticated (snapshot retained at /state/failed/worktree)",
+    );
+    expect(mock.session.create).not.toHaveBeenCalled();
+    expect(removeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy targets unchanged", async () => {
+    const mock = client();
+    const legacyClassify = vi.fn().mockResolvedValue({ kind: "legacy" });
+    const { tool, runPrAdapter, removeSnapshot } = legacyPrTool(mock, {
+      classify: legacyClassify,
+    });
+
+    const result = await tool.execute(
+      {
+        target: "main...HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+
+    expect(runPrAdapter).not.toHaveBeenCalled();
+    expect(removeSnapshot).not.toHaveBeenCalled();
+    // Legacy gather phase: gatherer session first, then reviewer, then judge.
+    expect(mock.session.create.mock.calls[0][0].query.directory).toBe("/repo");
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.gatherer).toMatchObject({ status: "succeeded" });
+  });
+});

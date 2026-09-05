@@ -265,13 +265,20 @@ describe("workflow generator", () => {
       "a configured `gitcodeCli` must not change GitHub fetching",
     );
     expect(openCrossReview).toContain(
-      "Always pass the result as `context`, including when `judgeModel` is configured",
+      "materializes an isolated snapshot worktree at the PR head",
+    );
+    expect(openCrossReview).toContain("never a fetched PR diff");
+    expect(openCrossReview).toContain(
+      "the parent must not fall back to `gh` or fetch the PR itself",
     );
     expect(openCrossReview).toContain(
-      "do not fall back to `gh` for a GitCode target",
+      'reports the gatherer as `kind: "adapter"`',
     );
     expect(openCrossReview).toContain(
-      "GitCode targets must always supply that `context`, even when a judge model is configured",
+      "the parent must not fetch the PR diff into `context`",
+    );
+    expect(openCrossReview).not.toContain(
+      "GitCode targets must always supply that `context`",
     );
     expect(openCrossReview).toContain(
       "If `cross_review_start` reports that no review models are configured",
@@ -295,6 +302,9 @@ describe("workflow generator", () => {
     );
     expect(openAgent).toContain(
       "When asked to gather review context, inspect the target and return one self-contained context block",
+    );
+    expect(openAgent).toContain(
+      "treat only that worktree as evidence; do not treat any other checkout as evidence",
     );
     expect(openAgent).toContain("mode: subagent");
     expect(openAgent).toContain("edit: deny");

@@ -1,12 +1,37 @@
+import { randomUUID } from "node:crypto";
 import { tool } from "@opencode-ai/plugin";
 import { assertPrimarySession } from "../primary-session.js";
 import {
+  findGitRoot,
   loadCrossReviewConfig,
   MODEL_ID,
   validateCrossReviewOverrides,
   type CrossReviewConfig,
   type LoadedCrossReviewConfig,
 } from "./config.js";
+import {
+  classifyPrTargetInRepository,
+  type PrTargetClassification,
+} from "./pr-target.js";
+import {
+  createDefaultPrAdapterRunner,
+  defaultRemoveSnapshot,
+  snapshotPaths,
+  type PrAdapterRunner,
+  type SnapshotRemover,
+} from "./pr-gather.js";
+import { defaultCrossReviewStateDirectory } from "./run-store.js";
+
+/** Injection points for the legacy tool's PR snapshot path (tests). */
+export type LegacyPrSnapshotOptions = {
+  classifyTarget?: (
+    target: string,
+    directory: string,
+  ) => Promise<PrTargetClassification>;
+  runPrAdapter?: PrAdapterRunner;
+  stateRoot?: string;
+  removeSnapshot?: SnapshotRemover;
+};
 
 export const REVIEWER_AGENT = "cross-reviewer";
 const DEFAULT_AGENTS = 3;
@@ -203,6 +228,39 @@ export function gatherBrief(target: string) {
   ].join("\n");
 }
 
+/**
+ * Brief for classified pull-request snapshot runs: the current directory is
+ * the pinned PR head worktree, and evidence is the worktree plus the
+ * `.cross-review/` contract files. Never embeds the diff or caller context.
+ */
+export function prSnapshotReviewBrief(target: string, focus?: string) {
+  return [
+    "Independently review the specified pull request. Remain read-only.",
+    `Target: ${target}`,
+    ...(focus === undefined ? [] : [`Focus: ${focus}`]),
+    "The current directory is an isolated git worktree snapshot at the pull request head commit. Treat only this worktree as evidence.",
+    "Evidence sources (read them from the current directory):",
+    "- Worktree files at the PR head (the exact code under review).",
+    "- .cross-review/meta.json (forge, canonical URL, base/head/merge-base SHAs).",
+    "- .cross-review/diff.patch (the complete authoritative diff).",
+    "- .cross-review/pr.md (title and description).",
+    "- .cross-review/notes.md (caller notes), when present.",
+    "Do not treat any other checkout or directory as evidence.",
+    "Prioritize correctness defects, security risks, behavioral regressions, and missing tests.",
+    "Verify each finding against repository evidence. Report only actionable findings with severity and file/line references; state explicitly when there are no findings.",
+    "Return only your review. Do not inspect or infer any other reviewer's output.",
+  ].join("\n");
+}
+
+/** Judge prompt prefix for classified pull-request snapshot runs. */
+export function prSnapshotJudgeBrief(target: string) {
+  return [
+    "Act as the read-only cross-review judge.",
+    `Target: ${target}`,
+    "The current directory is an isolated git worktree snapshot at the pull request head commit. Evidence is this worktree plus .cross-review/ (meta.json, diff.patch, pr.md, optional notes.md). Do not treat any other checkout as evidence.",
+  ].join("\n");
+}
+
 export function resolveReviewers(
   args: {
     reviewModels?: string[] | undefined;
@@ -299,7 +357,16 @@ async function runLimited<T>(
 export function createCrossReviewTool(
   client: CrossReviewClient,
   loadConfig: CrossReviewConfigLoader = loadCrossReviewConfig,
+  prSnapshotOptions: LegacyPrSnapshotOptions = {},
 ) {
+  const classifyTarget =
+    prSnapshotOptions.classifyTarget ?? classifyPrTargetInRepository;
+  const runPrAdapter =
+    prSnapshotOptions.runPrAdapter ?? createDefaultPrAdapterRunner();
+  const stateRoot =
+    prSnapshotOptions.stateRoot ?? defaultCrossReviewStateDirectory();
+  const removeSnapshot =
+    prSnapshotOptions.removeSnapshot ?? defaultRemoveSnapshot;
   return tool({
     description:
       "Legacy blocking cross-review entry point; invoke only with explicit user review intent from primary sessions and prefer cross_review_start/status/finalize",
@@ -325,12 +392,16 @@ export function createCrossReviewTool(
         context.abort,
       );
       const sessions = new Set<string>();
+      // Child sessions live in the PR snapshot worktree once one exists; the
+      // abort path must target the same directory the sessions were created
+      // in.
+      let childSessionDirectory = context.directory;
       const abortSessions = () => {
         for (const id of sessions)
           void client.session
             .abort({
               path: { id },
-              query: { directory: context.directory },
+              query: { directory: childSessionDirectory },
             })
             .catch(() => undefined);
       };
@@ -449,129 +520,229 @@ export function createCrossReviewTool(
           args.context === undefined || args.context.length === 0
             ? undefined
             : args.context;
-        if (judgeModel !== undefined && providedContext === undefined) {
-          const parsedJudgeModel = parsedModels.get(judgeModel);
-          if (parsedJudgeModel === undefined)
-            throw new Error(`Unvalidated judge model: ${judgeModel}`);
-          throwIfCancelled();
-          const session = responseData(
-            await client.session.create({
-              body: {
-                parentID: context.sessionID,
-                title: `Cross-review gather: ${args.target}`,
-              },
-              query: { directory: context.directory },
-              signal: context.abort,
-            }),
-            "Gather session creation",
-          );
-          judgeSessionID = session.id;
-          sessions.add(session.id);
-          try {
+
+        // Classified pull requests are materialized as a snapshot worktree
+        // before any reviewer session exists (fail closed, no LLM gatherer).
+        const classification = await classifyTarget(
+          args.target,
+          context.directory,
+        );
+        if (classification.kind === "error")
+          throw new Error(classification.message);
+        let prSnapshot:
+          | {
+              worktree: string;
+              snapshotDir: string;
+              forge: "github" | "gitcode";
+            }
+          | undefined;
+        if (classification.kind === "pr") {
+          const repo =
+            (await findGitRoot(context.directory)) ?? context.directory;
+          const gatherRunID = randomUUID();
+          const gather = await runPrAdapter({
+            forge: classification.forge,
+            repo,
+            target: args.target,
+            runID: gatherRunID,
+            stateRoot,
+            ...(providedContext === undefined
+              ? {}
+              : { notes: providedContext }),
+            ...(config.gitcodeCli === undefined
+              ? {}
+              : { gitcodeCli: config.gitcodeCli }),
+          }).catch((error: unknown) => ({
+            ok: false as const,
+            error: errorMessage(error),
+            snapshotPath: snapshotPaths(stateRoot, gatherRunID).worktree,
+          }));
+          if (!gather.ok) {
+            // The retained snapshot stays for diagnosis (S5).
+            throw new Error(
+              `${gather.error}${gather.snapshotPath === undefined ? "" : ` (snapshot retained at ${gather.snapshotPath})`}`,
+            );
+          }
+          prSnapshot = {
+            worktree: gather.worktree,
+            snapshotDir: gather.snapshotDir,
+            forge: classification.forge,
+          };
+        }
+        // PR snapshot runs use the worktree as the child session directory
+        // and the snapshot briefs; caller context is already notes.md.
+        const sessionRoot = prSnapshot?.worktree ?? context.directory;
+        childSessionDirectory = sessionRoot;
+        let completed = false;
+        try {
+          if (
+            judgeModel !== undefined &&
+            providedContext === undefined &&
+            prSnapshot === undefined
+          ) {
+            const parsedJudgeModel = parsedModels.get(judgeModel);
+            if (parsedJudgeModel === undefined)
+              throw new Error(`Unvalidated judge model: ${judgeModel}`);
             throwIfCancelled();
-            const output = promptOutput(
-              await client.session.prompt({
+            const session = responseData(
+              await client.session.create({
                 body: {
-                  agent: REVIEWER_AGENT,
-                  model: parsedJudgeModel,
-                  parts: [{ type: "text", text: gatherBrief(args.target) }],
-                  tools: READ_ONLY_TOOLS,
+                  parentID: context.sessionID,
+                  title: `Cross-review gather: ${args.target}`,
                 },
-                path: { id: session.id },
                 query: { directory: context.directory },
                 signal: context.abort,
               }),
-              "Gather prompt",
+              "Gather session creation",
             );
-            throwIfCancelled();
-            gatheredContext = output;
-            gatherer = {
-              model: judgeModel,
-              status: "succeeded",
-              output,
-            };
-          } catch (error) {
-            gatherer = {
-              model: judgeModel,
-              status: "failed",
-              error: errorMessage(error),
-            };
-          }
-        }
-
-        const gathered = providedContext ?? gatheredContext;
-        const brief = reviewBrief(args.target, sharedFocus, gathered);
-        const reviewerResults = await runLimited(
-          reviewers.length,
-          maxConcurrency,
-          async (index): Promise<ReviewerResult> => {
-            const reviewer = reviewers[index];
-            if (reviewer === undefined)
-              throw new Error(`Missing reviewer ${index + 1}`);
-            const parsedModel = parsedModels.get(reviewer.model);
-            if (parsedModel === undefined)
-              throw new Error(`Unvalidated reviewer model: ${reviewer.model}`);
-            let sessionID: string | undefined;
+            judgeSessionID = session.id;
+            sessions.add(session.id);
             try {
               throwIfCancelled();
-              const session = responseData(
-                await client.session.create({
+              const output = promptOutput(
+                await client.session.prompt({
                   body: {
-                    parentID: context.sessionID,
-                    title: `Cross-review ${index + 1}: ${args.target}`,
+                    agent: REVIEWER_AGENT,
+                    model: parsedJudgeModel,
+                    parts: [{ type: "text", text: gatherBrief(args.target) }],
+                    tools: READ_ONLY_TOOLS,
                   },
+                  path: { id: session.id },
                   query: { directory: context.directory },
                   signal: context.abort,
                 }),
-                "Reviewer session creation",
+                "Gather prompt",
               );
-              sessionID = session.id;
-              sessions.add(session.id);
-              progress[index] = {
-                reviewer: index + 1,
-                model: reviewer.model,
-                ...(reviewer.focus === undefined
-                  ? {}
-                  : { focus: reviewer.focus }),
-                sessionID: session.id,
-                status: "running",
+              throwIfCancelled();
+              gatheredContext = output;
+              gatherer = {
+                model: judgeModel,
+                status: "succeeded",
+                output,
               };
-              publishProgress("reviewing");
+            } catch (error) {
+              gatherer = {
+                model: judgeModel,
+                status: "failed",
+                error: errorMessage(error),
+              };
+            }
+          }
+
+          const gathered = providedContext ?? gatheredContext;
+          const brief =
+            prSnapshot === undefined
+              ? reviewBrief(args.target, sharedFocus, gathered)
+              : prSnapshotReviewBrief(args.target, sharedFocus);
+          const reviewerResults = await runLimited(
+            reviewers.length,
+            maxConcurrency,
+            async (index): Promise<ReviewerResult> => {
+              const reviewer = reviewers[index];
+              if (reviewer === undefined)
+                throw new Error(`Missing reviewer ${index + 1}`);
+              const parsedModel = parsedModels.get(reviewer.model);
+              if (parsedModel === undefined)
+                throw new Error(
+                  `Unvalidated reviewer model: ${reviewer.model}`,
+                );
+              let sessionID: string | undefined;
               try {
                 throwIfCancelled();
-                const output = promptOutput(
-                  await client.session.prompt({
+                const session = responseData(
+                  await client.session.create({
                     body: {
-                      agent: REVIEWER_AGENT,
-                      model: parsedModel,
-                      parts: [
-                        {
-                          type: "text",
-                          text: reviewBrief(
-                            args.target,
-                            reviewer.focus,
-                            gathered,
-                          ),
-                        },
-                      ],
-                      tools: READ_ONLY_TOOLS,
+                      parentID: context.sessionID,
+                      title: `Cross-review ${index + 1}: ${args.target}`,
                     },
-                    path: { id: session.id },
-                    query: { directory: context.directory },
+                    query: { directory: sessionRoot },
                     signal: context.abort,
                   }),
-                  "Reviewer prompt",
+                  "Reviewer session creation",
                 );
-                throwIfCancelled();
-                const result: ReviewerResult = {
+                sessionID = session.id;
+                sessions.add(session.id);
+                progress[index] = {
                   reviewer: index + 1,
                   model: reviewer.model,
                   ...(reviewer.focus === undefined
                     ? {}
                     : { focus: reviewer.focus }),
                   sessionID: session.id,
-                  status: "succeeded",
-                  output,
+                  status: "running",
+                };
+                publishProgress("reviewing");
+                try {
+                  throwIfCancelled();
+                  const output = promptOutput(
+                    await client.session.prompt({
+                      body: {
+                        agent: REVIEWER_AGENT,
+                        model: parsedModel,
+                        parts: [
+                          {
+                            type: "text",
+                            text:
+                              prSnapshot === undefined
+                                ? reviewBrief(
+                                    args.target,
+                                    reviewer.focus,
+                                    gathered,
+                                  )
+                                : prSnapshotReviewBrief(
+                                    args.target,
+                                    reviewer.focus,
+                                  ),
+                          },
+                        ],
+                        tools: READ_ONLY_TOOLS,
+                      },
+                      path: { id: session.id },
+                      query: { directory: sessionRoot },
+                      signal: context.abort,
+                    }),
+                    "Reviewer prompt",
+                  );
+                  throwIfCancelled();
+                  const result: ReviewerResult = {
+                    reviewer: index + 1,
+                    model: reviewer.model,
+                    ...(reviewer.focus === undefined
+                      ? {}
+                      : { focus: reviewer.focus }),
+                    sessionID: session.id,
+                    status: "succeeded",
+                    output,
+                  };
+                  progress[index] = {
+                    reviewer: result.reviewer,
+                    model: result.model,
+                    ...(result.focus === undefined
+                      ? {}
+                      : { focus: result.focus }),
+                    sessionID: session.id,
+                    status: result.status,
+                  };
+                  publishProgress("reviewing");
+                  return result;
+                } finally {
+                  sessions.delete(session.id);
+                }
+              } catch (error) {
+                const result: ReviewerResult = {
+                  reviewer: index + 1,
+                  model: reviewer.model,
+                  ...(reviewer.focus === undefined
+                    ? {}
+                    : { focus: reviewer.focus }),
+                  ...(sessionID === undefined ? {} : { sessionID }),
+                  status:
+                    context.abort.aborted ||
+                    (error instanceof Error &&
+                      error.name === "MessageAbortedError")
+                      ? "cancelled"
+                      : "failed",
+                  error: errorMessage(error),
                 };
                 progress[index] = {
                   reviewer: result.reviewer,
@@ -579,206 +750,195 @@ export function createCrossReviewTool(
                   ...(result.focus === undefined
                     ? {}
                     : { focus: result.focus }),
-                  sessionID: session.id,
+                  ...(result.sessionID === undefined
+                    ? {}
+                    : { sessionID: result.sessionID }),
                   status: result.status,
                 };
                 publishProgress("reviewing");
                 return result;
+              }
+            },
+            () => context.abort.aborted,
+          );
+
+          if (context.abort.aborted) throw new Error("Cross-review cancelled");
+          const successful = reviewerResults.filter(
+            (reviewer) => reviewer.status === "succeeded",
+          );
+          const quorum = Math.floor(reviewers.length / 2) + 1;
+          if (successful.length < quorum) {
+            publishProgress("failed");
+            return {
+              title: `Cross-review failed: ${args.target}`,
+              output: JSON.stringify({
+                ...(warning === undefined ? {} : { warning }),
+                target: args.target,
+                brief,
+                quorum,
+                status: "quorum-not-met",
+                reviewers: reviewerResults,
+              }),
+              metadata: {
+                requestedReviewers: reviewers.length,
+                successfulReviewers: successful.length,
+                failedReviewers: reviewers.length - successful.length,
+                quorum,
+                error: "quorum-not-met",
+                configSources: loaded.sources,
+                projectConfigPath: loaded.projectPath,
+                globalConfigPath: loaded.globalPath,
+              },
+            };
+          }
+
+          let judge:
+            | {
+                model: string;
+                sessionID: string;
+                status: "succeeded";
+                output: string;
+              }
+            | undefined;
+          if (judgeModel !== undefined) {
+            throwIfCancelled();
+            const parsedJudgeModel = parsedModels.get(judgeModel);
+            if (parsedJudgeModel === undefined)
+              throw new Error(`Unvalidated judge model: ${judgeModel}`);
+            judgeProgress = { model: judgeModel, status: "starting" };
+            publishProgress("judging");
+            try {
+              let session: { id: string };
+              if (judgeSessionID === undefined) {
+                session = responseData(
+                  await client.session.create({
+                    body: {
+                      parentID: context.sessionID,
+                      title: `Cross-review judge: ${args.target}`,
+                    },
+                    query: { directory: sessionRoot },
+                    signal: context.abort,
+                  }),
+                  "Judge session creation",
+                );
+                sessions.add(session.id);
+              } else {
+                session = { id: judgeSessionID };
+              }
+              judgeProgress = {
+                model: judgeModel,
+                sessionID: session.id,
+                status: "running",
+              };
+              publishProgress("judging");
+              throwIfCancelled();
+              try {
+                const output = promptOutput(
+                  await client.session.prompt({
+                    body: {
+                      agent: REVIEWER_AGENT,
+                      model: parsedJudgeModel,
+                      parts: [
+                        {
+                          type: "text",
+                          text: [
+                            prSnapshot === undefined
+                              ? "Act as the read-only cross-review judge."
+                              : prSnapshotJudgeBrief(args.target),
+                            prSnapshot === undefined
+                              ? `Target: ${args.target}`
+                              : "",
+                            ...(prSnapshot !== undefined
+                              ? []
+                              : providedContext === undefined
+                                ? []
+                                : [
+                                    "Shared target context (already gathered; verify findings against it):",
+                                    embeddedContext(providedContext) ?? "",
+                                  ]),
+                            "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
+                            "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
+                            JSON.stringify(successful),
+                          ]
+                            .filter((line) => line.length > 0)
+                            .join("\n"),
+                        },
+                      ],
+                      tools: READ_ONLY_TOOLS,
+                    },
+                    path: { id: session.id },
+                    query: { directory: sessionRoot },
+                    signal: context.abort,
+                  }),
+                  "Judge prompt",
+                );
+                throwIfCancelled();
+                judge = {
+                  model: judgeModel,
+                  sessionID: session.id,
+                  status: "succeeded",
+                  output,
+                };
+                judgeProgress = {
+                  model: judge.model,
+                  sessionID: judge.sessionID,
+                  status: judge.status,
+                };
+                publishProgress("judging");
               } finally {
                 sessions.delete(session.id);
               }
             } catch (error) {
-              const result: ReviewerResult = {
-                reviewer: index + 1,
-                model: reviewer.model,
-                ...(reviewer.focus === undefined
-                  ? {}
-                  : { focus: reviewer.focus }),
-                ...(sessionID === undefined ? {} : { sessionID }),
+              judgeProgress = {
+                ...judgeProgress,
+                model: judgeModel,
                 status:
                   context.abort.aborted ||
                   (error instanceof Error &&
                     error.name === "MessageAbortedError")
                     ? "cancelled"
                     : "failed",
-                error: errorMessage(error),
               };
-              progress[index] = {
-                reviewer: result.reviewer,
-                model: result.model,
-                ...(result.focus === undefined ? {} : { focus: result.focus }),
-                ...(result.sessionID === undefined
-                  ? {}
-                  : { sessionID: result.sessionID }),
-                status: result.status,
-              };
-              publishProgress("reviewing");
-              return result;
+              publishProgress("failed");
+              throw error;
             }
-          },
-          () => context.abort.aborted,
-        );
+          }
 
-        if (context.abort.aborted) throw new Error("Cross-review cancelled");
-        const successful = reviewerResults.filter(
-          (reviewer) => reviewer.status === "succeeded",
-        );
-        const quorum = Math.floor(reviewers.length / 2) + 1;
-        if (successful.length < quorum) {
-          publishProgress("failed");
+          const result = {
+            ...(warning === undefined ? {} : { warning }),
+            target: args.target,
+            brief,
+            quorum,
+            ...(gatherer === undefined ? {} : { gatherer }),
+            reviewers: reviewerResults,
+            judge: judge ?? {
+              model: "parent-session",
+              status: "pending-parent-consolidation",
+            },
+          };
+          publishProgress("completed");
+          completed = true;
           return {
-            title: `Cross-review failed: ${args.target}`,
-            output: JSON.stringify({
-              ...(warning === undefined ? {} : { warning }),
-              target: args.target,
-              brief,
-              quorum,
-              status: "quorum-not-met",
-              reviewers: reviewerResults,
-            }),
+            title: `Cross-review: ${args.target}`,
+            output: JSON.stringify(result),
             metadata: {
               requestedReviewers: reviewers.length,
               successfulReviewers: successful.length,
               failedReviewers: reviewers.length - successful.length,
               quorum,
-              error: "quorum-not-met",
+              judgeModel: judgeModel ?? "parent-session",
               configSources: loaded.sources,
               projectConfigPath: loaded.projectPath,
               globalConfigPath: loaded.globalPath,
             },
           };
+        } finally {
+          // Successful completion and cancellation remove the snapshot
+          // worktree (R6); failures and quorum misses retain it for
+          // diagnosis.
+          if (prSnapshot !== undefined && (completed || context.abort.aborted))
+            await removeSnapshot(prSnapshot.worktree).catch(() => undefined);
         }
-
-        let judge:
-          | {
-              model: string;
-              sessionID: string;
-              status: "succeeded";
-              output: string;
-            }
-          | undefined;
-        if (judgeModel !== undefined) {
-          throwIfCancelled();
-          const parsedJudgeModel = parsedModels.get(judgeModel);
-          if (parsedJudgeModel === undefined)
-            throw new Error(`Unvalidated judge model: ${judgeModel}`);
-          judgeProgress = { model: judgeModel, status: "starting" };
-          publishProgress("judging");
-          try {
-            let session: { id: string };
-            if (judgeSessionID === undefined) {
-              session = responseData(
-                await client.session.create({
-                  body: {
-                    parentID: context.sessionID,
-                    title: `Cross-review judge: ${args.target}`,
-                  },
-                  query: { directory: context.directory },
-                  signal: context.abort,
-                }),
-                "Judge session creation",
-              );
-              sessions.add(session.id);
-            } else {
-              session = { id: judgeSessionID };
-            }
-            judgeProgress = {
-              model: judgeModel,
-              sessionID: session.id,
-              status: "running",
-            };
-            publishProgress("judging");
-            throwIfCancelled();
-            try {
-              const output = promptOutput(
-                await client.session.prompt({
-                  body: {
-                    agent: REVIEWER_AGENT,
-                    model: parsedJudgeModel,
-                    parts: [
-                      {
-                        type: "text",
-                        text: [
-                          "Act as the read-only cross-review judge.",
-                          `Target: ${args.target}`,
-                          ...(providedContext === undefined
-                            ? []
-                            : [
-                                "Shared target context (already gathered; verify findings against it):",
-                                embeddedContext(providedContext) ?? "",
-                              ]),
-                          "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
-                          "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
-                          JSON.stringify(successful),
-                        ].join("\n"),
-                      },
-                    ],
-                    tools: READ_ONLY_TOOLS,
-                  },
-                  path: { id: session.id },
-                  query: { directory: context.directory },
-                  signal: context.abort,
-                }),
-                "Judge prompt",
-              );
-              throwIfCancelled();
-              judge = {
-                model: judgeModel,
-                sessionID: session.id,
-                status: "succeeded",
-                output,
-              };
-              judgeProgress = {
-                model: judge.model,
-                sessionID: judge.sessionID,
-                status: judge.status,
-              };
-              publishProgress("judging");
-            } finally {
-              sessions.delete(session.id);
-            }
-          } catch (error) {
-            judgeProgress = {
-              ...judgeProgress,
-              model: judgeModel,
-              status:
-                context.abort.aborted ||
-                (error instanceof Error && error.name === "MessageAbortedError")
-                  ? "cancelled"
-                  : "failed",
-            };
-            publishProgress("failed");
-            throw error;
-          }
-        }
-
-        const result = {
-          ...(warning === undefined ? {} : { warning }),
-          target: args.target,
-          brief,
-          quorum,
-          ...(gatherer === undefined ? {} : { gatherer }),
-          reviewers: reviewerResults,
-          judge: judge ?? {
-            model: "parent-session",
-            status: "pending-parent-consolidation",
-          },
-        };
-        publishProgress("completed");
-        return {
-          title: `Cross-review: ${args.target}`,
-          output: JSON.stringify(result),
-          metadata: {
-            requestedReviewers: reviewers.length,
-            successfulReviewers: successful.length,
-            failedReviewers: reviewers.length - successful.length,
-            quorum,
-            judgeModel: judgeModel ?? "parent-session",
-            configSources: loaded.sources,
-            projectConfigPath: loaded.projectPath,
-            globalConfigPath: loaded.globalPath,
-          },
-        };
       } finally {
         context.abort.removeEventListener("abort", abortSessions);
       }

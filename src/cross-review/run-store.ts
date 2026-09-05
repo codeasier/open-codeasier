@@ -11,8 +11,9 @@ import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { lock } from "proper-lockfile";
+import { defaultRemoveSnapshot } from "./pr-gather.js";
 
-export const RUN_SCHEMA_VERSION = 3;
+export const RUN_SCHEMA_VERSION = 4;
 export const RUN_ID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -95,6 +96,19 @@ export type GathererRun = {
   error?: string;
 };
 
+/**
+ * Adapter-based gatherer for classified pull requests: no LLM session, no
+ * model, no reviewer concurrency slot, and never `timeout_pending`.
+ */
+export type AdapterGathererRun = {
+  kind: "adapter";
+  forge: "github" | "gitcode";
+  status: "succeeded" | "failed";
+  startedAt?: number;
+  completedAt?: number;
+  error?: string;
+};
+
 export type CrossReviewRunPhase =
   | "gathering"
   | "reviewing"
@@ -125,6 +139,20 @@ export type CrossReviewRun = {
   globalConfigPath: string;
   reviewers: ReviewerRun[];
   gatherer?: GathererRun;
+  /** Present only for classified pull-request snapshot runs. */
+  snapshot?: {
+    /** Detached worktree at the PR head SHA; reviewer/judge `query.directory`. */
+    worktree: string;
+    /** `.cross-review` contract directory inside the worktree. */
+    snapshotDir: string;
+    forge: "github" | "gitcode";
+    /** Canonical PR URL; unknown when the adapter failed early. */
+    url?: string;
+    headSha?: string;
+    mergeBaseSha?: string;
+  };
+  /** Adapter gatherer (classified PRs); never an LLM session. */
+  adapterGatherer?: AdapterGathererRun;
   judge?: JudgeRun;
   finalResult?: Record<string, unknown>;
 };
@@ -220,6 +248,9 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
   constructor(
     private readonly root = defaultCrossReviewStateDirectory(),
     private readonly now: () => number = Date.now,
+    private readonly removeSnapshot: (
+      worktree: string,
+    ) => Promise<void> = defaultRemoveSnapshot,
   ) {}
 
   private runPath(runID: string) {
@@ -336,8 +367,14 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
           continue;
         release = await this.acquire(runID, 0);
         const run = parseRun(path, await readFile(path, "utf8"));
-        if (TERMINAL_PHASES.has(run.phase) && run.updatedAt < cutoff)
+        if (TERMINAL_PHASES.has(run.phase) && run.updatedAt < cutoff) {
+          // A failed run may still hold its snapshot worktree; remove it
+          // (worktree-aware) before the manifest is unlinked so git
+          // metadata never leaks.
+          if (run.snapshot !== undefined)
+            await this.removeSnapshot(run.snapshot.worktree);
           await unlink(path);
+        }
       } catch {
         // A corrupt or concurrently replaced manifest is left for diagnosis.
       } finally {
