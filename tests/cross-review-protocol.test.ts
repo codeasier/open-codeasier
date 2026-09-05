@@ -2618,3 +2618,634 @@ describe("cross_review_config preview", () => {
     expect(client.session.create).not.toHaveBeenCalled();
   });
 });
+
+describe("cross-review PR snapshot protocol", () => {
+  const WORKTREE = "/state/run/worktree";
+  const SNAPSHOT_DIR = `${WORKTREE}/.cross-review`;
+
+  function okAdapter() {
+    return vi.fn().mockResolvedValue({
+      ok: true,
+      worktree: WORKTREE,
+      snapshotDir: SNAPSHOT_DIR,
+      meta: {
+        schemaVersion: 1,
+        forge: "github",
+        target: "https://github.com/org/repo/pull/69",
+        url: "https://github.com/org/repo/pull/69",
+        baseSha: "a".repeat(40),
+        headSha: "b".repeat(40),
+        mergeBaseSha: "c".repeat(40),
+        fetchedAt: "2026-09-05T00:00:00.000Z",
+      },
+    });
+  }
+
+  function prProtocol(
+    client: AsyncCrossReviewClient,
+    store: CrossReviewRunStore,
+    classifyTarget: (target: string, directory: string) => Promise<any>,
+    runPrAdapter = okAdapter(),
+    removeSnapshot: (worktree: string) => Promise<void> = vi.fn(),
+    loadConfig: () => Promise<LoadedCrossReviewConfig> = loadedConfig,
+  ) {
+    // Child sessions report themselves bound to the snapshot worktree so
+    // the S10 directory assertion passes; hostile-binding tests override
+    // `session.get` themselves.
+    client.session.get = vi
+      .fn()
+      .mockImplementation(async (input: any) =>
+        input.path.id.startsWith("child-")
+          ? { data: { id: input.path.id, directory: WORKTREE } }
+          : { data: { id: input.path.id } },
+      );
+    const tools = createCrossReviewProtocolTools(client, {
+      store,
+      loadConfig,
+      now: () => 1_000,
+      createRunID: () => RUN_ID,
+      canonicalize: async (directory) => directory,
+      defaultWaitMs: 0,
+      classifyTarget,
+      runPrAdapter,
+      stateRoot: "/state",
+      removeSnapshot,
+    });
+    return { tools, runPrAdapter, removeSnapshot };
+  }
+
+  it("runs the adapter and binds reviewer sessions to the snapshot worktree (S1)", async () => {
+    const { client, messages } = mockClient();
+    const store = new MemoryRunStore();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const { tools, runPrAdapter } = prProtocol(
+      client,
+      store,
+      classify,
+      okAdapter(),
+    );
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    );
+
+    expect(runPrAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forge: "github",
+        target: "https://github.com/org/repo/pull/69",
+        runID: RUN_ID,
+        stateRoot: "/state",
+      }),
+    );
+    // PR runs never create an LLM gatherer session: one reviewer + one judge.
+    expect(client.session.create).toHaveBeenCalledTimes(2);
+    for (const call of client.session.create.mock.calls)
+      expect(call[0].query.directory).toBe(WORKTREE);
+    expect(started.phase).toBe("reviewing");
+    expect(started.gatherer).toMatchObject({
+      kind: "adapter",
+      forge: "github",
+    });
+    expect(started.snapshot).toMatchObject({
+      worktree: WORKTREE,
+      forge: "github",
+    });
+
+    const run = store.runs.get(RUN_ID);
+    expect(run?.snapshot).toMatchObject({ worktree: WORKTREE });
+    expect(run?.gatherer).toBeUndefined();
+    expect(run?.adapterGatherer).toMatchObject({
+      kind: "adapter",
+      status: "succeeded",
+    });
+
+    // Reviewer prompts use the snapshot directory and the snapshot brief.
+    const prompt = client.session.promptAsync.mock.calls[0][0];
+    expect(prompt.query.directory).toBe(WORKTREE);
+    expect(prompt.body.parts[0].text).toContain(
+      "isolated git worktree snapshot",
+    );
+    expect(prompt.body.parts[0].text).not.toContain("Shared target context");
+
+    messages.set("child-1", completed("snapshot review"));
+    const status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, includeOutputs: true },
+        context(),
+      ),
+    );
+    expect(status.reviewers[0]).toMatchObject({
+      status: "succeeded",
+      output: "snapshot review",
+    });
+    expect(client.session.messages.mock.calls[0][0].query.directory).toBe(
+      WORKTREE,
+    );
+  });
+
+  it("forwards caller context as adapter notes without embedding it in briefs (S2)", async () => {
+    const { client } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const { tools, runPrAdapter } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+    );
+
+    await tools.cross_review_start.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+        context: "watch the auth rewrite",
+      },
+      context(),
+    );
+
+    expect(runPrAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ notes: "watch the auth rewrite" }),
+    );
+    const brief =
+      client.session.promptAsync.mock.calls[0][0].body.parts[0].text;
+    expect(brief).not.toContain("watch the auth rewrite");
+    expect(brief).not.toContain("Shared target context");
+  });
+
+  it("routes gitcode PRs to the adapter with gitcodeCli (S3)", async () => {
+    const { client } = mockClient();
+    const gitcodeConfig = () =>
+      Promise.resolve({
+        config: { gitcodeCli: "/opt/bin/gitcode" },
+        sources: { project: "loaded", global: "absent" },
+        projectPath: "/repo/.opencode/cross-review.json",
+        globalPath: "/home/.config/opencode/cross-review.json",
+      } as LoadedCrossReviewConfig);
+    const classify = vi
+      .fn()
+      .mockResolvedValue({ kind: "pr", forge: "gitcode" });
+    const { tools, runPrAdapter } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+      okAdapter(),
+      vi.fn(),
+      gitcodeConfig,
+    );
+
+    await tools.cross_review_start.execute(
+      {
+        target: "https://gitcode.com/org/repo/pull/5",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+
+    expect(runPrAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forge: "gitcode",
+        gitcodeCli: "/opt/bin/gitcode",
+      }),
+    );
+  });
+
+  it("persists a failed run, retains the snapshot, and creates no sessions on adapter failure (S5)", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const failing = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "gh not authenticated",
+      snapshotPath: WORKTREE,
+    });
+    const { tools, removeSnapshot } = prProtocol(
+      client,
+      store,
+      classify,
+      failing,
+    );
+
+    await expect(
+      tools.cross_review_start.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    ).rejects.toThrow(
+      "gh not authenticated (snapshot retained at /state/run/worktree)",
+    );
+    expect(client.session.create).not.toHaveBeenCalled();
+    expect(removeSnapshot).not.toHaveBeenCalled();
+    const run = store.runs.get(RUN_ID);
+    expect(run).toMatchObject({
+      phase: "failed",
+      reviewers: [],
+    });
+    // The manifest pins the runner-reported retained path (reality), not
+    // the derived stateRoot/runID layout, so cleanup removes the right
+    // directory even with a custom adapter runner.
+    expect(run?.snapshot).toMatchObject({
+      worktree: WORKTREE,
+    });
+    // The snapshotDir derives from the reported worktree, preserving the
+    // snapshotDir == join(worktree, ".cross-review") invariant.
+    expect(run?.snapshot).toMatchObject({
+      snapshotDir: `${WORKTREE}/.cross-review`,
+    });
+    expect(run?.adapterGatherer).toMatchObject({
+      kind: "adapter",
+      status: "failed",
+    });
+  });
+
+  it("finalize reports a definite failure for terminal failed manifests, not still-running", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    // Simulate a failed manifest persisted by an earlier gather failure: a
+    // terminal phase with no finalResult (the legacy tool and the failed
+    // gather path both persist this shape).
+    await store.create({
+      schemaVersion: 1,
+      runID: RUN_ID,
+      directory: "/repo",
+      ownerSessionID: "parent",
+      createdAt: 1_000,
+      updatedAt: 1_000,
+      phase: "failed",
+      target: "https://github.com/org/repo/pull/69",
+      brief: "PR snapshot run failed: gh not authenticated",
+      quorum: 1,
+      maxConcurrency: 1,
+      reviewerTimeoutMs: 0,
+      configSources: { project: "loaded", global: "absent" },
+      projectConfigPath: "/repo/.opencode/cross-review.json",
+      globalConfigPath: "/home/.config/opencode/cross-review.json",
+      reviewers: [],
+      snapshot: {
+        worktree: WORKTREE,
+        snapshotDir: SNAPSHOT_DIR,
+        forge: "github",
+      },
+      adapterGatherer: {
+        kind: "adapter",
+        forge: "github",
+        status: "failed",
+        startedAt: 1_000,
+        completedAt: 1_000,
+        error: "gh not authenticated",
+      },
+    });
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const { tools } = prProtocol(
+      client,
+      store,
+      classify,
+      okAdapter(),
+      removeSnapshot,
+    );
+
+    const finalized = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+
+    // Not "still running": a terminal failed run reports a definite
+    // failure with adapter gatherer provenance.
+    expect(finalized).toMatchObject({
+      runID: RUN_ID,
+      phase: "failed",
+      status: "gather-failed",
+      target: "https://github.com/org/repo/pull/69",
+      reviewers: [],
+      gatherer: {
+        kind: "adapter",
+        forge: "github",
+        status: "failed",
+      },
+    });
+    // The retained snapshot stays for the 7-day terminal cleanup (S5).
+    expect(removeSnapshot).not.toHaveBeenCalled();
+    // The finalResult is persisted so later calls return it directly.
+    const stored = store.runs.get(RUN_ID);
+    expect(stored?.finalResult).toMatchObject({ status: "gather-failed" });
+  });
+
+  it("rejects unknown forges before any adapter or session activity (S8)", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const classify = vi
+      .fn()
+      .mockResolvedValue({ kind: "error", message: "unknown forge" });
+    const { tools, runPrAdapter } = prProtocol(client, store, classify);
+
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "#42", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      ),
+    ).rejects.toThrow("unknown forge");
+    expect(runPrAdapter).not.toHaveBeenCalled();
+    expect(client.session.create).not.toHaveBeenCalled();
+    expect(store.runs.size).toBe(0);
+  });
+
+  it("keeps legacy targets on the LLM gatherer path", async () => {
+    const { client } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "legacy" });
+    const { tools, runPrAdapter } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+    );
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "main...HEAD",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    );
+
+    expect(runPrAdapter).not.toHaveBeenCalled();
+    expect(started.phase).toBe("gathering");
+    expect(client.session.create).toHaveBeenCalledTimes(2);
+    expect(client.session.create.mock.calls[0][0].query.directory).toBe(
+      "/repo",
+    );
+  });
+
+  it("removes the snapshot worktree on cancel (S9)", async () => {
+    const { client } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const { tools } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+      okAdapter(),
+      removeSnapshot,
+    );
+    await tools.cross_review_start.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+
+    const cancelled = output(
+      await tools.cross_review_cancel.execute({ runID: RUN_ID }, context()),
+    );
+
+    expect(cancelled.phase).toBe("cancelled");
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+    // Active child sessions are aborted against the snapshot directory.
+    expect(client.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: { id: "child-1" },
+        query: { directory: WORKTREE },
+      }),
+    );
+  });
+
+  it("removes the snapshot worktree on successful finalize (S9)", async () => {
+    const { client, messages } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const { tools } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+      okAdapter(),
+      removeSnapshot,
+    );
+    await tools.cross_review_start.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    messages.set("child-1", completed("done"));
+
+    const finalized = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+
+    expect(finalized.phase).toBe("completed");
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+  });
+
+  it("retains the snapshot when quorum is not met", async () => {
+    const { client, messages } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const { tools } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+      okAdapter(),
+      removeSnapshot,
+    );
+    await tools.cross_review_start.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    messages.set(
+      "child-1",
+      failed("APIError", { message: "rate limited" } as any),
+    );
+
+    const finalized = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+
+    expect(finalized.phase).toBe("quorum-not-met");
+    expect(removeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("fails closed and cleans the orphan when the runtime binds the child elsewhere (S10)", async () => {
+    const { client } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const store = new MemoryRunStore();
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const { tools } = prProtocol(
+      client,
+      store,
+      classify,
+      okAdapter(),
+      removeSnapshot,
+    );
+    // Hostile binding, installed after prProtocol's cooperative default.
+    client.session.get = vi
+      .fn()
+      .mockImplementation(async (input: any) =>
+        input.path.id.startsWith("child-")
+          ? { data: { id: input.path.id, directory: "/elsewhere" } }
+          : { data: { id: input.path.id } },
+      );
+
+    await expect(
+      tools.cross_review_start.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    ).rejects.toThrow("refusing to review the wrong checkout");
+    // The orphan snapshot is removed because no manifest references it.
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+    expect(store.runs.size).toBe(0);
+    expect(client.session.abort).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: { id: "child-1" },
+        query: { directory: WORKTREE },
+      }),
+    );
+  });
+
+  it("includes the adapter gatherer in final results for PR runs", async () => {
+    const { client, messages } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const { tools } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+      okAdapter(),
+      removeSnapshot,
+    );
+    await tools.cross_review_start.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    messages.set("child-1", completed("reviewer verdict"));
+
+    const finalized = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+
+    // The final result reports the adapter gatherer exactly as status does.
+    expect(finalized.gatherer).toMatchObject({ kind: "adapter" });
+    expect(finalized.gatherer.model).toBeUndefined();
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+  });
+});
+
+describe("PR snapshot fail-closed gaps", () => {
+  const WORKTREE = "/state/run/worktree";
+
+  function okAdapter() {
+    return vi.fn().mockResolvedValue({
+      ok: true,
+      worktree: WORKTREE,
+      snapshotDir: `${WORKTREE}/.cross-review`,
+      meta: {
+        schemaVersion: 1,
+        forge: "github",
+        target: "https://github.com/org/repo/pull/69",
+        url: "https://github.com/org/repo/pull/69",
+        baseSha: "a".repeat(40),
+        headSha: "b".repeat(40),
+        mergeBaseSha: "c".repeat(40),
+        fetchedAt: "2026-09-05T00:00:00.000Z",
+      },
+    });
+  }
+
+  function prTools(
+    sessionGet: (input: any) => Promise<any>,
+    loaded: () => Promise<LoadedCrossReviewConfig> = loadedConfig,
+  ) {
+    const { client } = mockClient();
+    client.session.get = vi.fn().mockImplementation(sessionGet);
+    const store = new MemoryRunStore();
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const tools = createCrossReviewProtocolTools(client, {
+      store,
+      loadConfig: loaded,
+      now: () => 1_000,
+      createRunID: () => RUN_ID,
+      canonicalize: async (directory) => directory,
+      defaultWaitMs: 0,
+      classifyTarget: vi
+        .fn()
+        .mockResolvedValue({ kind: "pr", forge: "github" }),
+      runPrAdapter: okAdapter(),
+      stateRoot: "/state",
+      removeSnapshot,
+    });
+    return { client, store, tools, removeSnapshot };
+  }
+
+  it("fails closed when a child session reports no bound directory", async () => {
+    const { tools, removeSnapshot, store } = prTools(async (input) => ({
+      data: { id: input.path.id },
+    }));
+    await expect(
+      tools.cross_review_start.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    ).rejects.toThrow("reports no bound directory");
+    // Orphan snapshot is cleaned because no manifest persisted.
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+    expect(store.runs.size).toBe(0);
+  });
+
+  it("fails closed when the judge session is bound elsewhere", async () => {
+    const { tools, removeSnapshot, store } = prTools(async (input) => ({
+      data: {
+        id: input.path.id,
+        // child-1 is the reviewer (cooperative), child-2 is the judge.
+        ...(input.path.id === "child-2"
+          ? { directory: "/elsewhere" }
+          : { directory: WORKTREE }),
+      },
+    }));
+    await expect(
+      tools.cross_review_start.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    ).rejects.toThrow("refusing to review the wrong checkout");
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+    expect(store.runs.size).toBe(0);
+  });
+});

@@ -1,4 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { mkdtemp, mkdir, readdir, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewTool,
@@ -61,7 +64,15 @@ function client(prompt?: CrossReviewClient["session"]["prompt"]) {
     },
     session: {
       get: vi.fn().mockImplementation(async (input) => ({
-        data: { id: input.path.id },
+        // Child sessions report themselves bound to the PR snapshot
+        // worktree so the S10 assertion passes; hostile-binding tests
+        // override `session.get` themselves.
+        data: {
+          id: input.path.id,
+          ...(input.path.id.startsWith("child-")
+            ? { directory: "/state/run/worktree" }
+            : {}),
+        },
       })),
       create: vi.fn().mockImplementation(async () => ({
         data: { id: `child-${++nextID}` },
@@ -913,5 +924,325 @@ describe("cross_review tool", () => {
       project: "loaded",
       global: "absent",
     });
+  });
+});
+
+describe("cross_review tool PR snapshot path", () => {
+  const WORKTREE = "/state/run/worktree";
+
+  function okAdapter() {
+    return vi.fn().mockResolvedValue({
+      ok: true,
+      worktree: WORKTREE,
+      snapshotDir: `${WORKTREE}/.cross-review`,
+      meta: {
+        schemaVersion: 1,
+        forge: "github",
+        target: "https://github.com/org/repo/pull/69",
+        url: "https://github.com/org/repo/pull/69",
+        baseSha: "a".repeat(40),
+        headSha: "b".repeat(40),
+        mergeBaseSha: "c".repeat(40),
+        fetchedAt: "2026-09-05T00:00:00.000Z",
+      },
+    });
+  }
+
+  function legacyPrTool(
+    mock: CrossReviewClient,
+    options: {
+      classify?: any;
+      runPrAdapter?: any;
+      removeSnapshot?: any;
+      loadConfig?: () => Promise<LoadedCrossReviewConfig>;
+    } = {},
+  ) {
+    const runPrAdapter = options.runPrAdapter ?? okAdapter();
+    const removeSnapshot =
+      options.removeSnapshot ?? vi.fn().mockResolvedValue(undefined);
+    const tool = createCrossReviewTool(
+      mock,
+      options.loadConfig ?? emptyConfig,
+      {
+        classifyTarget:
+          options.classify ??
+          vi.fn().mockResolvedValue({ kind: "pr", forge: "github" }),
+        runPrAdapter,
+        stateRoot: "/state",
+        removeSnapshot,
+      },
+    );
+    return { tool, runPrAdapter, removeSnapshot };
+  }
+
+  it("runs the adapter, binds sessions to the snapshot, and cleans up on success", async () => {
+    const mock = client();
+    const { tool, runPrAdapter, removeSnapshot } = legacyPrTool(mock);
+
+    const result = await tool.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+
+    expect(runPrAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        forge: "github",
+        target: "https://github.com/org/repo/pull/69",
+        stateRoot: "/state",
+      }),
+    );
+    // No gatherer LLM session: one reviewer + one judge.
+    expect(mock.session.create).toHaveBeenCalledTimes(2);
+    for (const call of mock.session.create.mock.calls)
+      expect(call[0].query.directory).toBe(WORKTREE);
+    for (const call of mock.session.prompt.mock.calls)
+      expect(call[0].query.directory).toBe(WORKTREE);
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.gatherer).toBeUndefined();
+    // Reviewer brief points at the snapshot, not embedded context.
+    const brief = mock.session.prompt.mock.calls[0][0].body.parts[0].text;
+    expect(brief).toContain("isolated git worktree snapshot");
+    expect(brief).not.toContain("Shared target context");
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+  });
+
+  it("fails closed when a reviewer session binds to the parent checkout instead of the snapshot (S10)", async () => {
+    const mock = client();
+    // The runtime binds child sessions to the parent checkout rather than
+    // the requested snapshot worktree.
+    mock.session.get.mockImplementation(async (input) => ({
+      data: {
+        id: input.path.id,
+        ...(input.path.id.startsWith("child-") ? { directory: "/repo" } : {}),
+      },
+    }));
+    const { tool, removeSnapshot } = legacyPrTool(mock);
+
+    const result = await tool.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+
+    // The reviewer failed closed with the S10 message instead of reviewing
+    // the wrong checkout, so quorum was never met.
+    expect(parsed.status).toBe("quorum-not-met");
+    expect(parsed.reviewers[0]).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("refusing to review the wrong checkout"),
+    });
+    // No reviewer prompt ran against the wrong checkout.
+    expect(mock.session.prompt).not.toHaveBeenCalled();
+    // The snapshot stays retained with a terminal failed manifest (the
+    // 7-day cleanup reclaims it), mirroring other pre-quorum failures.
+    expect(removeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the session record reports no bound directory (S10)", async () => {
+    const mock = client();
+    mock.session.get.mockImplementation(async (input) => ({
+      data: { id: input.path.id },
+    }));
+    const { tool } = legacyPrTool(mock);
+
+    const result = await tool.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+
+    expect(parsed.status).toBe("quorum-not-met");
+    expect(parsed.reviewers[0]).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("reports no bound directory"),
+    });
+    expect(mock.session.prompt).not.toHaveBeenCalled();
+  });
+
+  it("forwards context as notes and never embeds it in briefs", async () => {
+    const mock = client();
+    const { tool, runPrAdapter } = legacyPrTool(mock);
+
+    await tool.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+        context: "watch the auth rewrite",
+      },
+      context(),
+    );
+
+    expect(runPrAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ notes: "watch the auth rewrite" }),
+    );
+    const brief = mock.session.prompt.mock.calls[0][0].body.parts[0].text;
+    expect(brief).not.toContain("watch the auth rewrite");
+    expect(brief).not.toContain("Shared target context");
+  });
+
+  it("fails before reviewer sessions on adapter failure and retains the snapshot", async () => {
+    const mock = client();
+    const failing = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "gh not authenticated",
+      snapshotPath: "/state/failed/worktree",
+    });
+    const { tool, removeSnapshot } = legacyPrTool(mock, {
+      runPrAdapter: failing,
+    });
+
+    await expect(
+      tool.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    ).rejects.toThrow(
+      "gh not authenticated (snapshot retained at /state/failed/worktree)",
+    );
+    expect(mock.session.create).not.toHaveBeenCalled();
+    expect(removeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy targets unchanged", async () => {
+    const mock = client();
+    const legacyClassify = vi.fn().mockResolvedValue({ kind: "legacy" });
+    const { tool, runPrAdapter, removeSnapshot } = legacyPrTool(mock, {
+      classify: legacyClassify,
+    });
+
+    const result = await tool.execute(
+      {
+        target: "main...HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+
+    expect(runPrAdapter).not.toHaveBeenCalled();
+    expect(removeSnapshot).not.toHaveBeenCalled();
+    // Legacy gather phase: gatherer session first, then reviewer, then judge.
+    expect(mock.session.create.mock.calls[0][0].query.directory).toBe("/repo");
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.gatherer).toMatchObject({ status: "succeeded" });
+  });
+});
+
+describe("cross_review tool snapshot leak recovery", () => {
+  it("persists a terminal failed manifest for a retained adapter snapshot", async () => {
+    const mock = client();
+    const root = await mkdtemp(join(tmpdir(), "legacy-pr-manifest-"));
+    const WORKTREE = join(root, "worktree");
+    await mkdir(WORKTREE, { recursive: true });
+    const failing = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "gh not authenticated",
+      snapshotPath: WORKTREE,
+    });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const tool = createCrossReviewTool(mock, emptyConfig, {
+      classifyTarget: vi
+        .fn()
+        .mockResolvedValue({ kind: "pr", forge: "github" }),
+      runPrAdapter: failing,
+      stateRoot: root,
+      removeSnapshot,
+    });
+
+    await expect(
+      tool.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    ).rejects.toThrow("gh not authenticated");
+
+    // The failed manifest exists so the 7-day terminal cleanup can find it.
+    const manifests = (await readdir(root)).filter((name) =>
+      name.endsWith(".json"),
+    );
+    expect(manifests.length).toBe(1);
+    const manifest = JSON.parse(
+      await readFile(join(root, manifests[0] as string), "utf8"),
+    );
+    expect(manifest.phase).toBe("failed");
+    expect(manifest.snapshot.worktree).toBe(WORKTREE);
+    expect(removeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("persists a failed manifest when quorum is not met after a snapshot", async () => {
+    // The single reviewer's prompt fails, so quorum (1) is never met.
+    const mock = client(
+      vi.fn().mockRejectedValue(new Error("provider request failed")),
+    );
+    const root = await mkdtemp(join(tmpdir(), "legacy-pr-quorum-"));
+    const WORKTREE = join(root, "worktree");
+    const okAdapter = vi.fn().mockResolvedValue({
+      ok: true,
+      worktree: WORKTREE,
+      snapshotDir: join(WORKTREE, ".cross-review"),
+      meta: {
+        schemaVersion: 1,
+        forge: "github",
+        target: "https://github.com/org/repo/pull/69",
+        url: "https://github.com/org/repo/pull/69",
+        baseSha: "a".repeat(40),
+        headSha: "b".repeat(40),
+        mergeBaseSha: "c".repeat(40),
+        fetchedAt: "2026-09-05T00:00:00.000Z",
+      },
+    });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const tool = createCrossReviewTool(mock, emptyConfig, {
+      classifyTarget: vi
+        .fn()
+        .mockResolvedValue({ kind: "pr", forge: "github" }),
+      runPrAdapter: okAdapter,
+      stateRoot: root,
+      removeSnapshot,
+    });
+    const result = await tool.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.status).toBe("quorum-not-met");
+    expect(removeSnapshot).not.toHaveBeenCalled();
+
+    const manifests = (await readdir(root)).filter((name) =>
+      name.endsWith(".json"),
+    );
+    expect(manifests.length).toBe(1);
+    const manifest = JSON.parse(
+      await readFile(join(root, manifests[0] as string), "utf8"),
+    );
+    expect(manifest.phase).toBe("failed");
+    expect(manifest.snapshot.worktree).toBe(WORKTREE);
   });
 });

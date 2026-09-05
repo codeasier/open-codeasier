@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   FileCrossReviewRunStore,
   RUN_SCHEMA_VERSION,
@@ -171,5 +171,42 @@ describe("cross-review run store", () => {
       return Promise.resolve(reviewer.reviewer);
     });
     expect(reviewerNumber).toBe(3);
+  });
+
+  it("removes snapshot worktrees when expired terminal runs are cleaned up", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+    const now = Date.now();
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    // An expired failed run still holding its snapshot worktree.
+    const expired = new FileCrossReviewRunStore(
+      root,
+      () => now,
+      removeSnapshot,
+    );
+    const stale = now - 8 * 24 * 60 * 60 * 1_000;
+    await expired.create({
+      ...run(),
+      // `create` persists `updatedAt` verbatim; backdate it past retention.
+      createdAt: stale,
+      updatedAt: stale,
+      phase: "failed",
+      snapshot: {
+        worktree: join(root, RUN_ID, "worktree"),
+        snapshotDir: join(root, RUN_ID, "worktree", ".cross-review"),
+        forge: "github",
+      },
+    } as CrossReviewRun);
+
+    // Creating any run triggers terminal cleanup of the expired manifest.
+    const fresh = new FileCrossReviewRunStore(root, () => now, removeSnapshot);
+    await fresh.create({
+      ...run(),
+      runID: "00000000-0000-4000-8000-000000000002",
+    } as CrossReviewRun);
+
+    expect(removeSnapshot).toHaveBeenCalledWith(join(root, RUN_ID, "worktree"));
+    await expect(
+      readFile(join(root, `${RUN_ID}.json`), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

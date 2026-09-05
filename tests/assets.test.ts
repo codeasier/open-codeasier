@@ -70,8 +70,14 @@ describe("distributed workflow assets", () => {
     expect(content).not.toContain("both canonical paths are absent");
     expect(content).toContain("ask whether GitCode support is needed");
     expect(content).toContain("npx open-codeasier detect-gitcode");
-    expect(content).toContain("`pr view`/`pr diff` or `issue view`");
-    expect(content).toContain("do not fall back to `gh` for a GitCode target");
+    expect(content).toContain("materializes an isolated snapshot worktree");
+    expect(content).toContain("invoke that absolute path with `issue view`");
+    expect(content).toContain(
+      "the parent must not fall back to `gh` or fetch the PR itself",
+    );
+    expect(content).not.toContain(
+      "GitCode targets must always supply that `context`",
+    );
   });
 
   it("packages the handoff skill and command for installation", async () => {
