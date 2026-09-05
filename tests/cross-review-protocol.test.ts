@@ -38,6 +38,31 @@ class MemoryRunStore implements CrossReviewRunStore {
     await save();
     return result;
   }
+
+  async listByOwner(ownerSessionID: string) {
+    const runs = [...this.runs.values()]
+      .filter((run) => run.ownerSessionID === ownerSessionID)
+      .map((run) => structuredClone(run))
+      .sort(
+        (left, right) =>
+          left.createdAt - right.createdAt ||
+          left.runID.localeCompare(right.runID),
+      );
+    return { runs, errors: [] };
+  }
+
+  async read(runID: string) {
+    const run = this.runs.get(runID);
+    if (run === undefined)
+      return {
+        error: {
+          code: "MANIFEST_NOT_FOUND" as const,
+          runID,
+          detail: `Cross-review run not found: ${runID}`,
+        },
+      };
+    return { run: structuredClone(run) };
+  }
 }
 
 function loadedConfig(): Promise<LoadedCrossReviewConfig> {
@@ -243,6 +268,7 @@ describe("asynchronous cross-review protocol", () => {
             cross_review_cancel: false,
             cross_review_finalize: false,
             session_review: false,
+            cross_review_audit: false,
           }),
         }),
       }),

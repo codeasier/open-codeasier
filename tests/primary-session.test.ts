@@ -27,6 +27,15 @@ describe("assertPrimarySession", () => {
     ).rejects.toThrow(
       "session_review can only be invoked from primary sessions",
     );
+    await expect(
+      assertPrimarySession(
+        { session: { get } },
+        { sessionID: "child", directory: "/repo" },
+        "cross_review_audit",
+      ),
+    ).rejects.toThrow(
+      "cross_review_audit can only be invoked from primary sessions",
+    );
   });
 
   it("allows primary sessions without a parentID", async () => {

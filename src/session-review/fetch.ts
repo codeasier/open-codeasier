@@ -19,7 +19,16 @@ export type SessionClient = {
       path: { id: string };
       query?: { directory?: string; limit?: number };
     }): Promise<SdkResult<Array<{ info: Message; parts: Part[] }>>>;
+    children?(input: {
+      path: { id: string };
+      query?: { directory?: string };
+    }): Promise<SdkResult<Session[]>>;
   };
+};
+
+export type SessionBundle = {
+  session: Session;
+  messages: Array<{ info: Message; parts: Part[] }>;
 };
 
 function failure(sessionID: string, result: SdkResult<unknown>) {
@@ -39,14 +48,11 @@ function failure(sessionID: string, result: SdkResult<unknown>) {
   );
 }
 
-export async function fetchSessionReviewInput(input: {
+export async function fetchSessionBundle(input: {
   client: SessionClient;
   sessionID: string;
   directory: string;
-  mode: ReviewMode;
-  focus?: string;
-  limits?: Partial<ReviewLimits>;
-}): Promise<NormalizedSession> {
+}): Promise<SessionBundle> {
   try {
     const session = await input.client.session.get({
       path: { id: input.sessionID },
@@ -60,18 +66,7 @@ export async function fetchSessionReviewInput(input: {
     });
     if (messages.error !== undefined || messages.data === undefined)
       throw failure(input.sessionID, messages);
-    if (messages.data.length === 0)
-      throw new SessionReviewError(
-        "SESSION_EMPTY",
-        `Session has no messages: ${input.sessionID}`,
-      );
-    return normalizeSession({
-      session: session.data,
-      messages: messages.data,
-      mode: input.mode,
-      ...(input.focus === undefined ? {} : { focus: input.focus }),
-      ...(input.limits === undefined ? {} : { limits: input.limits }),
-    });
+    return { session: session.data, messages: messages.data };
   } catch (error) {
     if (error instanceof SessionReviewError) throw error;
     throw new SessionReviewError(
@@ -79,4 +74,51 @@ export async function fetchSessionReviewInput(input: {
       `OpenCode SDK failed while reading session: ${input.sessionID}`,
     );
   }
+}
+
+export async function listSessionChildren(input: {
+  client: SessionClient;
+  sessionID: string;
+  directory: string;
+}): Promise<{ listed: true; children: Session[] } | { listed: false }> {
+  if (typeof input.client.session.children !== "function")
+    return { listed: false };
+  try {
+    const result = await input.client.session.children({
+      path: { id: input.sessionID },
+      query: { directory: input.directory },
+    });
+    if (result.error !== undefined || result.data === undefined)
+      return { listed: false };
+    return { listed: true, children: result.data };
+  } catch {
+    return { listed: false };
+  }
+}
+
+export async function fetchSessionReviewInput(input: {
+  client: SessionClient;
+  sessionID: string;
+  directory: string;
+  mode: ReviewMode;
+  focus?: string;
+  limits?: Partial<ReviewLimits>;
+}): Promise<NormalizedSession> {
+  const bundle = await fetchSessionBundle({
+    client: input.client,
+    sessionID: input.sessionID,
+    directory: input.directory,
+  });
+  if (bundle.messages.length === 0)
+    throw new SessionReviewError(
+      "SESSION_EMPTY",
+      `Session has no messages: ${input.sessionID}`,
+    );
+  return normalizeSession({
+    session: bundle.session,
+    messages: bundle.messages,
+    mode: input.mode,
+    ...(input.focus === undefined ? {} : { focus: input.focus }),
+    ...(input.limits === undefined ? {} : { limits: input.limits }),
+  });
 }

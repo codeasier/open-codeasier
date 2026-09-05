@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Add `/cross-review-audit` and the `cross_review_audit` tool to inspect a
+  parent session's owned runs through the local run-store and SDK sessions,
+  reporting protocol checks and role behavior without reading OpenCode
+  internal storage.
 - Accept an optional `gitcodeCli` absolute path in cross-review config and
   persist it from guided setup after `npx open-codeasier detect-gitcode`
   locates gitcode-cli (PATH, then `~/miniconda3` / `~/anaconda3` including env
@@ -28,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Treat never-dispatched cross-review roles as `insufficient-evidence` in
+  `/cross-review-audit`, keep per-run protocol timelines attributed by
+  `runID`, and let a later silent-model-replace `fail` win over an earlier
+  truncated session.
+- Fail `/cross-review-audit` silent-model-replace on a visible prompt-model
+  mismatch even when that session is truncated, and treat cancelled/failed
+  roles that never landed a prompt as `insufficient-evidence`.
 - Continue gitcode-cli discovery when a PATH entry is unreadable or not a
   directory, and when listing conda env directories fails with `EPERM`, so
   `detect-gitcode` no longer crashes on those filesystem errors.

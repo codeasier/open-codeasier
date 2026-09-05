@@ -12,7 +12,7 @@ describe("distributed workflow assets", () => {
     const skillDirectories = (
       await readdir("skills", { withFileTypes: true })
     ).filter((entry) => entry.isDirectory());
-    expect(skillDirectories).toHaveLength(13);
+    expect(skillDirectories).toHaveLength(14);
     const names: string[] = [];
     for (const directory of skillDirectories) {
       expect(directory.name).not.toMatch(legacyPublicPrefix);
@@ -31,7 +31,7 @@ describe("distributed workflow assets", () => {
     }
     expect(new Set(names).size).toBe(names.length);
     const commands = await readdir("commands");
-    expect(commands).toHaveLength(13);
+    expect(commands).toHaveLength(14);
     expect(commands.join("\n")).not.toMatch(legacyPublicPrefix);
     for (const name of names) {
       const content = await readFile(join("commands", `${name}.md`), "utf8");
@@ -78,6 +78,23 @@ describe("distributed workflow assets", () => {
     expect(content).not.toContain(
       "GitCode targets must always supply that `context`",
     );
+  });
+
+  it("keeps cross-review-audit off OpenCode storage and session_review tree walks", async () => {
+    const content = await readFile(
+      "skills/cross-review-audit/SKILL.md",
+      "utf8",
+    );
+    expect(content).toContain("Never search OpenCode internal storage");
+    expect(content).toContain("~/.local/share/opencode");
+    expect(content).toContain("never open OpenCode DB paths");
+    expect(content).toContain(
+      "Do not call `session_review` for IDs the audit tool did not return",
+    );
+    expect(content).toContain("directory-scoped");
+    expect(content).toContain("protocolTimelineOmitted");
+    const generated = await readdir("workflow-source/skills");
+    expect(generated).not.toContain("cross-review-audit.md");
   });
 
   it("packages the handoff skill and command for installation", async () => {

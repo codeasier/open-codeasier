@@ -159,12 +159,27 @@ export type CrossReviewRun = {
 
 export type SaveRun = () => Promise<void>;
 
+export type RunStoreError = {
+  code: "MANIFEST_CORRUPT" | "MANIFEST_NOT_FOUND";
+  detail: string;
+  runID?: string;
+};
+
+export type ListByOwnerResult = {
+  runs: CrossReviewRun[];
+  errors: RunStoreError[];
+};
+
+export type ReadRunResult = { run: CrossReviewRun } | { error: RunStoreError };
+
 export interface CrossReviewRunStore {
   create(run: CrossReviewRun): Promise<void>;
   withRun<T>(
     runID: string,
     action: (run: CrossReviewRun, save: SaveRun) => Promise<T>,
   ): Promise<T>;
+  listByOwner(ownerSessionID: string): Promise<ListByOwnerResult>;
+  read(runID: string): Promise<ReadRunResult>;
 }
 
 const TERMINAL_PHASES = new Set<CrossReviewRunPhase>([
@@ -209,6 +224,14 @@ export function defaultCrossReviewStateDirectory(
 function assertRunID(runID: string) {
   if (!RUN_ID.test(runID))
     throw new Error(`Invalid cross-review run ID: ${runID}`);
+}
+
+function corruptManifestError(runID: string): RunStoreError {
+  return {
+    code: "MANIFEST_CORRUPT",
+    runID,
+    detail: "Corrupt or unsupported cross-review run manifest",
+  };
 }
 
 function parseRun(path: string, content: string): CrossReviewRun {
@@ -347,6 +370,56 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
       return result;
     } finally {
       await release();
+    }
+  }
+
+  async listByOwner(ownerSessionID: string): Promise<ListByOwnerResult> {
+    let entries: string[];
+    try {
+      entries = await readdir(this.root);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        return { runs: [], errors: [] };
+      throw error;
+    }
+    const runs: CrossReviewRun[] = [];
+    const errors: RunStoreError[] = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      const runID = entry.slice(0, -".json".length);
+      if (!RUN_ID.test(runID)) continue;
+      try {
+        const run = parseRun(
+          join(this.root, entry),
+          await readFile(join(this.root, entry), "utf8"),
+        );
+        if (run.ownerSessionID === ownerSessionID) runs.push(run);
+      } catch {
+        errors.push(corruptManifestError(runID));
+      }
+    }
+    runs.sort(
+      (left, right) =>
+        left.createdAt - right.createdAt ||
+        left.runID.localeCompare(right.runID),
+    );
+    return { runs, errors };
+  }
+
+  async read(runID: string): Promise<ReadRunResult> {
+    const path = this.runPath(runID);
+    try {
+      return { run: parseRun(path, await readFile(path, "utf8")) };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        return {
+          error: {
+            code: "MANIFEST_NOT_FOUND",
+            runID,
+            detail: `Cross-review run not found: ${runID}`,
+          },
+        };
+      return { error: corruptManifestError(runID) };
     }
   }
 
