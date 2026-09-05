@@ -14,9 +14,15 @@ export type CommandRunner = (
   options: { cwd?: string; env?: NodeJS.ProcessEnv },
 ) => Promise<{ stdout: string; stderr: string }>;
 
+// Matches the outer spawn limit in pr-gather.ts: `git diff` output can far
+// exceed Node's 1MB default maxBuffer, and the overflow must reach the
+// snapshot validator (not kill the child with an opaque spawn error).
+const ADAPTER_MAX_BUFFER = 16 * 1024 * 1024;
+
 export const defaultRunCommand: CommandRunner = (command, args, options) =>
   execFileAsync(command, args, {
     encoding: "utf8",
+    maxBuffer: ADAPTER_MAX_BUFFER,
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     ...(options.env === undefined ? {} : { env: options.env }),
   });
@@ -193,10 +199,23 @@ async function ensureCommit(
   extraRefs: string[],
   label: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
+  // Ref names come from the PR view payload and are attacker-influenced;
+  // a ref starting with `-` would be parsed as a git option (for example
+  // `--upload-pack=<prog>`) instead of a refspec.
+  const refs = [sha, ...extraRefs];
+  for (const ref of refs) {
+    if (ref.startsWith("-"))
+      return {
+        ok: false,
+        error: `${label} ref ${JSON.stringify(ref)} looks like a git option and was rejected`,
+      };
+  }
   if (await commitPresent(runCommand, repo, sha)) return { ok: true };
-  for (const ref of [sha, ...extraRefs]) {
+  for (const ref of refs) {
     try {
-      await git(runCommand, repo, ["fetch", "origin", ref]);
+      // `--` ends option parsing so a refspec can never be interpreted
+      // as a flag, even if a future check misses one.
+      await git(runCommand, repo, ["fetch", "origin", "--", ref]);
     } catch {
       continue;
     }

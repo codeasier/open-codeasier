@@ -1,9 +1,26 @@
 import { describe, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import {
   classifyPrTarget,
+  classifyPrTargetInRepository,
   hostFromRemoteUrl,
   remoteUrlsFromVerboseOutput,
 } from "../src/cross-review/pr-target.js";
+
+const execFileAsync = promisify(execFile);
+
+async function initRepoWithRemote(url: string): Promise<string> {
+  const repo = await mkdtemp(join(tmpdir(), "pr-target-repo-"));
+  await execFileAsync("git", ["init", "-q", repo], { encoding: "utf8" });
+  await execFileAsync("git", ["-C", repo, "remote", "add", "origin", url], {
+    encoding: "utf8",
+  });
+  return repo;
+}
 
 const GITHUB_REMOTES = [
   "https://github.com/org/repo.git",
@@ -220,5 +237,57 @@ describe("remoteUrlsFromVerboseOutput", () => {
     expect(remoteUrlsFromVerboseOutput("not a remote line\n\n\t\n")).toEqual(
       [],
     );
+  });
+});
+
+describe("classifyPrTargetInRepository", () => {
+  it("classifies bare numbers against real repository remotes (GitHub)", async () => {
+    const repo = await initRepoWithRemote("https://github.com/org/repo.git");
+    expect(await classifyPrTargetInRepository("42", repo)).toEqual({
+      kind: "pr",
+      forge: "github",
+    });
+    expect(await classifyPrTargetInRepository("#42", repo)).toEqual({
+      kind: "pr",
+      forge: "github",
+    });
+  });
+
+  it("classifies bare numbers against real repository remotes (GitCode)", async () => {
+    const repo = await initRepoWithRemote("git@gitcode.com:org/repo.git");
+    expect(await classifyPrTargetInRepository("7", repo)).toEqual({
+      kind: "pr",
+      forge: "gitcode",
+    });
+  });
+
+  it("fails closed for bare numbers in a repository without remotes", async () => {
+    const repo = await mkdtemp(join(tmpdir(), "pr-target-bare-"));
+    await execFileAsync("git", ["init", "-q", repo], { encoding: "utf8" });
+    const result = await classifyPrTargetInRepository("42", repo);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error")
+      expect(result.message).toContain("no git remotes were found");
+  });
+
+  it("fails closed for bare numbers on a non-forge remote", async () => {
+    const repo = await initRepoWithRemote("https://gitlab.com/org/repo.git");
+    const result = await classifyPrTargetInRepository("42", repo);
+    expect(result.kind).toBe("error");
+    if (result.kind === "error")
+      expect(result.message).toContain("neither clearly GitHub nor GitCode");
+  });
+
+  it("classifies URLs and git ranges without inspecting remotes", async () => {
+    const repo = await initRepoWithRemote("https://gitlab.com/org/repo.git");
+    expect(
+      await classifyPrTargetInRepository(
+        "https://github.com/org/repo/pull/69",
+        repo,
+      ),
+    ).toEqual({ kind: "pr", forge: "github" });
+    expect(await classifyPrTargetInRepository("main...HEAD", repo)).toEqual({
+      kind: "legacy",
+    });
   });
 });

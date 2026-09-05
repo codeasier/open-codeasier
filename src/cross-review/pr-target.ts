@@ -152,10 +152,9 @@ export async function classifyPrTargetInRepository(
   target: string,
   directory: string,
 ): Promise<PrTargetClassification> {
-  const direct = classifyPrTarget(target, []);
-  if (direct.kind !== "legacy") return direct;
   // Only a bare PR number depends on the repository remotes; every other
-  // legacy target (git ranges, refs, non-forge URLs) needs no inspection.
-  if (!/^#?[0-9]+$/.test(target.trim())) return { kind: "legacy" };
-  return classifyPrTarget(target, await remoteUrlsInRepository(directory));
+  // target (URLs, git ranges, refs) classifies without inspecting them.
+  if (/^#?[0-9]+$/.test(target.trim()))
+    return classifyPrTarget(target, await remoteUrlsInRepository(directory));
+  return classifyPrTarget(target, []);
 }

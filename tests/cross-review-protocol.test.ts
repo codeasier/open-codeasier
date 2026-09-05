@@ -2649,6 +2649,16 @@ describe("cross-review PR snapshot protocol", () => {
     removeSnapshot: (worktree: string) => Promise<void> = vi.fn(),
     loadConfig: () => Promise<LoadedCrossReviewConfig> = loadedConfig,
   ) {
+    // Child sessions report themselves bound to the snapshot worktree so
+    // the S10 directory assertion passes; hostile-binding tests override
+    // `session.get` themselves.
+    client.session.get = vi
+      .fn()
+      .mockImplementation(async (input: any) =>
+        input.path.id.startsWith("child-")
+          ? { data: { id: input.path.id, directory: WORKTREE } }
+          : { data: { id: input.path.id } },
+      );
     const tools = createCrossReviewProtocolTools(client, {
       store,
       loadConfig,
@@ -2842,10 +2852,11 @@ describe("cross-review PR snapshot protocol", () => {
       phase: "failed",
       reviewers: [],
     });
-    // The manifest pins the deterministic stateRoot/runID layout even when
-    // the adapter reports a different retained path in its error text.
+    // The manifest pins the runner-reported retained path (reality), not
+    // the derived stateRoot/runID layout, so cleanup removes the right
+    // directory even with a custom adapter runner.
     expect(run?.snapshot).toMatchObject({
-      worktree: `/state/${RUN_ID}/worktree`,
+      worktree: WORKTREE,
     });
     expect(run?.adapterGatherer).toMatchObject({
       kind: "adapter",
@@ -2999,13 +3010,6 @@ describe("cross-review PR snapshot protocol", () => {
 
   it("fails closed and cleans the orphan when the runtime binds the child elsewhere (S10)", async () => {
     const { client } = mockClient();
-    client.session.get = vi
-      .fn()
-      .mockImplementation(async (input: any) =>
-        input.path.id.startsWith("child-")
-          ? { data: { id: input.path.id, directory: "/elsewhere" } }
-          : { data: { id: input.path.id } },
-      );
     const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
     const store = new MemoryRunStore();
     const removeSnapshot = vi.fn().mockResolvedValue(undefined);
@@ -3016,6 +3020,14 @@ describe("cross-review PR snapshot protocol", () => {
       okAdapter(),
       removeSnapshot,
     );
+    // Hostile binding, installed after prProtocol's cooperative default.
+    client.session.get = vi
+      .fn()
+      .mockImplementation(async (input: any) =>
+        input.path.id.startsWith("child-")
+          ? { data: { id: input.path.id, directory: "/elsewhere" } }
+          : { data: { id: input.path.id } },
+      );
 
     await expect(
       tools.cross_review_start.execute(
@@ -3036,5 +3048,127 @@ describe("cross-review PR snapshot protocol", () => {
         query: { directory: WORKTREE },
       }),
     );
+  });
+
+  it("includes the adapter gatherer in final results for PR runs", async () => {
+    const { client, messages } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const { tools } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+      okAdapter(),
+      removeSnapshot,
+    );
+    await tools.cross_review_start.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    messages.set("child-1", completed("reviewer verdict"));
+
+    const finalized = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+
+    // The final result reports the adapter gatherer exactly as status does.
+    expect(finalized.gatherer).toMatchObject({ kind: "adapter" });
+    expect(finalized.gatherer.model).toBeUndefined();
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+  });
+});
+
+describe("PR snapshot fail-closed gaps", () => {
+  const WORKTREE = "/state/run/worktree";
+
+  function okAdapter() {
+    return vi.fn().mockResolvedValue({
+      ok: true,
+      worktree: WORKTREE,
+      snapshotDir: `${WORKTREE}/.cross-review`,
+      meta: {
+        schemaVersion: 1,
+        forge: "github",
+        target: "https://github.com/org/repo/pull/69",
+        url: "https://github.com/org/repo/pull/69",
+        baseSha: "a".repeat(40),
+        headSha: "b".repeat(40),
+        mergeBaseSha: "c".repeat(40),
+        fetchedAt: "2026-09-05T00:00:00.000Z",
+      },
+    });
+  }
+
+  function prTools(
+    sessionGet: (input: any) => Promise<any>,
+    loaded: () => Promise<LoadedCrossReviewConfig> = loadedConfig,
+  ) {
+    const { client } = mockClient();
+    client.session.get = vi.fn().mockImplementation(sessionGet);
+    const store = new MemoryRunStore();
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const tools = createCrossReviewProtocolTools(client, {
+      store,
+      loadConfig: loaded,
+      now: () => 1_000,
+      createRunID: () => RUN_ID,
+      canonicalize: async (directory) => directory,
+      defaultWaitMs: 0,
+      classifyTarget: vi
+        .fn()
+        .mockResolvedValue({ kind: "pr", forge: "github" }),
+      runPrAdapter: okAdapter(),
+      stateRoot: "/state",
+      removeSnapshot,
+    });
+    return { client, store, tools, removeSnapshot };
+  }
+
+  it("fails closed when a child session reports no bound directory", async () => {
+    const { tools, removeSnapshot, store } = prTools(async (input) => ({
+      data: { id: input.path.id },
+    }));
+    await expect(
+      tools.cross_review_start.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    ).rejects.toThrow("reports no bound directory");
+    // Orphan snapshot is cleaned because no manifest persisted.
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+    expect(store.runs.size).toBe(0);
+  });
+
+  it("fails closed when the judge session is bound elsewhere", async () => {
+    const { tools, removeSnapshot, store } = prTools(async (input) => ({
+      data: {
+        id: input.path.id,
+        // child-1 is the reviewer (cooperative), child-2 is the judge.
+        ...(input.path.id === "child-2"
+          ? { directory: "/elsewhere" }
+          : { directory: WORKTREE }),
+      },
+    }));
+    await expect(
+      tools.cross_review_start.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    ).rejects.toThrow("refusing to review the wrong checkout");
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+    expect(store.runs.size).toBe(0);
   });
 });

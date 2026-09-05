@@ -17,11 +17,17 @@ import {
 import {
   createDefaultPrAdapterRunner,
   defaultRemoveSnapshot,
+  existingPath,
   snapshotPaths,
   type PrAdapterRunner,
   type SnapshotRemover,
 } from "./pr-gather.js";
-import { defaultCrossReviewStateDirectory } from "./run-store.js";
+import {
+  defaultCrossReviewStateDirectory,
+  FileCrossReviewRunStore,
+  RUN_SCHEMA_VERSION,
+  type CrossReviewRun,
+} from "./run-store.js";
 
 /** Injection points for the legacy tool's PR snapshot path (tests). */
 export type LegacyPrSnapshotOptions = {
@@ -543,10 +549,46 @@ export function createCrossReviewTool(
               forge: "github" | "gitcode";
             }
           | undefined;
+        let gatherRunID: string | undefined;
+        const persistFailedSnapshotRun = async (
+          worktree: string,
+          reason: string,
+        ): Promise<void> => {
+          if (gatherRunID === undefined) return;
+          const paths = snapshotPaths(stateRoot, gatherRunID);
+          const timestamp = Date.now();
+          const failedRun: CrossReviewRun = {
+            schemaVersion: RUN_SCHEMA_VERSION,
+            runID: gatherRunID,
+            directory: context.directory,
+            ownerSessionID: context.sessionID,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            phase: "failed",
+            target: args.target,
+            brief: `PR snapshot run failed: ${reason}`,
+            quorum: 1,
+            maxConcurrency: 1,
+            reviewerTimeoutMs: 0,
+            configSources: loaded.sources,
+            projectConfigPath: loaded.projectPath,
+            globalConfigPath: loaded.globalPath,
+            reviewers: [],
+            snapshot: {
+              worktree,
+              snapshotDir: paths.snapshotDir,
+              forge:
+                classification.kind === "pr" ? classification.forge : "github",
+            },
+          };
+          await new FileCrossReviewRunStore(stateRoot)
+            .create(failedRun)
+            .catch(() => undefined);
+        };
         if (classification.kind === "pr") {
           const repo =
             (await findGitRoot(context.directory)) ?? context.directory;
-          const gatherRunID = randomUUID();
+          gatherRunID = randomUUID();
           const gather = await runPrAdapter({
             forge: classification.forge,
             repo,
@@ -559,12 +601,21 @@ export function createCrossReviewTool(
             ...(config.gitcodeCli === undefined
               ? {}
               : { gitcodeCli: config.gitcodeCli }),
-          }).catch((error: unknown) => ({
+          }).catch(async (error: unknown) => ({
             ok: false as const,
             error: errorMessage(error),
-            snapshotPath: snapshotPaths(stateRoot, gatherRunID).worktree,
+            // Only report a snapshot path that actually exists; a thrown
+            // error may predate any materialization.
+            snapshotPath: await existingPath(
+              snapshotPaths(stateRoot, gatherRunID as string).worktree,
+            ),
           }));
           if (!gather.ok) {
+            // Persist a terminal failed manifest so the 7-day cleanup can
+            // reclaim the worktree; the blocking tool has no protocol
+            // lifecycle to do it.
+            if (gather.snapshotPath !== undefined)
+              await persistFailedSnapshotRun(gather.snapshotPath, gather.error);
             // The retained snapshot stays for diagnosis (S5).
             throw new Error(
               `${gather.error}${gather.snapshotPath === undefined ? "" : ` (snapshot retained at ${gather.snapshotPath})`}`,
@@ -942,9 +993,18 @@ export function createCrossReviewTool(
         } finally {
           // Successful completion and cancellation remove the snapshot
           // worktree (R6); failures and quorum misses retain it for
-          // diagnosis.
-          if (prSnapshot !== undefined && (completed || context.abort.aborted))
-            await removeSnapshot(prSnapshot.worktree).catch(() => undefined);
+          // diagnosis and persist a terminal failed manifest so the 7-day
+          // cleanup can reclaim it later.
+          if (prSnapshot !== undefined) {
+            if (completed || context.abort.aborted) {
+              await removeSnapshot(prSnapshot.worktree).catch(() => undefined);
+            } else {
+              await persistFailedSnapshotRun(
+                prSnapshot.worktree,
+                "run failed before terminal cleanup",
+              );
+            }
+          }
         }
       } finally {
         context.abort.removeEventListener("abort", abortSessions);

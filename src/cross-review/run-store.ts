@@ -370,9 +370,16 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
         if (TERMINAL_PHASES.has(run.phase) && run.updatedAt < cutoff) {
           // A failed run may still hold its snapshot worktree; remove it
           // (worktree-aware) before the manifest is unlinked so git
-          // metadata never leaks.
-          if (run.snapshot !== undefined)
-            await this.removeSnapshot(run.snapshot.worktree);
+          // metadata never leaks. Removal errors must not keep the
+          // manifest alive forever: unlink regardless so the retry loop
+          // terminates.
+          if (run.snapshot !== undefined) {
+            try {
+              await this.removeSnapshot(run.snapshot.worktree);
+            } catch {
+              // Snapshot removal is best-effort; the manifest still goes.
+            }
+          }
           await unlink(path);
         }
       } catch {

@@ -967,8 +967,13 @@ export function createCrossReviewProtocolTools(
       "Session inspection",
     );
     const requested = await canonicalize(snapshot.worktree);
-    const bound = session.directory ?? snapshot.worktree;
-    const boundReal = await canonicalize(bound);
+    // A missing `directory` on the session record is not evidence of the
+    // correct binding; fail closed instead of defaulting to the expectation.
+    if (session.directory === undefined)
+      throw new Error(
+        `Session ${sessionID} reports no bound directory; refusing to review the wrong checkout (expected the PR snapshot ${requested})`,
+      );
+    const boundReal = await canonicalize(session.directory);
     if (boundReal !== requested)
       throw new Error(
         `Session ${sessionID} is bound to ${boundReal} instead of the PR snapshot ${requested}; refusing to review the wrong checkout`,
@@ -1856,7 +1861,11 @@ export function createCrossReviewProtocolTools(
                 ? {}
                 : {
                     snapshot: {
-                      worktree: paths.worktree,
+                      // The runner-reported path (where the snapshot really
+                      // lives), not the derived expectation: a custom
+                      // runner must keep the manifest pointing at reality
+                      // so cleanup removes the right directory.
+                      worktree: gather.snapshotPath,
                       snapshotDir: paths.snapshotDir,
                       forge: classification.forge,
                     },
@@ -1918,6 +1927,10 @@ export function createCrossReviewProtocolTools(
           );
           judgeSessionID = session.id;
           childSessions.push(session.id);
+          // The judge reads the same snapshot; fail closed (S10) exactly as
+          // for reviewers.
+          if (prSnapshot !== undefined)
+            await assertSessionDirectory(prSnapshot, session.id);
         }
         const timestamp = now();
         const warning = configWarning(loaded);
@@ -2272,9 +2285,13 @@ export function createCrossReviewProtocolTools(
             target: run.target,
             brief: run.brief,
             quorum: run.quorum,
-            ...(run.gatherer === undefined
+            ...(run.gatherer === undefined && run.adapterGatherer === undefined
               ? {}
-              : { gatherer: publicGatherer(run.gatherer, true) }),
+              : run.gatherer !== undefined
+                ? { gatherer: publicGatherer(run.gatherer, true) }
+                : {
+                    gatherer: publicAdapterGatherer(run.adapterGatherer),
+                  }),
             reviewers: run.reviewers.map((reviewer) =>
               publicReviewer(reviewer, true),
             ),
@@ -2291,9 +2308,13 @@ export function createCrossReviewProtocolTools(
             target: run.target,
             brief: run.brief,
             quorum: run.quorum,
-            ...(run.gatherer === undefined
+            ...(run.gatherer === undefined && run.adapterGatherer === undefined
               ? {}
-              : { gatherer: publicGatherer(run.gatherer, true) }),
+              : run.gatherer !== undefined
+                ? { gatherer: publicGatherer(run.gatherer, true) }
+                : {
+                    gatherer: publicAdapterGatherer(run.adapterGatherer),
+                  }),
             reviewers: run.reviewers.map((reviewer) =>
               publicReviewer(reviewer, true),
             ),
@@ -2335,9 +2356,14 @@ export function createCrossReviewProtocolTools(
               target: run.target,
               brief: run.brief,
               quorum: run.quorum,
-              ...(run.gatherer === undefined
+              ...(run.gatherer === undefined &&
+              run.adapterGatherer === undefined
                 ? {}
-                : { gatherer: publicGatherer(run.gatherer, true) }),
+                : run.gatherer !== undefined
+                  ? { gatherer: publicGatherer(run.gatherer, true) }
+                  : {
+                      gatherer: publicAdapterGatherer(run.adapterGatherer),
+                    }),
               reviewers: run.reviewers.map((reviewer) =>
                 publicReviewer(reviewer, true),
               ),
@@ -2363,9 +2389,14 @@ export function createCrossReviewProtocolTools(
               status: "judge-failed",
               target: run.target,
               quorum: run.quorum,
-              ...(run.gatherer === undefined
+              ...(run.gatherer === undefined &&
+              run.adapterGatherer === undefined
                 ? {}
-                : { gatherer: publicGatherer(run.gatherer, true) }),
+                : run.gatherer !== undefined
+                  ? { gatherer: publicGatherer(run.gatherer, true) }
+                  : {
+                      gatherer: publicAdapterGatherer(run.adapterGatherer),
+                    }),
               reviewers: run.reviewers.map((reviewer) =>
                 publicReviewer(reviewer, true),
               ),

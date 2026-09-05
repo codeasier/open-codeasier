@@ -1,3 +1,4 @@
+import { pathToFileURL } from "node:url";
 import {
   defaultRunCommand,
   materializePrSnapshot,
@@ -67,9 +68,11 @@ function commandError(error: unknown) {
   return String(error);
 }
 
+// pathToFileURL handles Windows drive letters (`C:\...`) where a manual
+// `file://` + path join would parse the drive as a URL host.
 if (
   process.argv[1] !== undefined &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href
+  import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   const result = await runGithubPrSnapshot(process.argv.slice(2));
   if (result.exitCode !== 0) {

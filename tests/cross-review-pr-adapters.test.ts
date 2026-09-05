@@ -494,3 +494,78 @@ describe("gitcodeSetupGuidance", () => {
     expect(guidance).toContain("/cross-review setup");
   });
 });
+
+describe("ensureCommit ref hardening", () => {
+  it("rejects option-like ref names from the PR view payload", async () => {
+    const { repo, runCommand, mergeBase } = await fakeForgeRepo("github");
+    const root = await mkdtemp(join(tmpdir(), "pr-adapter-out-"));
+    tracked.push(root);
+    const worktree = join(root, "worktree");
+
+    // Force the fetch path by pointing headRefOid at an absent commit while
+    // headRefName is an option-like ref. gh returns the hostile view.
+    const hostileView = prViewJson({
+      headRefOid: "f".repeat(40),
+      headRefName: "--upload-pack=touch-pwned",
+      baseRefOid: mergeBase,
+    });
+    const issued: string[][] = [];
+    const hostileRunner = async (
+      command: string,
+      args: string[],
+      options: { cwd?: string },
+    ) => {
+      if (command === "gh") return { stdout: hostileView, stderr: "" };
+      if (command === "git") issued.push(args);
+      return runCommand(command, args, options);
+    };
+
+    const result = await runGithubPrSnapshot(
+      flags(repo, "69", worktree, join(worktree, ".cross-review")),
+      hostileRunner,
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("looks like a git option");
+    // No git fetch may carry the hostile ref.
+    const fetches = issued.filter((args) => args[2] === "fetch");
+    expect(fetches).toEqual([]);
+    expect(
+      issued.some((args) => args.includes("--upload-pack=touch-pwned")),
+    ).toBe(false);
+  });
+
+  it("fetches refspecs behind -- so a hostile ref can never be a flag", async () => {
+    const { repo, commands, runCommand, mergeBase } =
+      await fakeForgeRepo("github");
+    const root = await mkdtemp(join(tmpdir(), "pr-adapter-out-"));
+    tracked.push(root);
+    const worktree = join(root, "worktree");
+
+    // Absent head SHA forces the fetch loop; branch names are benign here.
+    const absentView = prViewJson({
+      headRefOid: "f".repeat(40),
+      baseRefOid: mergeBase,
+    });
+    const fetchRunner = async (
+      command: string,
+      args: string[],
+      options: { cwd?: string },
+    ) => {
+      if (command === "gh") return { stdout: absentView, stderr: "" };
+      return runCommand(command, args, options);
+    };
+    await runGithubPrSnapshot(
+      flags(repo, "69", worktree, join(worktree, ".cross-review")),
+      fetchRunner,
+    );
+    const fetches = commands.filter(
+      (entry) => entry.command === "git" && entry.args[2] === "fetch",
+    );
+    expect(fetches.length).toBeGreaterThan(0);
+    for (const entry of fetches) {
+      const dashIndex = entry.args.indexOf("--");
+      expect(dashIndex).toBeGreaterThan(-1);
+      expect(entry.args.slice(2, dashIndex)).toEqual(["fetch", "origin"]);
+    }
+  });
+});

@@ -1,3 +1,5 @@
+import { isAbsolute } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   defaultRunCommand,
   materializePrSnapshot,
@@ -75,10 +77,6 @@ export async function runGitcodePrSnapshot(
   return { exitCode: 0 };
 }
 
-function isAbsolute(path: string) {
-  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
-}
-
 function commandError(error: unknown) {
   if (error instanceof Error) {
     const stderr = (error as { stderr?: string }).stderr;
@@ -89,9 +87,11 @@ function commandError(error: unknown) {
   return String(error);
 }
 
+// pathToFileURL handles Windows drive letters (`C:\...`) where a manual
+// `file://` + path join would parse the drive as a URL host.
 if (
   process.argv[1] !== undefined &&
-  import.meta.url === new URL(`file://${process.argv[1]}`).href
+  import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   const result = await runGitcodePrSnapshot(
     process.argv.slice(2),

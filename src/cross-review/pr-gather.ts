@@ -14,6 +14,9 @@ export const ADAPTER_TIMEOUT_MS = 120_000;
 // on-disk validator (which reports the largest hunks) instead of failing
 // as a truncated exec.
 const ADAPTER_MAX_BUFFER = 16 * 1024 * 1024;
+// Notes travel through argv; beyond this size spawns fail with E2BIG /
+// ENAMETOOLONG depending on the platform, so reject with guidance first.
+const MAX_NOTES_LENGTH = 32 * 1024;
 
 export type PrAdapterRequest = {
   forge: PrForge;
@@ -65,7 +68,8 @@ function adapterScriptPath(forge: PrForge) {
   );
 }
 
-async function existingPath(path: string): Promise<string | undefined> {
+/** The path itself when it exists on disk, otherwise undefined. */
+export async function existingPath(path: string): Promise<string | undefined> {
   try {
     await stat(path);
     return path;
@@ -97,6 +101,11 @@ export function createDefaultPrAdapterRunner(
   execFileLike: ExecFileLike = execFileAsync,
 ): PrAdapterRunner {
   return async (request) => {
+    if (request.notes !== undefined && request.notes.length > MAX_NOTES_LENGTH)
+      return {
+        ok: false,
+        error: `\`context\` for a pull request snapshot must be at most ${MAX_NOTES_LENGTH} characters; got ${request.notes.length}. Write large context to a file and reference it from shorter notes.`,
+      };
     const { worktree, snapshotDir } = snapshotPaths(
       request.stateRoot,
       request.runID,
@@ -151,9 +160,17 @@ export type SnapshotRemover = (worktree: string) => Promise<void>;
  * the `<state>/<runID>/` directory that contained it.
  */
 export const defaultRemoveSnapshot: SnapshotRemover = async (worktree) => {
-  await execFileAsync("git", ["worktree", "remove", "--force", worktree], {
-    timeout: 60_000,
-    maxBuffer: 1024 * 1024,
-  }).catch(() => undefined);
+  // `-C <worktree>` keeps the call independent of the plugin process cwd,
+  // so removal still works when the plugin runs outside the repository;
+  // otherwise the `.git/worktrees/<id>` entry lingers until a manual
+  // `git worktree prune`.
+  await execFileAsync(
+    "git",
+    ["-C", worktree, "worktree", "remove", "--force", worktree],
+    {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
+    },
+  ).catch(() => undefined);
   await rm(dirname(worktree), { recursive: true, force: true });
 };

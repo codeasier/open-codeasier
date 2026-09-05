@@ -1,4 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { mkdtemp, mkdir, readdir, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewTool,
@@ -1072,5 +1075,105 @@ describe("cross_review tool PR snapshot path", () => {
     expect(mock.session.create.mock.calls[0][0].query.directory).toBe("/repo");
     const parsed = JSON.parse((result as any).output);
     expect(parsed.gatherer).toMatchObject({ status: "succeeded" });
+  });
+});
+
+describe("cross_review tool snapshot leak recovery", () => {
+  it("persists a terminal failed manifest for a retained adapter snapshot", async () => {
+    const mock = client();
+    const root = await mkdtemp(join(tmpdir(), "legacy-pr-manifest-"));
+    const WORKTREE = join(root, "worktree");
+    await mkdir(WORKTREE, { recursive: true });
+    const failing = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "gh not authenticated",
+      snapshotPath: WORKTREE,
+    });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const tool = createCrossReviewTool(mock, emptyConfig, {
+      classifyTarget: vi
+        .fn()
+        .mockResolvedValue({ kind: "pr", forge: "github" }),
+      runPrAdapter: failing,
+      stateRoot: root,
+      removeSnapshot,
+    });
+
+    await expect(
+      tool.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    ).rejects.toThrow("gh not authenticated");
+
+    // The failed manifest exists so the 7-day terminal cleanup can find it.
+    const manifests = (await readdir(root)).filter((name) =>
+      name.endsWith(".json"),
+    );
+    expect(manifests.length).toBe(1);
+    const manifest = JSON.parse(
+      await readFile(join(root, manifests[0] as string), "utf8"),
+    );
+    expect(manifest.phase).toBe("failed");
+    expect(manifest.snapshot.worktree).toBe(WORKTREE);
+    expect(removeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("persists a failed manifest when quorum is not met after a snapshot", async () => {
+    // The single reviewer's prompt fails, so quorum (1) is never met.
+    const mock = client(
+      vi.fn().mockRejectedValue(new Error("provider request failed")),
+    );
+    const root = await mkdtemp(join(tmpdir(), "legacy-pr-quorum-"));
+    const WORKTREE = join(root, "worktree");
+    const okAdapter = vi.fn().mockResolvedValue({
+      ok: true,
+      worktree: WORKTREE,
+      snapshotDir: join(WORKTREE, ".cross-review"),
+      meta: {
+        schemaVersion: 1,
+        forge: "github",
+        target: "https://github.com/org/repo/pull/69",
+        url: "https://github.com/org/repo/pull/69",
+        baseSha: "a".repeat(40),
+        headSha: "b".repeat(40),
+        mergeBaseSha: "c".repeat(40),
+        fetchedAt: "2026-09-05T00:00:00.000Z",
+      },
+    });
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const tool = createCrossReviewTool(mock, emptyConfig, {
+      classifyTarget: vi
+        .fn()
+        .mockResolvedValue({ kind: "pr", forge: "github" }),
+      runPrAdapter: okAdapter,
+      stateRoot: root,
+      removeSnapshot,
+    });
+    const result = await tool.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.status).toBe("quorum-not-met");
+    expect(removeSnapshot).not.toHaveBeenCalled();
+
+    const manifests = (await readdir(root)).filter((name) =>
+      name.endsWith(".json"),
+    );
+    expect(manifests.length).toBe(1);
+    const manifest = JSON.parse(
+      await readFile(join(root, manifests[0] as string), "utf8"),
+    );
+    expect(manifest.phase).toBe("failed");
+    expect(manifest.snapshot.worktree).toBe(WORKTREE);
   });
 });
