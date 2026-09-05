@@ -1726,6 +1726,30 @@ describe("asynchronous cross-review protocol", () => {
     ).toContain("context gatherer");
   });
 
+  it("treats a whitespace-only context as not provided and still gathers", async () => {
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: "   ",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        context(),
+      ),
+    );
+
+    expect(started.phase).toBe("gathering");
+    expect(started.gatherer).toBeDefined();
+    expect(
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text,
+    ).toContain("context gatherer");
+  });
+
   it("truncates an oversized gathered context in reviewer briefs", async () => {
     const { client, messages } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
@@ -2658,11 +2682,133 @@ describe("parent-session protocol defenses", () => {
       await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
     );
     expect(judging.phase).toBe("judging");
+    expect(judging.readyToFinalize).toBe(false);
     statuses["child-2"] = { type: "busy" };
 
     await expect(
       tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
     ).rejects.toThrow("Cannot finalize cross-review: judge is still active");
+  });
+
+  it("sets readyToFinalize after the explicit judge is terminal", async () => {
+    const { client, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        context: "shared",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    messages.set("child-1", completed("candidate"));
+    await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
+    messages.set("child-2", completed("verified"));
+
+    const status = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+    expect(status.phase).toBe("judging");
+    expect(status.readyToFinalize).toBe(true);
+  });
+
+  it("rejects finalize while a reviewer timeout is pending", async () => {
+    let timestamp = 1_000;
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    timestamp = 6_001;
+
+    await expect(
+      tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    ).rejects.toThrow("timeoutAction");
+  });
+
+  it("rejects finalize while a judge timeout is pending", async () => {
+    let timestamp = 1_000;
+    const { client, statuses, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        context: "shared",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    messages.set("child-1", completed("candidate"));
+    await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
+    statuses["child-2"] = { type: "busy" };
+    timestamp = 6_001;
+
+    await expect(
+      tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    ).rejects.toThrow("timeoutAction");
+  });
+
+  it("ignores stray abort after a preserved session has finished", async () => {
+    let timestamp = 1_000;
+    const { client, statuses, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    statuses["child-1"] = { type: "busy" };
+    timestamp = 6_001;
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+    await tools.cross_review_status.execute(
+      { runID: RUN_ID, timeoutAction: "preserve" },
+      context(),
+    );
+    delete statuses["child-1"];
+    messages.set("child-1", completed("late review"));
+    timestamp = 7_000;
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+
+    const status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, timeoutAction: "abort" },
+        context(),
+      ),
+    );
+    expect(status.warning).toBe(STRAY_TIMEOUT_ACTION_WARNING);
+    expect(status.counts).toEqual({ succeeded: 1 });
+  });
+
+  it("warns when a non-PR start has whitespace-only context and no judge", async () => {
+    const { client } = mockClient();
+    const started = output(
+      await protocol(client, new MemoryRunStore()).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: "   ",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started.warning).toBe(MISSING_PARENT_CONTEXT_WARNING);
+    expect(started.phase).toBe("reviewing");
   });
 });
 

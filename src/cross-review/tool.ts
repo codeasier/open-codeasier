@@ -175,6 +175,18 @@ export function joinWarnings(
 }
 
 /**
+ * Empty or whitespace-only `context` is treated as omitted: it must not
+ * disable gathering or suppress the missing-context warning.
+ */
+export function normalizeProvidedContext(
+  context: string | undefined,
+): string | undefined {
+  if (context === undefined) return undefined;
+  const trimmed = context.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
+/**
  * Parent-session judging cannot run the gatherer. A classified PR snapshot
  * already has shared evidence, so an omitted `context` is expected there.
  */
@@ -185,7 +197,7 @@ export function missingParentContextWarning(input: {
 }): string | undefined {
   if (input.isPrSnapshot) return undefined;
   if (input.judgeModel !== undefined) return undefined;
-  if (input.context !== undefined && input.context.length > 0) return undefined;
+  if (normalizeProvidedContext(input.context) !== undefined) return undefined;
   return MISSING_PARENT_CONTEXT_WARNING;
 }
 
@@ -578,12 +590,9 @@ export function createCrossReviewTool(
               error?: string;
             }
           | undefined;
-        // An empty context is treated as "not provided": it must not disable
-        // gathering while embedding nothing into reviewer briefs.
-        const providedContext =
-          args.context === undefined || args.context.length === 0
-            ? undefined
-            : args.context;
+        // An empty or whitespace-only context is treated as "not provided":
+        // it must not disable gathering while embedding nothing into briefs.
+        const providedContext = normalizeProvidedContext(args.context);
 
         // Classified pull requests are materialized as a snapshot worktree
         // before any reviewer session exists (fail closed, no LLM gatherer).

@@ -10,6 +10,7 @@ import {
   gatherBrief,
   joinWarnings,
   missingParentContextWarning,
+  normalizeProvidedContext,
   OMIT_ARRAY_OVERRIDE_DESCRIPTION,
   OMIT_ZERO_OVERRIDE_DESCRIPTION,
   prSnapshotJudgeBrief,
@@ -430,13 +431,19 @@ function pendingTimeouts(run: CrossReviewRun) {
   ];
 }
 
+function isActiveTimedRun(entry: { status: string }) {
+  return ACTIVE_REVIEWER_STATUSES.has(entry.status as ReviewerRunStatus);
+}
+
 function hasPreservedSession(run: CrossReviewRun) {
   return (
     run.reviewers.some(
-      (reviewer) => reviewer.timeoutExtensions !== undefined,
+      (reviewer) =>
+        reviewer.timeoutExtensions !== undefined && isActiveTimedRun(reviewer),
     ) ||
-    run.gatherer?.timeoutExtensions !== undefined ||
-    run.judge?.timeoutExtensions !== undefined
+    (run.gatherer?.timeoutExtensions !== undefined &&
+      isActiveTimedRun(run.gatherer)) ||
+    (run.judge?.timeoutExtensions !== undefined && isActiveTimedRun(run.judge))
   );
 }
 
@@ -501,17 +508,23 @@ function preserveTimedRun(
   entry.status = status?.type === "busy" ? "running" : "starting";
 }
 
+function judgeTerminal(run: CrossReviewRun) {
+  return (
+    run.judge !== undefined &&
+    TERMINAL_REVIEWER_STATUSES.has(run.judge.status as ReviewerRunStatus)
+  );
+}
+
+function isReadyToFinalize(run: CrossReviewRun) {
+  if (run.phase === "reviewing") return reviewersTerminal(run);
+  if (run.phase === "judging") return judgeTerminal(run);
+  return false;
+}
+
 function runFinishedWaiting(run: CrossReviewRun) {
   if (pendingTimeouts(run).length > 0) return true;
   if (isTerminalPhase(run.phase)) return true;
-  if (run.phase === "reviewing" && reviewersTerminal(run)) return true;
-  if (
-    run.phase === "judging" &&
-    run.judge !== undefined &&
-    TERMINAL_REVIEWER_STATUSES.has(run.judge.status as ReviewerRunStatus)
-  )
-    return true;
-  return false;
+  return isReadyToFinalize(run);
 }
 
 function runSnapshot(run: CrossReviewRun) {
@@ -699,7 +712,7 @@ function progress(
     phase: run.phase,
     quorum: run.quorum,
     counts,
-    readyToFinalize: run.phase === "reviewing" && reviewersTerminal(run),
+    readyToFinalize: isReadyToFinalize(run),
     pollAfterMs: pollAfter,
     summary: progressSummary(run, counts, pollAfter),
     ...(pendingTimeouts(run).length === 0
@@ -2036,12 +2049,9 @@ export function createCrossReviewProtocolTools(
             await assertSessionDirectory(prSnapshot, session.id);
         }
         const timestamp = now();
-        // An empty context is treated as "not provided": it must not disable
-        // gathering while embedding nothing into reviewer briefs.
-        const providedContext =
-          args.context === undefined || args.context.length === 0
-            ? undefined
-            : args.context;
+        // An empty or whitespace-only context is treated as "not provided":
+        // it must not disable gathering while embedding nothing into briefs.
+        const providedContext = normalizeProvidedContext(args.context);
         const warning = joinWarnings(
           configWarning(loaded),
           missingParentContextWarning({
@@ -2388,7 +2398,7 @@ export function createCrossReviewProtocolTools(
 
   const finalize = tool({
     description:
-      "Finalize an asynchronous cross-review run or start its explicit judge once reviewers are terminal; rejects while reviewers or the judge are still active — poll cross_review_status until readyToFinalize=true",
+      "Finalize an asynchronous cross-review run or start its explicit judge once reviewers or the explicit judge are terminal; rejects while work is still active — poll cross_review_status until readyToFinalize=true, or resolve a pending timeout with timeoutAction first",
     args: { runID: tool.schema.string().uuid() },
     async execute(args, context) {
       return withAuthorizedRun(args.runID, context, async (run, save) => {
@@ -2430,6 +2440,10 @@ export function createCrossReviewProtocolTools(
           await save();
           return result(`Cross-review failed: ${run.target}`, run.finalResult);
         }
+        if (pendingTimeouts(run).length > 0)
+          throw new Error(
+            "Cannot finalize cross-review: a timeout decision is pending; resolve it with cross_review_status and timeoutAction after the user chooses preserve or abort",
+          );
         if (run.phase === "gathering")
           throw new Error(
             "Cannot finalize cross-review: gathering is still active; poll using cross_review_status until readyToFinalize=true",
@@ -2574,7 +2588,7 @@ export function createCrossReviewProtocolTools(
           }
         }
         throw new Error(
-          "Cannot finalize cross-review: judge is still active; poll using cross_review_status until the judge is terminal",
+          "Cannot finalize cross-review: judge is still active; poll using cross_review_status until readyToFinalize=true",
         );
       });
     },

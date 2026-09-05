@@ -8,6 +8,7 @@ import {
   joinWarnings,
   missingParentContextWarning,
   MISSING_PARENT_CONTEXT_WARNING,
+  normalizeProvidedContext,
   resolveReviewers,
   type CrossReviewClient,
 } from "../src/cross-review/tool.js";
@@ -125,6 +126,21 @@ describe("missing parent-context warning", () => {
         isPrSnapshot: false,
       }),
     ).toBe(MISSING_PARENT_CONTEXT_WARNING);
+    expect(
+      missingParentContextWarning({
+        context: "   ",
+        isPrSnapshot: false,
+      }),
+    ).toBe(MISSING_PARENT_CONTEXT_WARNING);
+  });
+
+  it("treats blank context as omitted", () => {
+    expect(normalizeProvidedContext(undefined)).toBeUndefined();
+    expect(normalizeProvidedContext("")).toBeUndefined();
+    expect(normalizeProvidedContext("   ")).toBeUndefined();
+    expect(normalizeProvidedContext("  already gathered  ")).toBe(
+      "already gathered",
+    );
   });
 });
 
