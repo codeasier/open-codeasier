@@ -2848,6 +2848,81 @@ describe("parent-session protocol defenses", () => {
     expect(aborted.reviewers[0].status).toBe("timed_out");
   });
 
+  it("applies timeoutAction when a deadline expires before the next poll", async () => {
+    let timestamp = 1_000;
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    timestamp = 6_001;
+
+    const status = output(
+      await tools.cross_review_status.execute(
+        {
+          runID: RUN_ID,
+          detail: true,
+          waitMs: 0,
+          timeoutAction: "abort",
+        },
+        context(),
+      ),
+    );
+
+    expect(status).not.toHaveProperty("warning");
+    expect(status).not.toHaveProperty("actionRequired");
+    expect(status.reviewers[0].status).toBe("timed_out");
+  });
+
+  it("sets readyToFinalize after a terminal phase", async () => {
+    const { client, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    messages.set("child-1", completed("candidate"));
+    await tools.cross_review_finalize.execute({ runID: RUN_ID }, context());
+
+    const completedStatus = output(
+      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+    );
+    expect(completedStatus.phase).toBe("completed");
+    expect(completedStatus.readyToFinalize).toBe(true);
+
+    const { client: cancelClient } = mockClient();
+    const cancelTools = protocol(cancelClient, new MemoryRunStore());
+    await cancelTools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    const cancelled = output(
+      await cancelTools.cross_review_cancel.execute(
+        { runID: RUN_ID },
+        context(),
+      ),
+    );
+    expect(cancelled.phase).toBe("cancelled");
+    expect(cancelled.readyToFinalize).toBe(true);
+  });
+
   it("warns when a non-PR start has whitespace-only context and no judge", async () => {
     const { client } = mockClient();
     const started = output(

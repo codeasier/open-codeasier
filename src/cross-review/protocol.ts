@@ -447,18 +447,41 @@ function hasPreservedSession(run: CrossReviewRun) {
   );
 }
 
+function isOverdueActive(
+  entry: { status: string; deadlineAt?: number },
+  timestamp: number,
+) {
+  return (
+    isActiveTimedRun(entry) &&
+    entry.status !== "timeout_pending" &&
+    entry.deadlineAt !== undefined &&
+    timestamp >= entry.deadlineAt
+  );
+}
+
+function hasOverdueSession(run: CrossReviewRun, timestamp: number) {
+  return (
+    run.reviewers.some((reviewer) => isOverdueActive(reviewer, timestamp)) ||
+    (run.gatherer !== undefined && isOverdueActive(run.gatherer, timestamp)) ||
+    (run.judge !== undefined && isOverdueActive(run.judge, timestamp))
+  );
+}
+
 /**
  * `timeoutAction` is a one-shot user decision. Apply it only when a
- * timeout is already pending, or when aborting a previously preserved
- * session. A stray value on an ordinary poll must not auto-extend a
- * deadline that appears later in the same call.
+ * timeout is already pending, a session is already overdue but not yet
+ * parked, or when aborting a previously preserved session. A stray value
+ * on an ordinary poll must not auto-extend a deadline that appears later
+ * in the same call.
  */
 function resolveStatusTimeoutAction(
   run: CrossReviewRun,
   requested: TimeoutAction | undefined,
+  timestamp: number,
 ): { action: TimeoutAction | undefined; warning?: string } {
   if (requested === undefined) return { action: undefined };
-  if (pendingTimeouts(run).length > 0) return { action: requested };
+  if (pendingTimeouts(run).length > 0 || hasOverdueSession(run, timestamp))
+    return { action: requested };
   if (requested === "abort" && hasPreservedSession(run))
     return { action: requested };
   return { action: undefined, warning: STRAY_TIMEOUT_ACTION_WARNING };
@@ -516,6 +539,7 @@ function judgeTerminal(run: CrossReviewRun) {
 }
 
 function isReadyToFinalize(run: CrossReviewRun) {
+  if (isTerminalPhase(run.phase)) return true;
   if (run.phase === "reviewing") return reviewersTerminal(run);
   if (run.phase === "judging") return judgeTerminal(run);
   return false;
@@ -2242,7 +2266,11 @@ export function createCrossReviewProtocolTools(
       let timeoutActionWarning: string | undefined;
 
       await withAuthorizedRun(args.runID, context, async (run, save) => {
-        const resolved = resolveStatusTimeoutAction(run, args.timeoutAction);
+        const resolved = resolveStatusTimeoutAction(
+          run,
+          args.timeoutAction,
+          now(),
+        );
         acceptedTimeoutAction = resolved.action;
         timeoutActionWarning = resolved.warning;
         await reconcile(run, save, context, acceptedTimeoutAction);
