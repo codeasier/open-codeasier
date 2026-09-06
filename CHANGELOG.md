@@ -48,6 +48,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   applied. Truly illegal overrides still fail fast. Empty or zero values that
   still reach validation mention omitting the argument to use config. Blank
   `judgeModel` still means parent-session judging; empty `focus` is unchanged.
+- Harden the asynchronous cross-review parent-session protocol. Finalize
+  rejects while gathering, reviewers, the explicit judge, or a pending
+  timeout decision are still active, so it cannot be used as a poll;
+  `readyToFinalize` is true when reviewers are terminal, the explicit
+  judge is terminal, or the run is already in a terminal phase. A
+  `timeoutAction` on the poll that first observes an already-overdue
+  session is applied instead of being ignored. A non-PR start without
+  `judgeModel` and `context` still runs but warns. Empty or
+  whitespace-only `context` is omitted,
+  including PR snapshot `notes.md`. A stray `timeoutAction` on an
+  ordinary poll is ignored with a warning, including `abort` after a
+  preserved session has already finished.
 
 ## [0.2.12] - 2026-09-04
 
