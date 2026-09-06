@@ -28,7 +28,7 @@ Severity (worst item wins):
 
 - **P0** evidence unavailable (parent, SDK, or store unreadable).
 - **P1** model mismatch, tools-deny miss, isolation or parent-link break, reviewer children, silent model replace, or legacy blocking `cross_review` used as the review path.
-- **P2** context contract broken; reviewer wander, bash, or search loop without shared context; `timeout_pending` resolved without a user `timeoutAction`; gatherer/judge role bleed.
+- **P2** `run.evidence_contract` broken (neither persisted shared evidence nor a judge gatherer); reviewer wander, bash, or search loop without shared evidence; `timeout_pending` resolved without a user `timeoutAction`; gatherer/judge role bleed.
 - **P3** polling waste (repeated finalize while non-terminal, client-side sleep instead of `waitMs`), extra starts that did not replace a cancelled run.
 
 If `runs.found` failed and a blocking `cross_review` call exists, explain that there is no protocol tree. If `runs.found` failed and there are no protocol tools, say this session did not use cross-review. Never claim omitted or truncated content. Treat `errors[]` as directory-scoped: a corrupt manifest from the whole run-store can appear even when it belongs to another owner. Prompt-level fails on `queued` or never-started `cancelled` roles are not protocol breaks.

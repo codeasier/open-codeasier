@@ -141,13 +141,17 @@ export type CrossReviewRun = {
   globalConfigPath: string;
   reviewers: ReviewerRun[];
   gatherer?: GathererRun;
-  /** Present only for classified pull-request snapshot runs. */
+  /** Run-private evidence, retained for parent consolidation until release or TTL. */
   snapshot?: {
-    /** Detached worktree at the PR head SHA; reviewer/judge `query.directory`. */
+    /** Detached worktree; reviewer/judge `query.directory`. */
     worktree: string;
     /** `.cross-review` contract directory inside the worktree. */
     snapshotDir: string;
-    forge: "github" | "gitcode";
+    forge?: "github" | "gitcode";
+    /** Omitted only in manifests persisted before parent packs were supported. */
+    source?: "parent-pack" | "adapter";
+    /** Original project-relative pack path, recorded only after a successful copy. */
+    evidenceDir?: string;
     /** Canonical PR URL; unknown when the adapter failed early. */
     url?: string;
     headSha?: string;

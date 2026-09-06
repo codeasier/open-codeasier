@@ -263,6 +263,7 @@ function buildRunResult(input: {
   fetchErrors: Map<string, { code: string; detail: string }>;
 }): AuditRunResult {
   const run = input.run;
+  const roleDirectory = run.snapshot?.worktree ?? run.directory;
   const checks = evaluateRunChecks({ run, sessions: input.sessions });
   const gathererUntil =
     run.gatherer !== undefined &&
@@ -279,7 +280,7 @@ function buildRunResult(input: {
     run.gatherer === undefined
       ? undefined
       : input.fetchErrors.get(
-          sessionCacheKey(run.directory, run.gatherer.sessionID),
+          sessionCacheKey(roleDirectory, run.gatherer.sessionID),
         );
   const gatherer =
     run.gatherer === undefined
@@ -306,7 +307,7 @@ function buildRunResult(input: {
     run.judge === undefined
       ? undefined
       : input.fetchErrors.get(
-          sessionCacheKey(run.directory, run.judge.sessionID),
+          sessionCacheKey(roleDirectory, run.judge.sessionID),
         );
   const judge =
     run.judge === undefined
@@ -323,7 +324,7 @@ function buildRunResult(input: {
   const reviewers = run.reviewers.map((reviewer) => {
     const reviewerEvidence = input.sessions.get(reviewer.sessionID);
     const reviewerError = input.fetchErrors.get(
-      sessionCacheKey(run.directory, reviewer.sessionID),
+      sessionCacheKey(roleDirectory, reviewer.sessionID),
     );
     const report = roleReport({
       role: `reviewer:${reviewer.reviewer}`,
@@ -429,7 +430,11 @@ export async function auditCrossReview(input: {
         try {
           sessions.set(
             sessionID,
-            await load(sessionID, run.directory, messageIDs),
+            await load(
+              sessionID,
+              run.snapshot?.worktree ?? run.directory,
+              messageIDs,
+            ),
           );
         } catch {
           sessions.set(sessionID, undefined);

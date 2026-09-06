@@ -17,7 +17,7 @@ import {
   prSnapshotJudgeBrief,
   prSnapshotReviewBrief,
   readOnlyEvidenceRules,
-  requireParentContext,
+  requireSharedEvidence,
   resolveEmbedLimit,
   resolveReviewers,
   reviewBrief,
@@ -194,39 +194,51 @@ describe("missing parent-context requirement", () => {
     );
   });
 
-  it("rejects only non-PR parent-judged starts without context", () => {
+  it("rejects parent-judged starts without shared evidence", () => {
     expect(() =>
-      requireParentContext({
+      requireSharedEvidence({
         isPrSnapshot: false,
       }),
     ).toThrow(MISSING_PARENT_CONTEXT_ERROR);
     expect(() =>
-      requireParentContext({
+      requireSharedEvidence({
         judgeModel: "b/judge",
         isPrSnapshot: false,
       }),
     ).not.toThrow();
     expect(() =>
-      requireParentContext({
+      requireSharedEvidence({
         context: "diff",
         isPrSnapshot: false,
       }),
     ).not.toThrow();
     expect(() =>
-      requireParentContext({
+      requireSharedEvidence({
         isPrSnapshot: true,
       }),
     ).not.toThrow();
     expect(() =>
-      requireParentContext({
+      requireSharedEvidence({
         context: "",
         isPrSnapshot: false,
       }),
     ).toThrow(MISSING_PARENT_CONTEXT_ERROR);
     expect(() =>
-      requireParentContext({
+      requireSharedEvidence({
         context: "   ",
         isPrSnapshot: false,
+      }),
+    ).toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(() =>
+      requireSharedEvidence({
+        isPrSnapshot: false,
+        hasEvidencePack: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      requireSharedEvidence({
+        isPrSnapshot: false,
+        hasEvidencePack: false,
       }),
     ).toThrow(MISSING_PARENT_CONTEXT_ERROR);
   });

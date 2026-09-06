@@ -1,17 +1,23 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { mkdtemp } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  createCrossReviewProtocolTools,
+  createCrossReviewProtocolTools as createProtocolTools,
   STRAY_TIMEOUT_ACTION_WARNING,
   type AsyncCrossReviewClient,
 } from "../src/cross-review/protocol.js";
 import {
   embedLimitForContextWindow,
   embeddedContextWarning,
-  joinWarnings,
   MAX_EMBEDDED_CONTEXT_LENGTH,
   MISSING_PARENT_CONTEXT_ERROR,
 } from "../src/cross-review/tool.js";
@@ -24,6 +30,21 @@ import { FileCrossReviewRunStore } from "../src/cross-review/run-store.js";
 import type { LoadedCrossReviewConfig } from "../src/cross-review/config.js";
 
 const RUN_ID = "00000000-0000-4000-8000-000000000001";
+
+const createCrossReviewProtocolTools: typeof createProtocolTools = (
+  client,
+  options,
+) =>
+  createProtocolTools(client, {
+    createParentSnapshot: async () => ({
+      worktree: "/snapshot",
+      snapshotDir: "/snapshot/.cross-review",
+      source: "parent-pack",
+      headSha: "abc",
+    }),
+    removeSnapshot: vi.fn().mockResolvedValue(undefined),
+    ...options,
+  });
 
 class MemoryRunStore implements CrossReviewRunStore {
   readonly runs = new Map<string, CrossReviewRun>();
@@ -192,7 +213,7 @@ function mockClient() {
     },
     session: {
       get: vi.fn().mockImplementation(async (input) => ({
-        data: { id: input.path.id },
+        data: { id: input.path.id, directory: input.query?.directory },
       })),
       create: vi.fn().mockImplementation(async () => ({
         data: { id: `child-${++nextID}` },
@@ -232,6 +253,187 @@ function protocol(
 function output(result: unknown) {
   return JSON.parse((result as { output: string }).output);
 }
+
+describe("evidenceDir protocol", () => {
+  it.each([false, true])(
+    "validates before any child or adapter activity (PR=%s)",
+    async (pr) => {
+      const directory = await mkdtemp(join(tmpdir(), "protocol-evidence-"));
+      try {
+        const { client } = mockClient();
+        const adapter = vi.fn();
+        const tools = createCrossReviewProtocolTools(client, {
+          store: new MemoryRunStore(),
+          loadConfig: loadedConfig,
+          classifyTarget: async () =>
+            pr ? { kind: "pr", forge: "github" } : { kind: "legacy" },
+          runPrAdapter: adapter,
+        });
+        for (const evidenceDir of ["", "missing", "../escape"]) {
+          await expect(
+            tools.cross_review_start.execute(
+              {
+                target: "HEAD",
+                evidenceDir,
+                context: "otherwise valid",
+                reviewModels: ["a/one"],
+              },
+              { ...context(), directory },
+            ),
+          ).rejects.toThrow();
+        }
+        await mkdir(join(directory, "pack"));
+        await writeFile(join(directory, "pack", "meta.json"), "{}");
+        await writeFile(join(directory, "pack", "summary.md"), "summary");
+        await expect(
+          tools.cross_review_start.execute(
+            { target: "HEAD", evidenceDir: "pack", reviewModels: ["a/one"] },
+            { ...context(), directory },
+          ),
+        ).rejects.toThrow();
+        await writeFile(
+          join(directory, "pack", "meta.json"),
+          '{"target":"HEAD"}',
+        );
+        await symlink(
+          join(directory, "pack", "summary.md"),
+          join(directory, "pack", "link"),
+        );
+        await expect(
+          tools.cross_review_start.execute(
+            { target: "HEAD", evidenceDir: "pack", reviewModels: ["a/one"] },
+            { ...context(), directory },
+          ),
+        ).rejects.toThrow();
+        expect(client.session.create).not.toHaveBeenCalled();
+        expect(client.session.promptAsync).not.toHaveBeenCalled();
+        expect(adapter).not.toHaveBeenCalled();
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each([undefined, "b/judge"])(
+    "accepts evidence without context and bypasses gathering (judge=%s)",
+    async (judgeModel) => {
+      const directory = await mkdtemp(join(tmpdir(), "protocol-evidence-"));
+      try {
+        await mkdir(join(directory, "pack"));
+        await writeFile(
+          join(directory, "pack", "meta.json"),
+          '{"target":"HEAD"}',
+        );
+        await writeFile(join(directory, "pack", "summary.md"), "secret body");
+        const { client } = mockClient();
+        const materialize = vi.fn().mockResolvedValue({
+          worktree: "/snapshot",
+          snapshotDir: "/snapshot/.cross-review",
+          source: "parent-pack",
+          evidenceDir: "pack",
+        });
+        const tools = createCrossReviewProtocolTools(client, {
+          store: new MemoryRunStore(),
+          loadConfig: loadedConfig,
+          createParentSnapshot: materialize,
+        });
+        const started = output(
+          await tools.cross_review_start.execute(
+            {
+              target: "HEAD",
+              evidenceDir: "pack",
+              reviewModels: ["a/one"],
+              agents: 1,
+              ...(judgeModel ? { judgeModel } : {}),
+            },
+            { ...context(), directory },
+          ),
+        );
+        expect(materialize).toHaveBeenCalledOnce();
+        expect(started.phase).toBe("reviewing");
+        expect(started.gatherer).toBeUndefined();
+        expect(started.snapshot.source).toBe("parent-pack");
+        expect(
+          client.session.promptAsync.mock.calls[0]?.[0].body.parts[0].text,
+        ).toContain(".cross-review/summary.md");
+        expect(
+          JSON.stringify(client.session.promptAsync.mock.calls),
+        ).not.toContain("secret body");
+      } finally {
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("copies PR attachments before dispatch while preserving adapter diff and metadata", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "protocol-evidence-"));
+    try {
+      const snapshotDir = join(directory, "worktree", ".cross-review");
+      await mkdir(snapshotDir, { recursive: true });
+      await mkdir(join(directory, "pack"));
+      await writeFile(
+        join(directory, "pack", "meta.json"),
+        '{"target":"parent"}',
+      );
+      await writeFile(
+        join(directory, "pack", "summary.md"),
+        "parent attachment body",
+      );
+      await writeFile(join(directory, "pack", "diff.patch"), "parent diff");
+      await writeFile(join(snapshotDir, "meta.json"), "adapter meta");
+      await writeFile(join(snapshotDir, "diff.patch"), "adapter diff");
+      const { client } = mockClient();
+      client.session.promptAsync.mockImplementation(async () => {
+        expect(
+          await readFile(join(snapshotDir, "materials", "summary.md"), "utf8"),
+        ).toBe("parent attachment body");
+        return { data: undefined };
+      });
+      const store = new MemoryRunStore();
+      const tools = createCrossReviewProtocolTools(client, {
+        store,
+        loadConfig: loadedConfig,
+        classifyTarget: async () => ({ kind: "pr", forge: "github" }),
+        runPrAdapter: vi.fn().mockResolvedValue({
+          ok: true,
+          worktree: join(directory, "worktree"),
+          snapshotDir,
+          meta: {},
+        }),
+      });
+      const started = output(
+        await tools.cross_review_start.execute(
+          {
+            target: "PR #83",
+            evidenceDir: "pack",
+            reviewModels: ["a/one"],
+            agents: 1,
+          },
+          { ...context(), directory },
+        ),
+      );
+      expect(started.snapshot).toMatchObject({
+        source: "adapter",
+        evidenceDir: "pack",
+      });
+      expect(store.runs.get(started.runID)?.snapshot?.evidenceDir).toBe("pack");
+      expect(await readFile(join(snapshotDir, "meta.json"), "utf8")).toBe(
+        "adapter meta",
+      );
+      expect(await readFile(join(snapshotDir, "diff.patch"), "utf8")).toBe(
+        "adapter diff",
+      );
+      expect(
+        await readFile(join(snapshotDir, "materials", "diff.patch"), "utf8"),
+      ).toBe("parent diff");
+      expect(
+        JSON.stringify(client.session.promptAsync.mock.calls),
+      ).not.toContain("parent attachment body");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("asynchronous cross-review protocol", () => {
   it("starts reviewer sessions without waiting for model completion", async () => {
@@ -1542,7 +1744,7 @@ describe("asynchronous cross-review protocol", () => {
     expect(client.session.promptAsync).toHaveBeenCalledTimes(1);
     expect(
       client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text,
-    ).toContain("parent context");
+    ).toContain(".cross-review/summary.md");
 
     messages.set("child-1", completed("candidate"));
     const judging = output(
@@ -1551,7 +1753,8 @@ describe("asynchronous cross-review protocol", () => {
     expect(judging.phase).toBe("judging");
     const judgeText =
       client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
-    expect(judgeText).toContain("parent context");
+    expect(judgeText).toContain(".cross-review/summary.md");
+    expect(judgeText).not.toContain("parent context");
   });
 
   it("degrades to independent fetching when gathering fails", async () => {
@@ -1839,7 +2042,7 @@ describe("asynchronous cross-review protocol", () => {
     ).toContain("context gatherer");
   });
 
-  it("keeps a 100000-1000000 character parent context in reviewer briefs", async () => {
+  it("references a file instead of embedding large parent context", async () => {
     const { client } = mockClient();
     const store = new MemoryRunStore();
     const midRange = `start-${"x".repeat(150_000)}-end`;
@@ -1858,8 +2061,9 @@ describe("asynchronous cross-review protocol", () => {
     expect(store.runs.get(RUN_ID)).not.toHaveProperty("embedLimit");
     const reviewerText =
       client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
-    expect(reviewerText).toContain("start-");
-    expect(reviewerText).toContain("-end");
+    expect(reviewerText).toContain(".cross-review/summary.md");
+    expect(reviewerText).not.toContain("start-");
+    expect(reviewerText).not.toContain("-end");
     expect(reviewerText).not.toContain("context truncated");
   });
 
@@ -1923,7 +2127,7 @@ describe("asynchronous cross-review protocol", () => {
     expect(reviewerText).not.toContain("-end");
   });
 
-  it("warns when an unenforced parent context exceeds the embed limit", async () => {
+  it("does not truncate file-backed context beyond the embed limit", async () => {
     const { client } = mockClient();
     const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
     const started = output(
@@ -1937,14 +2141,14 @@ describe("asynchronous cross-review protocol", () => {
         context(),
       ),
     );
-    expect(started.warning).toBe(embeddedContextWarning(oversized));
+    expect(started.warning).toBeUndefined();
     const reviewerText =
       client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
-    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).toContain(".cross-review/summary.md");
     expect(reviewerText).not.toContain("-end");
   });
 
-  it("clips parent context to the tightest reviewer context window", async () => {
+  it("keeps parent context out of the reviewer context window", async () => {
     const { client } = mockClient();
     const store = new MemoryRunStore();
     client.provider.list.mockResolvedValue({
@@ -1975,17 +2179,15 @@ describe("asynchronous cross-review protocol", () => {
         context(),
       ),
     );
-    expect(started.warning).toBe(
-      embeddedContextWarning(oversized, windowLimit),
-    );
+    expect(started.warning).toBeUndefined();
     expect(store.runs.get(RUN_ID)?.embedLimit).toBe(windowLimit);
     const reviewerText =
       client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
-    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).toContain(".cross-review/summary.md");
     expect(reviewerText).not.toContain("-end");
   });
 
-  it("clips CJK parent context tighter than the ASCII unit budget", async () => {
+  it("keeps CJK parent context file-backed without truncation warnings", async () => {
     const { client } = mockClient();
     client.provider.list.mockResolvedValue({
       data: {
@@ -2012,17 +2214,15 @@ describe("asynchronous cross-review protocol", () => {
       ),
     );
     expect(oversized.length).toBeLessThan(windowLimit);
-    expect(started.warning).toBe(
-      embeddedContextWarning(oversized, windowLimit),
-    );
+    expect(started.warning).toBeUndefined();
     const reviewerText =
       client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
-    expect(reviewerText).toContain("始");
-    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("始");
+    expect(reviewerText).toContain(".cross-review/summary.md");
     expect(reviewerText).not.toContain("终");
   });
 
-  it("joins the config fallback warning with an oversized parent context warning", async () => {
+  it("only reports the config fallback warning for file-backed context", async () => {
     const { client } = mockClient();
     const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
     const started = output(
@@ -2041,12 +2241,10 @@ describe("asynchronous cross-review protocol", () => {
         context(),
       ),
     );
-    expect(started.warning).toBe(
-      joinWarnings(GLOBAL_FALLBACK_WARNING, embeddedContextWarning(oversized)),
-    );
+    expect(started.warning).toBe(GLOBAL_FALLBACK_WARNING);
     const reviewerText =
       client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
-    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).toContain(".cross-review/summary.md");
     expect(reviewerText).not.toContain("-end");
   });
 
@@ -2471,9 +2669,9 @@ describe("asynchronous cross-review protocol", () => {
 
   it("allows cross_review_start from primary sessions without a parentID", async () => {
     const { client } = mockClient();
-    client.session.get = vi.fn().mockResolvedValue({
-      data: { id: "primary-session" },
-    });
+    client.session.get = vi.fn().mockImplementation(async (input) => ({
+      data: { id: input.path.id, directory: input.query?.directory },
+    }));
     const tools = protocol(client, new MemoryRunStore());
 
     const started = output(
@@ -4000,7 +4198,7 @@ describe("cross-review PR snapshot protocol", () => {
     );
   });
 
-  it("removes the snapshot worktree on successful finalize (S9)", async () => {
+  it("retains the snapshot for parent consolidation and releases it on cancel", async () => {
     const { client, messages } = mockClient();
     const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
     const removeSnapshot = vi.fn().mockResolvedValue(undefined);
@@ -4026,6 +4224,9 @@ describe("cross-review PR snapshot protocol", () => {
     );
 
     expect(finalized.phase).toBe("completed");
+    expect(finalized.snapshot.worktree).toBe(WORKTREE);
+    expect(removeSnapshot).not.toHaveBeenCalled();
+    await tools.cross_review_cancel.execute({ runID: RUN_ID }, context());
     expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
   });
 
@@ -4131,7 +4332,7 @@ describe("cross-review PR snapshot protocol", () => {
     // The final result reports the adapter gatherer exactly as status does.
     expect(finalized.gatherer).toMatchObject({ kind: "adapter" });
     expect(finalized.gatherer.model).toBeUndefined();
-    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+    expect(removeSnapshot).not.toHaveBeenCalled();
   });
 });
 

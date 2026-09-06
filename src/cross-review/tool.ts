@@ -187,17 +187,19 @@ export function normalizeProvidedContext(
 }
 
 /**
- * Parent-session judging cannot run the gatherer. A classified PR snapshot
- * already has shared evidence, so an omitted `context` is expected there.
- * Non-PR starts without both `judgeModel` and `context` fail closed before
- * any reviewer session exists.
+ * Parent-session judging cannot run the gatherer. A classified PR snapshot,
+ * validated evidence pack, or nonblank context supplies shared evidence.
+ * Starts without shared evidence or a judge model fail closed before any
+ * reviewer session exists.
  */
-export function requireParentContext(input: {
+export function requireSharedEvidence(input: {
   judgeModel?: string | undefined;
   context?: string | undefined;
   isPrSnapshot: boolean;
+  hasEvidencePack?: boolean;
 }): void {
   if (input.isPrSnapshot) return;
+  if (input.hasEvidencePack === true) return;
   if (input.judgeModel !== undefined) return;
   if (normalizeProvidedContext(input.context) !== undefined) return;
   throw new Error(MISSING_PARENT_CONTEXT_ERROR);
@@ -208,7 +210,7 @@ export function readOnlyEvidenceRules(): string[] {
   return [
     "Do not read `.git/**` or other VCS internals.",
     "Use only current working-directory-relative paths; do not guess historical or host-absolute paths.",
-    "Consume provided shared evidence first (the already-gathered context block, or `.cross-review/` contract files in a PR snapshot). Do not glob the whole tree or re-read the same file in overlapping chunks; stop exploring and return findings from the evidence you already have.",
+    "Consume provided shared evidence first (the already-gathered context block, or `.cross-review/` contract files in an isolated snapshot). Do not glob the whole tree or re-read the same file in overlapping chunks; stop exploring and return findings from the evidence you already have.",
     "If webfetch returns 403, 404, or 429, stop after that one attempt and fall back to local worktree files and already-gathered context. Do not retry.",
   ];
 }
@@ -411,18 +413,31 @@ export function gatherBrief(target: string) {
  * the pinned PR head worktree, and evidence is the worktree plus the
  * `.cross-review/` contract files. Never embeds the diff or caller context.
  */
-export function prSnapshotReviewBrief(target: string, focus?: string) {
+export function prSnapshotReviewBrief(
+  target: string,
+  focus?: string,
+  parentPack = false,
+) {
   return [
-    "Independently review the specified pull request. Remain read-only.",
+    "Independently review the specified target. Remain read-only.",
     `Target: ${target}`,
     ...(focus === undefined ? [] : [`Focus: ${focus}`]),
-    "The current directory is an isolated git worktree snapshot at the pull request head commit. Treat only this worktree as evidence.",
+    "The current directory is an isolated git worktree snapshot at the pinned commit. Treat only this worktree as evidence.",
     "Evidence sources (read them from the current directory):",
-    "- Worktree files at the PR head (the exact code under review).",
-    "- .cross-review/meta.json (forge, canonical URL, base/head/merge-base SHAs).",
-    "- .cross-review/diff.patch (the complete authoritative diff).",
-    "- .cross-review/pr.md (title and description).",
-    "- .cross-review/notes.md (caller notes), when present.",
+    "- Worktree files at the pinned commit (the exact code under review).",
+    ...(parentPack
+      ? [
+          "- .cross-review/meta.json (parent evidence metadata).",
+          "- .cross-review/summary.md (shared target context).",
+          "- Other files under .cross-review/ (parent-provided evidence).",
+        ]
+      : [
+          "- .cross-review/meta.json (forge, canonical URL, base/head/merge-base SHAs).",
+          "- .cross-review/diff.patch (the complete authoritative diff).",
+          "- .cross-review/pr.md (title and description).",
+          "- .cross-review/notes.md (caller notes), when present.",
+          "- .cross-review/materials/ (additional parent evidence, including meta.json and summary.md), when present; these do not replace the authoritative adapter diff or metadata.",
+        ]),
     "Do not treat any other checkout or directory as evidence.",
     ...readOnlyEvidenceRules(),
     "Prioritize correctness defects, security risks, behavioral regressions, and missing tests.",
@@ -432,11 +447,13 @@ export function prSnapshotReviewBrief(target: string, focus?: string) {
 }
 
 /** Judge prompt prefix for classified pull-request snapshot runs. */
-export function prSnapshotJudgeBrief(target: string) {
+export function prSnapshotJudgeBrief(target: string, parentPack = false) {
   return [
     "Act as the read-only cross-review judge.",
     `Target: ${target}`,
-    "The current directory is an isolated git worktree snapshot at the pull request head commit. Evidence is this worktree plus .cross-review/ (meta.json, diff.patch, pr.md, optional notes.md). Do not treat any other checkout as evidence.",
+    parentPack
+      ? "The current directory is an isolated git worktree at the pinned commit. Read .cross-review/meta.json, .cross-review/summary.md and other .cross-review/ evidence files. Do not treat any other checkout as evidence."
+      : "The current directory is an isolated git worktree snapshot at the pull request head commit. Evidence is this worktree plus .cross-review/ (meta.json, diff.patch, pr.md, optional notes.md and materials/ attachments). Do not treat any other checkout as evidence.",
     ...readOnlyEvidenceRules(),
   ].join("\n");
 }
@@ -729,7 +746,7 @@ export function createCrossReviewTool(
         // Fail closed before the adapter or any child session: parent-session
         // judging cannot gather, and a classified PR already has snapshot
         // evidence.
-        requireParentContext({
+        requireSharedEvidence({
           judgeModel,
           context: providedContext,
           isPrSnapshot: classification.kind === "pr",
