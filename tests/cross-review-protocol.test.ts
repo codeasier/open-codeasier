@@ -8,7 +8,13 @@ import {
   STRAY_TIMEOUT_ACTION_WARNING,
   type AsyncCrossReviewClient,
 } from "../src/cross-review/protocol.js";
-import { MISSING_PARENT_CONTEXT_ERROR } from "../src/cross-review/tool.js";
+import {
+  embedLimitForContextWindow,
+  embeddedContextWarning,
+  joinWarnings,
+  MAX_EMBEDDED_CONTEXT_LENGTH,
+  MISSING_PARENT_CONTEXT_ERROR,
+} from "../src/cross-review/tool.js";
 import type {
   CrossReviewRun,
   CrossReviewRunStore,
@@ -1833,6 +1839,60 @@ describe("asynchronous cross-review protocol", () => {
     ).toContain("context gatherer");
   });
 
+  it("keeps a 100000-1000000 character parent context in reviewer briefs", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const midRange = `start-${"x".repeat(150_000)}-end`;
+    const started = output(
+      await protocol(client, store).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: midRange,
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started).not.toHaveProperty("warning");
+    expect(store.runs.get(RUN_ID)).not.toHaveProperty("embedLimit");
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("start-");
+    expect(reviewerText).toContain("-end");
+    expect(reviewerText).not.toContain("context truncated");
+  });
+
+  it("keeps a 100000-1000000 character gathered context in reviewer briefs", async () => {
+    const { client, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const midRange = `start-${"x".repeat(150_000)}-end`;
+    messages.set("child-2", completed(midRange));
+
+    const status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
+    );
+    expect(status.phase).toBe("reviewing");
+    expect(status).not.toHaveProperty("warning");
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("start-");
+    expect(reviewerText).toContain("-end");
+    expect(reviewerText).not.toContain("context truncated");
+  });
+
   it("truncates an oversized gathered context in reviewer briefs", async () => {
     const { client, messages } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
@@ -1845,16 +1905,147 @@ describe("asynchronous cross-review protocol", () => {
       },
       context(),
     );
-    const oversized = `start-${"x".repeat(100_100)}-end`;
+    const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
     messages.set("child-2", completed(oversized));
 
     const status = output(
-      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
     expect(status.phase).toBe("reviewing");
+    expect(status.warning).toBe(embeddedContextWarning(oversized));
     const reviewerText =
       client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
     expect(reviewerText).toContain("start-");
+    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("-end");
+  });
+
+  it("warns when an unenforced parent context exceeds the embed limit", async () => {
+    const { client } = mockClient();
+    const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
+    const started = output(
+      await protocol(client, new MemoryRunStore()).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: oversized,
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started.warning).toBe(embeddedContextWarning(oversized));
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("-end");
+  });
+
+  it("clips parent context to the tightest reviewer context window", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    client.provider.list.mockResolvedValue({
+      data: {
+        all: [
+          {
+            id: "a",
+            models: { one: { limit: { context: 128_000, output: 4_096 } } },
+          },
+          {
+            id: "b",
+            models: { judge: { limit: { context: 128_000, output: 4_096 } } },
+          },
+        ],
+        connected: ["a", "b"],
+      },
+    });
+    const oversized = `start-${"x".repeat(400_000)}-end`;
+    const windowLimit = embedLimitForContextWindow(128_000);
+    const started = output(
+      await protocol(client, store).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: oversized,
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started.warning).toBe(
+      embeddedContextWarning(oversized, windowLimit),
+    );
+    expect(store.runs.get(RUN_ID)?.embedLimit).toBe(windowLimit);
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("-end");
+  });
+
+  it("clips CJK parent context tighter than the ASCII unit budget", async () => {
+    const { client } = mockClient();
+    client.provider.list.mockResolvedValue({
+      data: {
+        all: [
+          {
+            id: "a",
+            models: { one: { limit: { context: 128_000, output: 4_096 } } },
+          },
+        ],
+        connected: ["a"],
+      },
+    });
+    const windowLimit = embedLimitForContextWindow(128_000);
+    const oversized = `始${"中".repeat(150_000)}终`;
+    const started = output(
+      await protocol(client, new MemoryRunStore()).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: oversized,
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(oversized.length).toBeLessThan(windowLimit);
+    expect(started.warning).toBe(
+      embeddedContextWarning(oversized, windowLimit),
+    );
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("始");
+    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("终");
+  });
+
+  it("joins the config fallback warning with an oversized parent context warning", async () => {
+    const { client } = mockClient();
+    const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
+    const started = output(
+      await protocol(
+        client,
+        new MemoryRunStore(),
+        () => 1_000,
+        globalFallbackConfig,
+      ).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: oversized,
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started.warning).toBe(
+      joinWarnings(GLOBAL_FALLBACK_WARNING, embeddedContextWarning(oversized)),
+    );
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
     expect(reviewerText).toContain("[...context truncated");
     expect(reviewerText).not.toContain("-end");
   });
@@ -3480,6 +3671,38 @@ describe("cross-review PR snapshot protocol", () => {
       client.session.promptAsync.mock.calls[0][0].body.parts[0].text;
     expect(brief).not.toContain("watch the auth rewrite");
     expect(brief).not.toContain("Shared target context");
+  });
+
+  it("does not emit an embed warning for oversized PR-snapshot caller context", async () => {
+    const { client } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const { tools, runPrAdapter } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+    );
+    const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+          context: oversized,
+        },
+        context(),
+      ),
+    );
+
+    expect(started).not.toHaveProperty("warning");
+    expect(runPrAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ notes: oversized }),
+    );
+    const brief =
+      client.session.promptAsync.mock.calls[0][0].body.parts[0].text;
+    expect(brief).not.toContain("-end");
+    expect(brief).not.toContain("Shared target context");
+    expect(brief).not.toContain("context truncated");
   });
 
   it("does not forward whitespace-only context as adapter notes", async () => {

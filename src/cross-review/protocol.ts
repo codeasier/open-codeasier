@@ -6,9 +6,11 @@ import { assertPrimarySession } from "../primary-session.js";
 import {
   configWarning,
   embeddedContext,
+  embeddedContextWarning,
   errorMessage,
   gatherBrief,
   joinWarnings,
+  MAX_EMBEDDED_CONTEXT_LENGTH,
   normalizeProvidedContext,
   requireParentContext,
   OMIT_ARRAY_OVERRIDE_DESCRIPTION,
@@ -18,6 +20,7 @@ import {
   readOnlyEvidenceRules,
   type ApiResult,
   READ_ONLY_TOOLS,
+  resolveEmbedLimit,
   responseData,
   reviewBrief,
   REVIEWER_AGENT,
@@ -946,6 +949,7 @@ async function resolveReviewPlan(
     judgeModel,
     maxConcurrency,
     reviewerTimeoutMs,
+    embedLimit: resolveEmbedLimit(catalog, requestedModels),
   };
 }
 
@@ -966,6 +970,7 @@ function reviewerPrompt(
                 run.target,
                 reviewer.focus,
                 run.context ?? run.gatherer?.output,
+                run.embedLimit,
               )
             : // PR snapshot runs never embed the diff or caller context.
               prSnapshotReviewBrief(run.target, reviewer.focus),
@@ -1009,7 +1014,7 @@ function judgePrompt(run: CrossReviewRun): AsyncPrompt["body"] {
               ? []
               : [
                   "Shared target context (already gathered; verify findings against it):",
-                  embeddedContext(run.context) ?? "",
+                  embeddedContext(run.context, run.embedLimit) ?? "",
                 ]),
           ...(run.snapshot === undefined ? readOnlyEvidenceRules() : []),
           "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
@@ -1665,7 +1670,14 @@ export function createCrossReviewProtocolTools(
       gatherer.status = outcome.status;
       gatherer.completedAt = timestamp;
       gatherer.latestActivityAt = outcome.latestActivityAt;
-      if (outcome.output !== undefined) gatherer.output = outcome.output;
+      if (outcome.output !== undefined) {
+        gatherer.output = outcome.output;
+        const nextWarning = joinWarnings(
+          run.warning,
+          embeddedContextWarning(outcome.output, run.embedLimit),
+        );
+        if (nextWarning !== undefined) run.warning = nextWarning;
+      }
       if (outcome.error !== undefined) gatherer.error = outcome.error;
       else delete gatherer.error;
       delete gatherer.retry;
@@ -1930,6 +1942,7 @@ export function createCrossReviewProtocolTools(
       const reviewers = plan.reviewers;
       const judgeModel = plan.judgeModel;
       const maxConcurrency = plan.maxConcurrency;
+      const embedLimit = plan.embedLimit;
       // Empty or whitespace-only context is omitted for both reviewer
       // briefs and PR snapshot notes.md.
       const providedContext = normalizeProvidedContext(args.context);
@@ -2086,7 +2099,12 @@ export function createCrossReviewProtocolTools(
             await assertSessionDirectory(prSnapshot, session.id);
         }
         const timestamp = now();
-        const warning = configWarning(loaded);
+        const warning = joinWarnings(
+          configWarning(loaded),
+          prSnapshot === undefined
+            ? embeddedContextWarning(providedContext, embedLimit)
+            : undefined,
+        );
         // A classified PR always used the adapter; `context` became notes.md
         // and never suppresses gathering.
         const gathers =
@@ -2108,6 +2126,7 @@ export function createCrossReviewProtocolTools(
                   args.target,
                   overrides.focus ?? loaded.config.focus,
                   providedContext,
+                  embedLimit,
                 )
               : prSnapshotReviewBrief(
                   args.target,
@@ -2117,6 +2136,7 @@ export function createCrossReviewProtocolTools(
             ? {}
             : { context: providedContext }),
           ...(warning === undefined ? {} : { warning }),
+          ...(embedLimit === MAX_EMBEDDED_CONTEXT_LENGTH ? {} : { embedLimit }),
           quorum: Math.floor(reviewers.length / 2) + 1,
           maxConcurrency,
           reviewerTimeoutMs: plan.reviewerTimeoutMs,

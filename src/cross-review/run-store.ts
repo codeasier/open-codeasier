@@ -130,6 +130,8 @@ export type CrossReviewRun = {
   brief: string;
   context?: string;
   warning?: string;
+  /** Tightest known reviewer/judge window budget in ASCII-equivalent units; omitted when it equals the schema cap. */
+  embedLimit?: number;
   quorum: number;
   maxConcurrency: number;
   reviewerTimeoutMs: number;
