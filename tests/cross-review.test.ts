@@ -5,11 +5,16 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewTool,
+  gatherBrief,
   joinWarnings,
-  missingParentContextWarning,
-  MISSING_PARENT_CONTEXT_WARNING,
+  MISSING_PARENT_CONTEXT_ERROR,
   normalizeProvidedContext,
+  prSnapshotJudgeBrief,
+  prSnapshotReviewBrief,
+  readOnlyEvidenceRules,
+  requireParentContext,
   resolveReviewers,
+  reviewBrief,
   type CrossReviewClient,
 } from "../src/cross-review/tool.js";
 import type {
@@ -91,47 +96,47 @@ function client(prompt?: CrossReviewClient["session"]["prompt"]) {
   } satisfies CrossReviewClient;
 }
 
-describe("missing parent-context warning", () => {
+describe("missing parent-context requirement", () => {
   it("joins present warnings and skips empty ones", () => {
     expect(joinWarnings("a", undefined, "b", "")).toBe("a; b");
     expect(joinWarnings(undefined, "")).toBeUndefined();
   });
 
-  it("warns only for non-PR parent-judged starts without context", () => {
-    expect(
-      missingParentContextWarning({
+  it("rejects only non-PR parent-judged starts without context", () => {
+    expect(() =>
+      requireParentContext({
         isPrSnapshot: false,
       }),
-    ).toBe(MISSING_PARENT_CONTEXT_WARNING);
-    expect(
-      missingParentContextWarning({
+    ).toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(() =>
+      requireParentContext({
         judgeModel: "b/judge",
         isPrSnapshot: false,
       }),
-    ).toBeUndefined();
-    expect(
-      missingParentContextWarning({
+    ).not.toThrow();
+    expect(() =>
+      requireParentContext({
         context: "diff",
         isPrSnapshot: false,
       }),
-    ).toBeUndefined();
-    expect(
-      missingParentContextWarning({
+    ).not.toThrow();
+    expect(() =>
+      requireParentContext({
         isPrSnapshot: true,
       }),
-    ).toBeUndefined();
-    expect(
-      missingParentContextWarning({
+    ).not.toThrow();
+    expect(() =>
+      requireParentContext({
         context: "",
         isPrSnapshot: false,
       }),
-    ).toBe(MISSING_PARENT_CONTEXT_WARNING);
-    expect(
-      missingParentContextWarning({
+    ).toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(() =>
+      requireParentContext({
         context: "   ",
         isPrSnapshot: false,
       }),
-    ).toBe(MISSING_PARENT_CONTEXT_WARNING);
+    ).toThrow(MISSING_PARENT_CONTEXT_ERROR);
   });
 
   it("treats blank context as omitted", () => {
@@ -144,6 +149,29 @@ describe("missing parent-context warning", () => {
   });
 });
 
+describe("read-only evidence briefs", () => {
+  const rules = readOnlyEvidenceRules();
+
+  it("forbids git internals, guessed paths, re-reads, and webfetch retries", () => {
+    expect(rules.join("\n")).toContain("Do not read `.git/**`");
+    expect(rules.join("\n")).toContain("working-directory-relative paths");
+    expect(rules.join("\n")).toContain("overlapping chunks");
+    expect(rules.join("\n")).toContain("403, 404, or 429");
+  });
+
+  it("embeds the evidence rules in reviewer, gatherer, and PR briefs", () => {
+    const review = reviewBrief("HEAD", undefined, "the diff");
+    const gather = gatherBrief("HEAD");
+    const prReview = prSnapshotReviewBrief("https://example/pull/1");
+    const prJudge = prSnapshotJudgeBrief("https://example/pull/1");
+    for (const brief of [review, gather, prReview, prJudge]) {
+      for (const rule of rules) expect(brief).toContain(rule);
+    }
+    expect(review).toContain("Shared target context");
+    expect(review).toContain("the diff");
+  });
+});
+
 describe("cross_review tool", () => {
   it("validates model identifiers, availability, and reviewer bounds", async () => {
     const mock = client();
@@ -152,6 +180,7 @@ describe("cross_review tool", () => {
       definition.execute(
         {
           target: "HEAD",
+          context: "already gathered",
           reviewModels: ["malformed"],
         },
         context(),
@@ -163,6 +192,7 @@ describe("cross_review tool", () => {
       definition.execute(
         {
           target: "HEAD",
+          context: "already gathered",
           reviewModels: ["a/missing"],
         },
         context(),
@@ -176,17 +206,29 @@ describe("cross_review tool", () => {
     const mock = client();
     const definition = createCrossReviewTool(mock, emptyConfig);
     await expect(
-      definition.execute({ target: "HEAD", agents: 9 }, context()),
+      definition.execute(
+        { target: "HEAD", context: "already gathered", agents: 9 },
+        context(),
+      ),
     ).rejects.toThrow("`agents` must be an integer from 1 to 8");
     await expect(
       definition.execute(
-        { target: "HEAD", reviewModels: ["a/one"], maxConcurrency: 9 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          maxConcurrency: 9,
+        },
         context(),
       ),
     ).rejects.toThrow("`maxConcurrency` must be an integer from 1 to 8");
     await expect(
       definition.execute(
-        { target: "HEAD", reviewModels: ["malformed"] },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["malformed"],
+        },
         context(),
       ),
     ).rejects.toThrow(
@@ -208,6 +250,7 @@ describe("cross_review tool", () => {
     ).execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: [],
         agents: 0,
         maxConcurrency: 0,
@@ -249,7 +292,7 @@ describe("cross_review tool", () => {
     const mock = client();
     await expect(
       createCrossReviewTool(mock, emptyConfig).execute(
-        { target: "HEAD" },
+        { target: "HEAD", context: "already gathered" },
         context(),
       ),
     ).rejects.toThrow(
@@ -286,7 +329,10 @@ describe("cross_review tool", () => {
         reviewers: [{ model: "a/one" }],
         judgeModel: "b/judge",
       }),
-    ).execute({ target: "HEAD", judgeModel: "  " }, context());
+    ).execute(
+      { target: "HEAD", context: "already gathered", judgeModel: "  " },
+      context(),
+    );
 
     expect(mock.session.prompt).toHaveBeenCalledTimes(1);
     expect(JSON.parse((result as any).output).judge).toMatchObject({
@@ -303,6 +349,7 @@ describe("cross_review tool", () => {
     await createCrossReviewTool(client(), emptyConfig).execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 2,
       },
@@ -354,6 +401,7 @@ describe("cross_review tool", () => {
     const output = await createCrossReviewTool(mock, emptyConfig).execute(
       {
         target: "main...HEAD",
+        context: "already gathered",
         reviewModels: ["a/one", "a/two"],
         agents: 4,
         maxConcurrency: 2,
@@ -483,7 +531,7 @@ describe("cross_review tool", () => {
       focus: "security and regressions",
     };
     await createCrossReviewTool(mock, () => wrapConfig(config)).execute(
-      { target: "HEAD" },
+      { target: "HEAD", context: "already gathered" },
       context(),
     );
     const calls = prompt.mock.calls.map((call) => call[0]);
@@ -505,7 +553,7 @@ describe("cross_review tool", () => {
       agents: 4,
     };
     await createCrossReviewTool(mock, () => wrapConfig(config)).execute(
-      { target: "HEAD" },
+      { target: "HEAD", context: "already gathered" },
       context(),
     );
     const calls = prompt.mock.calls.map((call) => call[0]);
@@ -554,7 +602,10 @@ describe("cross_review tool", () => {
     };
     const result = await createCrossReviewTool(mock, () =>
       wrapConfig(config),
-    ).execute({ target: "HEAD", agents: 1 }, context());
+    ).execute(
+      { target: "HEAD", context: "already gathered", agents: 1 },
+      context(),
+    );
     expect(prompt).toHaveBeenCalledTimes(1);
     expect(JSON.parse((result as any).output).reviewers).toHaveLength(1);
   });
@@ -616,6 +667,7 @@ describe("cross_review tool", () => {
     const result = await createCrossReviewTool(mock, emptyConfig).execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 3,
         maxConcurrency: 2,
@@ -660,6 +712,7 @@ describe("cross_review tool", () => {
     ).execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 3,
         maxConcurrency: 1,
@@ -702,6 +755,7 @@ describe("cross_review tool", () => {
     ).execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 3,
         maxConcurrency: 1,
@@ -842,6 +896,7 @@ describe("cross_review tool", () => {
       createCrossReviewTool(mock, emptyConfig).execute(
         {
           target: "HEAD",
+          context: "already gathered",
           reviewModels: ["a/one"],
           agents: 3,
           maxConcurrency: 1,
@@ -862,7 +917,11 @@ describe("cross_review tool", () => {
     const mock = client();
     await expect(
       createCrossReviewTool(mock, emptyConfig).execute(
-        { target: "HEAD", reviewModels: ["a/one"] },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+        },
         context(abort),
       ),
     ).rejects.toThrow("cancelled");
@@ -881,6 +940,7 @@ describe("cross_review tool", () => {
       createCrossReviewTool(mock, emptyConfig).execute(
         {
           target: "HEAD",
+          context: "already gathered",
           reviewModels: ["a/one"],
           agents: 1,
         },
@@ -906,7 +966,10 @@ describe("cross_review tool", () => {
           global: "loaded",
         },
       ),
-    ).execute({ target: "HEAD", agents: 1 }, context());
+    ).execute(
+      { target: "HEAD", context: "already gathered", agents: 1 },
+      context(),
+    );
     const parsed = JSON.parse((result as any).output);
     expect(parsed.warning).toContain(
       "project config not found at /repo/.opencode/cross-review.json",
@@ -931,7 +994,12 @@ describe("cross_review tool", () => {
   it("warns when both project and global configs are absent", async () => {
     const mock = client();
     const result = await createCrossReviewTool(mock, emptyConfig).execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
     const parsed = JSON.parse((result as any).output);
@@ -951,7 +1019,12 @@ describe("cross_review tool", () => {
     });
     await expect(
       createCrossReviewTool(mock, emptyConfig).execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       ),
     ).rejects.toThrow("cross_review can only be invoked from primary sessions");
@@ -964,7 +1037,12 @@ describe("cross_review tool", () => {
     (mock.session as { get?: unknown }).get = undefined;
     await expect(
       createCrossReviewTool(mock, emptyConfig).execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       ),
     ).rejects.toThrow(
@@ -990,13 +1068,14 @@ describe("cross_review tool", () => {
     });
   });
 
-  it("warns when parent-session judging starts a non-PR target without context", async () => {
+  it("rejects parent-session judging of a non-PR target without context", async () => {
     const mock = client();
-    const result = await createCrossReviewTool(mock, () =>
-      wrapConfig({ reviewers: [{ model: "a/one" }] }),
-    ).execute({ target: "HEAD", agents: 1 }, context());
-    const parsed = JSON.parse((result as any).output);
-    expect(parsed.warning).toBe(MISSING_PARENT_CONTEXT_WARNING);
+    await expect(
+      createCrossReviewTool(mock, () =>
+        wrapConfig({ reviewers: [{ model: "a/one" }] }),
+      ).execute({ target: "HEAD", agents: 1 }, context()),
+    ).rejects.toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(mock.session.create).not.toHaveBeenCalled();
   });
 });
 

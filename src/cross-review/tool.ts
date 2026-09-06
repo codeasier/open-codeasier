@@ -157,8 +157,8 @@ export function configWarning(
   return `warning: no cross-review config found at ${loaded.projectPath} or ${loaded.globalPath}`;
 }
 
-export const MISSING_PARENT_CONTEXT_WARNING =
-  "warning: Missing context for target without judgeModel: reviewers may lack information to evaluate target";
+export const MISSING_PARENT_CONTEXT_ERROR =
+  "Missing context for non-PR target without judgeModel: pass parent-gathered `context` or set `judgeModel`";
 
 export const OMIT_ARRAY_OVERRIDE_DESCRIPTION =
   "Omit when using defaults; do not pass an empty array";
@@ -176,7 +176,7 @@ export function joinWarnings(
 
 /**
  * Empty or whitespace-only `context` is treated as omitted: it must not
- * disable gathering or suppress the missing-context warning.
+ * disable gathering or satisfy the parent-context requirement.
  */
 export function normalizeProvidedContext(
   context: string | undefined,
@@ -189,16 +189,28 @@ export function normalizeProvidedContext(
 /**
  * Parent-session judging cannot run the gatherer. A classified PR snapshot
  * already has shared evidence, so an omitted `context` is expected there.
+ * Non-PR starts without both `judgeModel` and `context` fail closed before
+ * any reviewer session exists.
  */
-export function missingParentContextWarning(input: {
+export function requireParentContext(input: {
   judgeModel?: string | undefined;
   context?: string | undefined;
   isPrSnapshot: boolean;
-}): string | undefined {
-  if (input.isPrSnapshot) return undefined;
-  if (input.judgeModel !== undefined) return undefined;
-  if (normalizeProvidedContext(input.context) !== undefined) return undefined;
-  return MISSING_PARENT_CONTEXT_WARNING;
+}): void {
+  if (input.isPrSnapshot) return;
+  if (input.judgeModel !== undefined) return;
+  if (normalizeProvidedContext(input.context) !== undefined) return;
+  throw new Error(MISSING_PARENT_CONTEXT_ERROR);
+}
+
+/** Evidence retrieval limits for read-only reviewer, gatherer, and judge briefs. */
+export function readOnlyEvidenceRules(): string[] {
+  return [
+    "Do not read `.git/**` or other VCS internals.",
+    "Use only current working-directory-relative paths; do not guess historical or host-absolute paths.",
+    "Consume provided shared evidence first (the already-gathered context block, or `.cross-review/` contract files in a PR snapshot). Do not glob the whole tree or re-read the same file in overlapping chunks; stop exploring and return findings from the evidence you already have.",
+    "If webfetch returns 403, 404, or 429, stop after that one attempt and fall back to local worktree files and already-gathered context. Do not retry.",
+  ];
 }
 
 export function splitModel(value: string) {
@@ -270,6 +282,7 @@ export function reviewBrief(target: string, focus?: string, context?: string) {
           "Shared target context (already gathered; verify findings against it):",
           embeddedContext(context) ?? "",
         ]),
+    ...readOnlyEvidenceRules(),
     "Prioritize correctness defects, security risks, behavioral regressions, and missing tests.",
     "Verify each finding against repository evidence. Report only actionable findings with severity and file/line references; state explicitly when there are no findings.",
     "Return only your review. Do not inspect or infer any other reviewer's output.",
@@ -281,6 +294,7 @@ export function gatherBrief(target: string) {
     "Act as the read-only cross-review context gatherer.",
     `Target: ${target}`,
     "Inspect the target (a repository state, pull request, or issue) and produce one self-contained review context: what changed or is reported, the exact diff or issue description, affected files and line references, and any referenced code or tests reviewers will need to verify findings.",
+    ...readOnlyEvidenceRules(),
     "Do not review, judge, or propose findings. Do not consult other sessions. Return only the gathered context.",
   ].join("\n");
 }
@@ -303,6 +317,7 @@ export function prSnapshotReviewBrief(target: string, focus?: string) {
     "- .cross-review/pr.md (title and description).",
     "- .cross-review/notes.md (caller notes), when present.",
     "Do not treat any other checkout or directory as evidence.",
+    ...readOnlyEvidenceRules(),
     "Prioritize correctness defects, security risks, behavioral regressions, and missing tests.",
     "Verify each finding against repository evidence. Report only actionable findings with severity and file/line references; state explicitly when there are no findings.",
     "Return only your review. Do not inspect or infer any other reviewer's output.",
@@ -315,6 +330,7 @@ export function prSnapshotJudgeBrief(target: string) {
     "Act as the read-only cross-review judge.",
     `Target: ${target}`,
     "The current directory is an isolated git worktree snapshot at the pull request head commit. Evidence is this worktree plus .cross-review/ (meta.json, diff.patch, pr.md, optional notes.md). Do not treat any other checkout as evidence.",
+    ...readOnlyEvidenceRules(),
   ].join("\n");
 }
 
@@ -602,6 +618,14 @@ export function createCrossReviewTool(
         );
         if (classification.kind === "error")
           throw new Error(classification.message);
+        // Fail closed before the adapter or any child session: parent-session
+        // judging cannot gather, and a classified PR already has snapshot
+        // evidence.
+        requireParentContext({
+          judgeModel,
+          context: providedContext,
+          isPrSnapshot: classification.kind === "pr",
+        });
         let prSnapshot:
           | {
               worktree: string;
@@ -693,14 +717,7 @@ export function createCrossReviewTool(
         // and the snapshot briefs; caller context is already notes.md.
         const sessionRoot = prSnapshot?.worktree ?? context.directory;
         childSessionDirectory = sessionRoot;
-        const warning = joinWarnings(
-          configNotice,
-          missingParentContextWarning({
-            judgeModel,
-            context: providedContext,
-            isPrSnapshot: prSnapshot !== undefined,
-          }),
-        );
+        const warning = configNotice;
         let completed = false;
         try {
           if (
@@ -1000,6 +1017,9 @@ export function createCrossReviewTool(
                                     "Shared target context (already gathered; verify findings against it):",
                                     embeddedContext(providedContext) ?? "",
                                   ]),
+                            ...(prSnapshot === undefined
+                              ? readOnlyEvidenceRules()
+                              : []),
                             "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
                             "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
                             JSON.stringify(successful),

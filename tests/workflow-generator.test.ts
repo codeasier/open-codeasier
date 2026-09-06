@@ -281,6 +281,9 @@ describe("workflow generator", () => {
       "GitCode targets must always supply that `context`",
     );
     expect(openCrossReview).toContain(
+      "is rejected before any reviewer session is created",
+    );
+    expect(openCrossReview).toContain(
       "If `cross_review_start` reports that no review models are configured",
     );
     expect(openCrossReview).not.toContain("both canonical paths are absent");
@@ -305,6 +308,12 @@ describe("workflow generator", () => {
     );
     expect(openAgent).toContain(
       "treat only that worktree as evidence; do not treat any other checkout as evidence",
+    );
+    expect(openAgent).toContain(
+      "Do not read `.git/**` or other VCS internals.",
+    );
+    expect(openAgent).toContain(
+      "If webfetch returns 403, 404, or 429, stop after that one attempt",
     );
     expect(openAgent).toContain("mode: subagent");
     expect(openAgent).toContain("edit: deny");

@@ -78,6 +78,12 @@ describe("distributed workflow assets", () => {
     expect(content).not.toContain(
       "GitCode targets must always supply that `context`",
     );
+    expect(content).toContain(
+      "is rejected before any reviewer session is created",
+    );
+    expect(content).not.toContain(
+      "Starting a non-PR target without both `judgeModel` and `context` still runs",
+    );
   });
 
   it("keeps cross-review-audit off OpenCode storage and session_review tree walks", async () => {

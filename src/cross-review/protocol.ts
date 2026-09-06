@@ -9,12 +9,13 @@ import {
   errorMessage,
   gatherBrief,
   joinWarnings,
-  missingParentContextWarning,
   normalizeProvidedContext,
+  requireParentContext,
   OMIT_ARRAY_OVERRIDE_DESCRIPTION,
   OMIT_ZERO_OVERRIDE_DESCRIPTION,
   prSnapshotJudgeBrief,
   prSnapshotReviewBrief,
+  readOnlyEvidenceRules,
   type ApiResult,
   READ_ONLY_TOOLS,
   responseData,
@@ -1010,6 +1011,7 @@ function judgePrompt(run: CrossReviewRun): AsyncPrompt["body"] {
                   "Shared target context (already gathered; verify findings against it):",
                   embeddedContext(run.context) ?? "",
                 ]),
+          ...(run.snapshot === undefined ? readOnlyEvidenceRules() : []),
           "Independently verify every candidate against repository evidence, deduplicate overlapping findings, and recalibrate severity.",
           "Reject unsupported findings. Report findings first with file/line references, followed by reviewer provenance and testing gaps.",
           JSON.stringify(
@@ -1870,7 +1872,7 @@ export function createCrossReviewProtocolTools(
 
   const start = tool({
     description:
-      "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user review intent from primary sessions. For a non-PR target without judgeModel, pass parent-gathered context; omit optional overrides instead of passing an empty array or 0",
+      "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user review intent from primary sessions. For a non-PR target without judgeModel, parent-gathered context is required; omit optional overrides instead of passing an empty array or 0",
     args: {
       target: tool.schema.string().min(1).max(4_000),
       context: tool.schema.string().min(1).max(1_000_000).optional(),
@@ -1946,6 +1948,14 @@ export function createCrossReviewProtocolTools(
         );
         if (classification.kind === "error")
           throw new Error(classification.message);
+        // Fail closed before the adapter or any child session: parent-session
+        // judging cannot gather, and a classified PR already has snapshot
+        // evidence.
+        requireParentContext({
+          judgeModel,
+          context: providedContext,
+          isPrSnapshot: classification.kind === "pr",
+        });
 
         let adapterGatherer: AdapterGathererRun | undefined;
         if (classification.kind === "pr") {
@@ -2076,14 +2086,7 @@ export function createCrossReviewProtocolTools(
             await assertSessionDirectory(prSnapshot, session.id);
         }
         const timestamp = now();
-        const warning = joinWarnings(
-          configWarning(loaded),
-          missingParentContextWarning({
-            judgeModel,
-            context: providedContext,
-            isPrSnapshot: prSnapshot !== undefined,
-          }),
-        );
+        const warning = configWarning(loaded);
         // A classified PR always used the adapter; `context` became notes.md
         // and never suppresses gathering.
         const gathers =
