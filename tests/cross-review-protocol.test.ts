@@ -9,6 +9,7 @@ import {
   type AsyncCrossReviewClient,
 } from "../src/cross-review/protocol.js";
 import {
+  embedLimitForContextWindow,
   embeddedContextWarning,
   joinWarnings,
   MAX_EMBEDDED_CONTEXT_LENGTH,
@@ -1935,6 +1936,45 @@ describe("asynchronous cross-review protocol", () => {
       ),
     );
     expect(started.warning).toBe(embeddedContextWarning(oversized));
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("-end");
+  });
+
+  it("clips parent context to the tightest reviewer context window", async () => {
+    const { client } = mockClient();
+    client.provider.list.mockResolvedValue({
+      data: {
+        all: [
+          {
+            id: "a",
+            models: { one: { limit: { context: 128_000, output: 4_096 } } },
+          },
+          {
+            id: "b",
+            models: { judge: { limit: { context: 128_000, output: 4_096 } } },
+          },
+        ],
+        connected: ["a", "b"],
+      },
+    });
+    const oversized = `start-${"x".repeat(400_000)}-end`;
+    const windowLimit = embedLimitForContextWindow(128_000);
+    const started = output(
+      await protocol(client, new MemoryRunStore()).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: oversized,
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started.warning).toBe(
+      embeddedContextWarning(oversized, windowLimit),
+    );
     const reviewerText =
       client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
     expect(reviewerText).toContain("[...context truncated");

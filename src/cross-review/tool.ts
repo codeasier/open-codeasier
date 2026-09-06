@@ -264,28 +264,97 @@ export function errorMessage(error: unknown) {
 
 /** Aligns with the `context` schema max on `cross_review` / `cross_review_start`. */
 export const MAX_EMBEDDED_CONTEXT_LENGTH = 1_000_000;
+/** ASCII-oriented estimate from the 1M-window review (400k chars ≈ 100k tokens). */
+export const CHARS_PER_TOKEN_ESTIMATE = 4;
+/** Leave room in the model window for the brief, tools, and output. */
+export const CONTEXT_WINDOW_RESERVE_RATIO = 0.25;
 
-export function embeddedContextOmitted(context: string): number {
-  return Math.max(0, context.length - MAX_EMBEDDED_CONTEXT_LENGTH);
+export function modelContextTokens(entry: unknown): number | undefined {
+  if (typeof entry !== "object" || entry === null) return undefined;
+  const limit = (entry as { limit?: unknown }).limit;
+  if (typeof limit !== "object" || limit === null) return undefined;
+  const context = (limit as { context?: unknown }).context;
+  if (typeof context !== "number" || !Number.isFinite(context) || context <= 0)
+    return undefined;
+  return context;
+}
+
+export function tightestContextTokens(
+  catalog: { all: Array<{ id: string; models: Record<string, unknown> }> },
+  models: string[],
+): number | undefined {
+  let tightest: number | undefined;
+  for (const model of models) {
+    let parsed: { providerID: string; modelID: string };
+    try {
+      parsed = splitModel(model);
+    } catch {
+      continue;
+    }
+    const provider = catalog.all.find(
+      (candidate) => candidate.id === parsed.providerID,
+    );
+    const tokens = modelContextTokens(provider?.models[parsed.modelID]);
+    if (tokens === undefined) continue;
+    tightest = tightest === undefined ? tokens : Math.min(tightest, tokens);
+  }
+  return tightest;
+}
+
+export function embedLimitForContextWindow(
+  windowTokens: number | undefined,
+): number {
+  if (windowTokens === undefined) return MAX_EMBEDDED_CONTEXT_LENGTH;
+  const usableTokens = Math.max(
+    1,
+    Math.floor(windowTokens * (1 - CONTEXT_WINDOW_RESERVE_RATIO)),
+  );
+  return Math.min(
+    MAX_EMBEDDED_CONTEXT_LENGTH,
+    usableTokens * CHARS_PER_TOKEN_ESTIMATE,
+  );
+}
+
+export function resolveEmbedLimit(
+  catalog: { all: Array<{ id: string; models: Record<string, unknown> }> },
+  models: string[],
+): number {
+  return embedLimitForContextWindow(tightestContextTokens(catalog, models));
+}
+
+export function embeddedContextOmitted(
+  context: string,
+  limit = MAX_EMBEDDED_CONTEXT_LENGTH,
+): number {
+  return Math.max(0, context.length - limit);
 }
 
 export function embeddedContextWarning(
   context: string | undefined,
+  limit = MAX_EMBEDDED_CONTEXT_LENGTH,
 ): string | undefined {
   if (context === undefined) return undefined;
-  const omitted = embeddedContextOmitted(context);
+  const omitted = embeddedContextOmitted(context, limit);
   if (omitted === 0) return undefined;
-  return `warning: shared context exceeded the ${MAX_EMBEDDED_CONTEXT_LENGTH}-character embed limit and was truncated (${omitted} characters omitted)`;
+  return `warning: shared context exceeded the ${limit}-character embed limit and was truncated (${omitted} characters omitted)`;
 }
 
-export function embeddedContext(context: string): string | undefined {
+export function embeddedContext(
+  context: string,
+  limit = MAX_EMBEDDED_CONTEXT_LENGTH,
+): string | undefined {
   if (context.length === 0) return undefined;
-  const omitted = embeddedContextOmitted(context);
+  const omitted = embeddedContextOmitted(context, limit);
   if (omitted === 0) return context;
-  return `${context.slice(0, MAX_EMBEDDED_CONTEXT_LENGTH)}\n[...context truncated: ${omitted} chars omitted...]`;
+  return `${context.slice(0, limit)}\n[...context truncated: ${omitted} chars omitted...]`;
 }
 
-export function reviewBrief(target: string, focus?: string, context?: string) {
+export function reviewBrief(
+  target: string,
+  focus?: string,
+  context?: string,
+  embedLimit = MAX_EMBEDDED_CONTEXT_LENGTH,
+) {
   return [
     "Independently review the specified target. Remain read-only.",
     `Target: ${target}`,
@@ -294,7 +363,7 @@ export function reviewBrief(target: string, focus?: string, context?: string) {
       ? []
       : [
           "Shared target context (already gathered; verify findings against it):",
-          embeddedContext(context) ?? "",
+          embeddedContext(context, embedLimit) ?? "",
         ]),
     ...readOnlyEvidenceRules(),
     "Prioritize correctness defects, security risks, behavioral regressions, and missing tests.",
@@ -609,6 +678,7 @@ export function createCrossReviewTool(
           )
             throw new Error(`Unavailable model: ${model}`);
         }
+        const embedLimit = resolveEmbedLimit(catalog, requestedModels);
 
         let judgeSessionID: string | undefined;
         let gatheredContext: string | undefined;
@@ -791,12 +861,12 @@ export function createCrossReviewTool(
           const warning = joinWarnings(
             configNotice,
             prSnapshot === undefined
-              ? embeddedContextWarning(gathered)
+              ? embeddedContextWarning(gathered, embedLimit)
               : undefined,
           );
           const brief =
             prSnapshot === undefined
-              ? reviewBrief(args.target, sharedFocus, gathered)
+              ? reviewBrief(args.target, sharedFocus, gathered, embedLimit)
               : prSnapshotReviewBrief(args.target, sharedFocus);
           const reviewerResults = await runLimited(
             reviewers.length,
@@ -860,6 +930,7 @@ export function createCrossReviewTool(
                                     args.target,
                                     reviewer.focus,
                                     gathered,
+                                    embedLimit,
                                   )
                                 : prSnapshotReviewBrief(
                                     args.target,
@@ -1034,7 +1105,10 @@ export function createCrossReviewTool(
                                 ? []
                                 : [
                                     "Shared target context (already gathered; verify findings against it):",
-                                    embeddedContext(providedContext) ?? "",
+                                    embeddedContext(
+                                      providedContext,
+                                      embedLimit,
+                                    ) ?? "",
                                   ]),
                             ...(prSnapshot === undefined
                               ? readOnlyEvidenceRules()
