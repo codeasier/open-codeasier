@@ -155,7 +155,8 @@ describe("resolveAdapterRuntime", () => {
       },
       env: { PATH: `${shimDir};${nodeDir}` },
       isFile: async (path) =>
-        path === join(shimDir, "node.cmd") || path === join(nodeDir, "node.exe"),
+        path === join(shimDir, "node.cmd") ||
+        path === join(nodeDir, "node.exe"),
       platform: "win32",
       pathDelimiter: ";",
     });
