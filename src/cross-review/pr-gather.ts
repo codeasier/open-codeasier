@@ -1,11 +1,14 @@
 import { execFile } from "node:child_process";
-import { stat, rm } from "node:fs/promises";
+import { stat, rm, mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { PrSnapshotMeta } from "./pr-snapshot.js";
 import { validatePrSnapshot } from "./pr-snapshot.js";
 import type { PrForge } from "./pr-target.js";
+import { findGitRoot } from "./config.js";
+import { writeEvidencePack, type EvidencePack } from "./evidence.js";
+import type { CrossReviewRun } from "./run-store.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -154,6 +157,89 @@ export function createDefaultPrAdapterRunner(
 }
 
 export type SnapshotRemover = (worktree: string) => Promise<void>;
+
+export const PARENT_SNAPSHOT_REQUIRES_GIT_ERROR =
+  "Non-PR context or evidenceDir starts require a git repository to pin an isolated detached worktree";
+export const INVALID_REVIEW_REVISION_RANGE_ERROR =
+  "Invalid review revision range";
+
+export async function createParentSnapshot(input: {
+  repo: string;
+  target: string;
+  runID: string;
+  stateRoot: string;
+  context?: string;
+  pack?: EvidencePack;
+}): Promise<NonNullable<CrossReviewRun["snapshot"]>> {
+  if ((await findGitRoot(input.repo)) === undefined)
+    throw new Error(PARENT_SNAPSHOT_REQUIRES_GIT_ERROR);
+  const git = async (...args: string[]) =>
+    (
+      await execFileAsync("git", ["-C", input.repo, ...args], {
+        timeout: 60_000,
+        maxBuffer: 1024 * 1024,
+      })
+    ).stdout.trim();
+  const target = input.target.trim();
+  const range = /^([^\s]+?)\.{2,3}([^\s]+)$/.exec(target);
+  // Any target containing `..` is reserved for a revision range. Prose
+  // such as `fix ... bug` is rejected rather than silently pinning HEAD.
+  if (target.includes("..") && !range)
+    throw new Error(INVALID_REVIEW_REVISION_RANGE_ERROR);
+  const paths = snapshotPaths(resolve(input.stateRoot), input.runID);
+  try {
+    if (range)
+      await git(
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        `${range[1]}^{commit}`,
+      );
+    const headSha = await git(
+      "rev-parse",
+      "--verify",
+      "--end-of-options",
+      `${range?.[2] ?? "HEAD"}^{commit}`,
+    );
+    await mkdir(dirname(paths.worktree), { recursive: true });
+    await git("worktree", "add", "--detach", paths.worktree, headSha);
+    // A repository may track this name, even as a symlink. Never write through it.
+    await rm(paths.snapshotDir, { recursive: true, force: true });
+    if (input.pack) await writeEvidencePack(paths.snapshotDir, input.pack);
+    else {
+      await mkdir(paths.snapshotDir);
+      await writeFile(
+        join(paths.snapshotDir, "meta.json"),
+        JSON.stringify({
+          source: "parent-pack",
+          target: input.target,
+          headSha,
+        }),
+      );
+      await writeFile(
+        join(paths.snapshotDir, "summary.md"),
+        input.context ?? "",
+      );
+    }
+    if (input.pack && input.context !== undefined)
+      await writeFile(
+        join(paths.snapshotDir, "summary.md"),
+        Buffer.concat([
+          input.pack.files.get("summary.md") ?? Buffer.alloc(0),
+          Buffer.from(`\n\n${input.context}`),
+        ]),
+      );
+    return {
+      ...paths,
+      source: "parent-pack",
+      headSha,
+      ...(input.pack ? { evidenceDir: input.pack.evidenceDir } : {}),
+    };
+  } catch (error) {
+    await defaultRemoveSnapshot(paths.worktree);
+    throw error;
+  }
+}
 
 /**
  * Best-effort snapshot removal: `git worktree remove --force`, then delete

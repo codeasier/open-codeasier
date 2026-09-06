@@ -324,6 +324,66 @@ describe("run ID resolution", () => {
 });
 
 describe("cross_review_audit tool", () => {
+  it.each(["adapter", "parent-pack"] as const)(
+    "audits parent adjudication with %s evidence using the snapshot for child SDK reads",
+    async (source) => {
+      const store = new MemoryRunStore();
+      await store.create(
+        run({
+          context: undefined,
+          snapshot: {
+            source,
+            worktree: "/snapshot",
+            snapshotDir: "/snapshot/.cross-review",
+            ...(source === "adapter" ? { forge: "github" as const } : {}),
+          },
+          ...(source === "adapter"
+            ? {
+                adapterGatherer: {
+                  kind: "adapter" as const,
+                  forge: "github" as const,
+                  status: "succeeded" as const,
+                },
+              }
+            : {}),
+        }),
+      );
+      const sessions = {
+        [PARENT]: {
+          session: { id: PARENT, directory: "/repo", title: "parent" },
+          messages: parentMessages([]),
+        },
+        "rev-1": reviewerSession("rev-1", "msg-rev-1"),
+        "rev-2": reviewerSession("rev-2", "msg-rev-2"),
+        "rev-3": reviewerSession("rev-3", "msg-rev-3"),
+      };
+      const { payload, client } = await execute(store, sessions, {
+        parentSessionID: PARENT,
+      });
+      expect(
+        payload.runs[0].checks.every((check: any) => check.result === "pass"),
+      ).toBe(true);
+      expect(payload.runs[0].checks).toContainEqual(
+        expect.objectContaining({
+          id: "run.evidence_contract",
+          result: "pass",
+        }),
+      );
+      for (const method of [
+        client.session.get,
+        client.session.messages,
+        client.session.children,
+      ]) {
+        for (const [input] of method.mock.calls) {
+          if (input.path.id.startsWith("rev-"))
+            expect(input).toMatchObject({ query: { directory: "/snapshot" } });
+          if (input.path.id === PARENT)
+            expect(input).toMatchObject({ query: { directory: "/repo" } });
+        }
+      }
+    },
+  );
+
   it("audits a completed parent-judged run with shared context", async () => {
     const store = new MemoryRunStore();
     await store.create(run());
@@ -360,12 +420,57 @@ describe("cross_review_audit tool", () => {
     expect(payload.runs).toHaveLength(1);
     expect(
       payload.runs[0].checks.find(
-        (item: any) => item.id === "run.context_contract",
+        (item: any) => item.id === "run.evidence_contract",
       ),
     ).toMatchObject({ result: "pass" });
     expect(
       payload.runs[0].roles.reviewers.every(
         (role: any) => role.behavior.hasSharedContextMarker === true,
+      ),
+    ).toBe(true);
+  });
+
+  it("reads a snapshot judge and preserves snapshot-scoped child fetch errors", async () => {
+    const store = new MemoryRunStore();
+    await store.create(
+      run({
+        context: undefined,
+        snapshot: {
+          source: "parent-pack",
+          worktree: "/snapshot",
+          snapshotDir: "/snapshot/.cross-review",
+        },
+        judgeModel: "a/one",
+        judge: {
+          model: "a/one",
+          sessionID: "judge",
+          messageID: "msg-judge",
+          status: "succeeded",
+        },
+      }),
+    );
+    const { client, payload } = await execute(
+      store,
+      {
+        [PARENT]: {
+          session: { id: PARENT, directory: "/repo", title: "parent" },
+          messages: parentMessages([]),
+        },
+      },
+      { parentSessionID: PARENT },
+    );
+    expect(client.session.get).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: { id: "judge" },
+        query: { directory: "/snapshot" },
+      }),
+    );
+    expect(payload.runs[0].roles.judge.fetchError.code).toBe(
+      "SESSION_NOT_FOUND",
+    );
+    expect(
+      payload.runs[0].roles.reviewers.every(
+        (role: any) => role.fetchError.code === "SESSION_NOT_FOUND",
       ),
     ).toBe(true);
   });
@@ -400,7 +505,7 @@ describe("cross_review_audit tool", () => {
     });
     expect(
       payload.runs[0].checks.find(
-        (item: any) => item.id === "run.context_contract",
+        (item: any) => item.id === "run.evidence_contract",
       ),
     ).toMatchObject({ result: "fail" });
     expect(payload.runs[0].roles.reviewers[0].behavior.toolHistogram.bash).toBe(

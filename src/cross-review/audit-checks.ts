@@ -111,70 +111,78 @@ export function checkLegacyToolAbsent(calls: ProtocolCall[]): AuditCheck {
   );
 }
 
-export function checkContextContract(
-  run: Pick<CrossReviewRun, "judgeModel" | "context" | "gatherer" | "runID">,
-): AuditCheck {
-  const context = persistedContext(run);
+type EvidenceRun = Pick<
+  CrossReviewRun,
+  | "judgeModel"
+  | "context"
+  | "gatherer"
+  | "runID"
+  | "snapshot"
+  | "adapterGatherer"
+>;
+
+function sharedEvidence(run: EvidenceRun): string | undefined {
+  if (persistedContext(run) !== undefined)
+    return "Run persisted non-empty context";
+  const snapshot = run.snapshot;
+  if (!snapshot?.worktree?.trim() || !snapshot.snapshotDir?.trim())
+    return undefined;
+  if (
+    run.adapterGatherer?.status === "succeeded" &&
+    snapshot.forge === run.adapterGatherer.forge &&
+    (snapshot.source === undefined || snapshot.source === "adapter")
+  )
+    return "Successful adapter gatherer persisted a snapshot";
+  if (
+    run.adapterGatherer === undefined &&
+    snapshot.forge === undefined &&
+    (snapshot.source === "parent-pack" ||
+      (snapshot.source === undefined && Boolean(snapshot.evidenceDir?.trim())))
+  )
+    return "Run persisted a validated and copied parent evidence pack";
+  return undefined;
+}
+
+export function checkEvidenceContract(run: EvidenceRun): AuditCheck {
+  const evidence = sharedEvidence(run);
   const extra = { runID: run.runID };
-  if (run.judgeModel === undefined) {
-    if (context !== undefined)
-      return annotated(
-        "run.context_contract",
-        "pass",
-        "Parent-judged run persisted non-empty context",
-        extra,
-      );
+  if (evidence !== undefined)
+    return annotated("run.evidence_contract", "pass", evidence, extra);
+  if (run.judgeModel !== undefined && run.gatherer !== undefined)
     return annotated(
-      "run.context_contract",
-      "fail",
-      "No judgeModel requires persisted non-empty context",
-      extra,
-    );
-  }
-  if (context !== undefined)
-    return annotated(
-      "run.context_contract",
+      "run.evidence_contract",
       "pass",
-      "Judge run persisted non-empty context",
-      extra,
-    );
-  if (run.gatherer !== undefined)
-    return annotated(
-      "run.context_contract",
-      "pass",
-      "Judge run without context has a gatherer",
+      "Judge run without shared evidence has a gatherer",
       extra,
     );
   return annotated(
-    "run.context_contract",
+    "run.evidence_contract",
     "fail",
-    "judgeModel without context requires a gatherer object",
+    "Run requires persisted shared evidence or a judge gatherer",
     extra,
   );
 }
 
-export function checkGathererSkippedWhenContext(
-  run: Pick<CrossReviewRun, "context" | "gatherer" | "runID">,
-): AuditCheck {
+export function checkGathererSkippedWhenContext(run: EvidenceRun): AuditCheck {
   const extra = { runID: run.runID };
-  if (persistedContext(run) === undefined)
+  if (sharedEvidence(run) === undefined)
     return annotated(
       "gatherer.skipped_when_context",
       "pass",
-      "No persisted context, so gatherer skip does not apply",
+      "No persisted shared evidence, so gatherer skip does not apply",
       extra,
     );
   if (run.gatherer === undefined)
     return annotated(
       "gatherer.skipped_when_context",
       "pass",
-      "Persisted context skipped the gatherer",
+      "Persisted shared evidence skipped the gatherer",
       extra,
     );
   return annotated(
     "gatherer.skipped_when_context",
     "fail",
-    "Persisted context should omit the gatherer object",
+    "Persisted shared evidence should omit the gatherer object",
     extra,
   );
 }
@@ -700,7 +708,7 @@ export function evaluateRunChecks(input: {
   sessions: Map<string, AuditSessionEvidence | undefined>;
 }): AuditCheck[] {
   const checks = [
-    checkContextContract(input.run),
+    checkEvidenceContract(input.run),
     checkSilentModelReplace({ run: input.run, sessions: input.sessions }),
     checkGathererJudgeSession(input.run),
     checkGathererSkippedWhenContext(input.run),

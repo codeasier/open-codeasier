@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  checkContextContract,
+  checkEvidenceContract,
   checkGathererJudgeSession,
   checkGathererSkippedWhenContext,
   checkLegacyToolAbsent,
@@ -98,12 +98,100 @@ describe("persisted context", () => {
 });
 
 describe("deterministic audit checks", () => {
-  it("fails the context contract when a parent-judged run omits context", () => {
-    expect(checkContextContract(run()).result).toBe("fail");
-    expect(checkContextContract(run({ context: "diff" })).result).toBe("pass");
-    expect(checkContextContract(run({ context: "" })).result).toBe("fail");
+  it.each([undefined, "adapter"] as const)(
+    "accepts successful PR adapter snapshots with source %s and parent adjudication",
+    (source) => {
+      const manifest = run({
+        adapterGatherer: {
+          kind: "adapter",
+          forge: "github",
+          status: "succeeded",
+        },
+        snapshot: {
+          worktree: "/snapshot",
+          snapshotDir: "/snapshot/.cross-review",
+          forge: "github",
+          ...(source === undefined ? {} : { source }),
+        },
+      });
+      expect(checkEvidenceContract(manifest)).toMatchObject({
+        id: "run.evidence_contract",
+        result: "pass",
+      });
+      expect(checkGathererSkippedWhenContext(manifest).result).toBe("pass");
+      manifest.gatherer = {
+        model: "b/judge",
+        sessionID: "judge",
+        messageID: "g",
+        status: "queued",
+      };
+      expect(checkGathererSkippedWhenContext(manifest).result).toBe("fail");
+    },
+  );
+
+  it.each([
+    { source: "parent-pack" as const },
+    { evidenceDir: ".tmp/evidence" },
+  ])(
+    "accepts copied parent-pack provenance %j without context or a judge",
+    (provenance) => {
+      const manifest = run({
+        snapshot: {
+          ...provenance,
+          worktree: "/snapshot",
+          snapshotDir: "/snapshot/.cross-review",
+        },
+      });
+      expect(checkEvidenceContract(manifest).result).toBe("pass");
+      expect(checkGathererSkippedWhenContext(manifest).result).toBe("pass");
+    },
+  );
+
+  it("rejects missing or unsupported evidence success assertions", () => {
+    const snapshot = {
+      worktree: "/snapshot",
+      snapshotDir: "/snapshot/.cross-review",
+      forge: "github" as const,
+    };
+    const adapterGatherer = {
+      kind: "adapter" as const,
+      forge: "github" as const,
+      status: "succeeded" as const,
+    };
+    for (const overrides of [
+      { adapterGatherer },
+      { snapshot },
+      {
+        snapshot,
+        adapterGatherer: { ...adapterGatherer, status: "failed" as const },
+      },
+      { snapshot: { ...snapshot, worktree: "" }, adapterGatherer },
+      { snapshot: { ...snapshot, snapshotDir: "" }, adapterGatherer },
+      { snapshot: { ...snapshot, source: "adapter" as const } },
+      {
+        snapshot: { ...snapshot, source: "parent-pack" as const },
+        adapterGatherer,
+      },
+      { snapshot: { ...snapshot, forge: "gitcode" as const }, adapterGatherer },
+      { snapshot: { ...snapshot, evidenceDir: ".tmp/evidence" } },
+      {
+        snapshot: {
+          worktree: "/snapshot",
+          snapshotDir: "/snapshot/.cross-review",
+          evidenceDir: "",
+        },
+      },
+    ]) {
+      expect(checkEvidenceContract(run(overrides)).result).toBe("fail");
+    }
+  });
+
+  it("supports legacy context and judge gatherer evidence", () => {
+    expect(checkEvidenceContract(run()).result).toBe("fail");
+    expect(checkEvidenceContract(run({ context: "diff" })).result).toBe("pass");
+    expect(checkEvidenceContract(run({ context: "" })).result).toBe("fail");
     expect(
-      checkContextContract(
+      checkEvidenceContract(
         run({
           judgeModel: "b/judge",
           gatherer: {
@@ -115,7 +203,7 @@ describe("deterministic audit checks", () => {
         }),
       ).result,
     ).toBe("pass");
-    expect(checkContextContract(run({ judgeModel: "b/judge" })).result).toBe(
+    expect(checkEvidenceContract(run({ judgeModel: "b/judge" })).result).toBe(
       "fail",
     );
     expect(

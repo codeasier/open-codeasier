@@ -16,7 +16,7 @@ Mark only after verification on the implementation branch.
 ## Checks
 
 - [x] Prompt-level model and `READ_ONLY_TOOLS` deny are evaluated on the linked user message, not session title.
-- [x] Empty `context` is treated as omitted for `run.context_contract` and `gatherer.skipped_when_context`.
+- [x] Empty `context` is treated as omitted for `run.evidence_contract` and `gatherer.skipped_when_context`.
 - [x] Gatherer + judge sharing one session are fetched once; `gatherer.judge_session` checks same `sessionID` and different `messageID`.
 - [x] In-progress phase marks wrap-up checks `insufficient-evidence` without dropping prompt-level checks that have evidence.
 - [x] Parent blocking `cross_review` calls fail `run.legacy_tool.absent`.

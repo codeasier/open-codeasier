@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
+import { readEvidencePack, writeEvidencePack } from "./evidence.js";
 import { assertPrimarySession } from "../primary-session.js";
 import {
   configWarning,
@@ -12,7 +13,7 @@ import {
   joinWarnings,
   MAX_EMBEDDED_CONTEXT_LENGTH,
   normalizeProvidedContext,
-  requireParentContext,
+  requireSharedEvidence,
   OMIT_ARRAY_OVERRIDE_DESCRIPTION,
   OMIT_ZERO_OVERRIDE_DESCRIPTION,
   prSnapshotJudgeBrief,
@@ -42,6 +43,7 @@ import {
 } from "./pr-target.js";
 import {
   createDefaultPrAdapterRunner,
+  createParentSnapshot,
   defaultRemoveSnapshot,
   type PrAdapterRunner,
 } from "./pr-gather.js";
@@ -59,6 +61,9 @@ import {
   type ReviewerRunStatus,
   type SaveRun,
 } from "./run-store.js";
+
+export const PR_MATERIALS_COLLISION_ERROR =
+  "the PR head already contains .cross-review/materials; cannot attach evidence pack";
 
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1_000;
@@ -170,6 +175,7 @@ type ProtocolOptions = {
   ) => Promise<PrTargetClassification>;
   /** Override the PR snapshot adapter runner (tests inject fakes here). */
   runPrAdapter?: PrAdapterRunner;
+  createParentSnapshot?: typeof createParentSnapshot;
   /** Root that hosts `<runID>/` snapshot directories. */
   stateRoot?: string;
   /** Remove a snapshot worktree + its run directory (tests). */
@@ -743,6 +749,7 @@ function progress(
     readyToFinalize: isReadyToFinalize(run),
     pollAfterMs: pollAfter,
     summary: progressSummary(run, counts, pollAfter),
+    ...(run.snapshot === undefined ? {} : { snapshot: run.snapshot }),
     ...(pendingTimeouts(run).length === 0
       ? {}
       : { actionRequired: timeoutActionRequired(run) }),
@@ -763,20 +770,6 @@ function progress(
     ...(run.judge === undefined
       ? {}
       : { judge: publicJudge(run.judge, includeOutputs) }),
-    ...(run.snapshot === undefined
-      ? {}
-      : {
-          snapshot: {
-            worktree: run.snapshot.worktree,
-            forge: run.snapshot.forge,
-            ...(run.snapshot.url === undefined
-              ? {}
-              : { url: run.snapshot.url }),
-            ...(run.snapshot.headSha === undefined
-              ? {}
-              : { headSha: run.snapshot.headSha }),
-          },
-        }),
   };
 }
 
@@ -973,7 +966,11 @@ function reviewerPrompt(
                 run.embedLimit,
               )
             : // PR snapshot runs never embed the diff or caller context.
-              prSnapshotReviewBrief(run.target, reviewer.focus),
+              prSnapshotReviewBrief(
+                run.target,
+                reviewer.focus,
+                run.snapshot.source === "parent-pack",
+              ),
       },
     ],
     tools: READ_ONLY_TOOLS,
@@ -1006,7 +1003,10 @@ function judgePrompt(run: CrossReviewRun): AsyncPrompt["body"] {
         text: [
           run.snapshot === undefined
             ? "Act as the read-only cross-review judge."
-            : prSnapshotJudgeBrief(run.target),
+            : prSnapshotJudgeBrief(
+                run.target,
+                run.snapshot.source === "parent-pack",
+              ),
           run.snapshot === undefined ? `Target: ${run.target}` : "",
           ...(run.snapshot !== undefined
             ? []
@@ -1884,10 +1884,17 @@ export function createCrossReviewProtocolTools(
 
   const start = tool({
     description:
-      "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user review intent from primary sessions. For a non-PR target without judgeModel, parent-gathered context is required; omit optional overrides instead of passing an empty array or 0",
+      "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user review intent from primary sessions. For a non-PR target without judgeModel, parent-gathered context or evidenceDir is required; omit optional overrides instead of passing an empty array or 0",
     args: {
       target: tool.schema.string().min(1).max(4_000),
       context: tool.schema.string().min(1).max(1_000_000).optional(),
+      evidenceDir: tool.schema
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Project-relative evidence pack containing nonblank summary.md and valid meta.json; copied before child sessions start",
+        ),
       reviewModels: tool.schema
         .array(tool.schema.string())
         .min(1)
@@ -1946,6 +1953,10 @@ export function createCrossReviewProtocolTools(
       // Empty or whitespace-only context is omitted for both reviewer
       // briefs and PR snapshot notes.md.
       const providedContext = normalizeProvidedContext(args.context);
+      const pack =
+        args.evidenceDir === undefined
+          ? undefined
+          : await readEvidencePack(directory, args.evidenceDir);
 
       const runID = createRunID();
       const childSessions: string[] = [];
@@ -1962,12 +1973,13 @@ export function createCrossReviewProtocolTools(
         if (classification.kind === "error")
           throw new Error(classification.message);
         // Fail closed before the adapter or any child session: parent-session
-        // judging cannot gather, and a classified PR already has snapshot
-        // evidence.
-        requireParentContext({
+        // judging cannot gather; a classified PR or validated pack supplies
+        // shared evidence independently of caller context.
+        requireSharedEvidence({
           judgeModel,
           context: providedContext,
           isPrSnapshot: classification.kind === "pr",
+          hasEvidencePack: pack !== undefined,
         });
 
         let adapterGatherer: AdapterGathererRun | undefined;
@@ -2034,6 +2046,7 @@ export function createCrossReviewProtocolTools(
                       worktree: gather.snapshotPath,
                       snapshotDir: join(gather.snapshotPath, ".cross-review"),
                       forge: classification.forge,
+                      source: "adapter",
                     },
                   }),
               adapterGatherer,
@@ -2045,6 +2058,7 @@ export function createCrossReviewProtocolTools(
             worktree: gather.worktree,
             snapshotDir: gather.snapshotDir,
             forge: classification.forge,
+            source: "adapter",
             url: gather.meta.url,
             headSha: gather.meta.headSha,
             mergeBaseSha: gather.meta.mergeBaseSha,
@@ -2056,6 +2070,32 @@ export function createCrossReviewProtocolTools(
             startedAt: gatherStartedAt,
             completedAt: now(),
           };
+          if (pack !== undefined) {
+            try {
+              await writeEvidencePack(
+                join(prSnapshot.snapshotDir, "materials"),
+                pack,
+              );
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === "EEXIST")
+                throw new Error(PR_MATERIALS_COLLISION_ERROR);
+              throw error;
+            }
+            prSnapshot.evidenceDir = pack.evidenceDir;
+          }
+        } else if (pack !== undefined || providedContext !== undefined) {
+          prSnapshot = await (
+            options.createParentSnapshot ?? createParentSnapshot
+          )({
+            repo: directory,
+            target: args.target,
+            runID,
+            stateRoot,
+            ...(pack === undefined ? {} : { pack }),
+            ...(providedContext === undefined
+              ? {}
+              : { context: providedContext }),
+          });
         }
 
         const sessionRoot =
@@ -2131,6 +2171,7 @@ export function createCrossReviewProtocolTools(
               : prSnapshotReviewBrief(
                   args.target,
                   overrides.focus ?? loaded.config.focus,
+                  prSnapshot.source === "parent-pack",
                 ),
           ...(providedContext === undefined || prSnapshot !== undefined
             ? {}
@@ -2374,11 +2415,13 @@ export function createCrossReviewProtocolTools(
           run.phase === "completed" ||
           run.phase === "quorum-not-met" ||
           run.phase === "failed"
-        )
+        ) {
+          const cleanupWarning = await cleanupSnapshot(run);
           return result(
-            `Cross-review already finished: ${run.target}`,
+            `Cross-review already finished: ${run.target}${cleanupWarning ?? ""}`,
             progress(run, false, true, now()),
           );
+        }
         const timestamp = now();
         for (const reviewer of run.reviewers) {
           if (reviewer.status === "queued") {
@@ -2532,6 +2575,7 @@ export function createCrossReviewProtocolTools(
         if (run.phase === "reviewing" && run.judgeModel === undefined) {
           run.phase = "completed";
           run.finalResult = {
+            ...(run.snapshot === undefined ? {} : { snapshot: run.snapshot }),
             ...(run.warning === undefined ? {} : { warning: run.warning }),
             runID: run.runID,
             phase: run.phase,
@@ -2554,9 +2598,8 @@ export function createCrossReviewProtocolTools(
             },
           };
           await save();
-          const cleanupWarning = await cleanupSnapshot(run);
           return result(
-            `Cross-review finalized: ${run.target}${cleanupWarning ?? ""}`,
+            `Cross-review finalized: ${run.target}`,
             run.finalResult,
           );
         }
