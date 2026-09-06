@@ -62,6 +62,9 @@ import {
   type SaveRun,
 } from "./run-store.js";
 
+export const PR_MATERIALS_COLLISION_ERROR =
+  "the PR head already contains .cross-review/materials; cannot attach evidence pack";
+
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1_000;
 const DEFAULT_POLL_AFTER_MS = 3_000;
@@ -2068,10 +2071,16 @@ export function createCrossReviewProtocolTools(
             completedAt: now(),
           };
           if (pack !== undefined) {
-            await writeEvidencePack(
-              join(prSnapshot.snapshotDir, "materials"),
-              pack,
-            );
+            try {
+              await writeEvidencePack(
+                join(prSnapshot.snapshotDir, "materials"),
+                pack,
+              );
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === "EEXIST")
+                throw new Error(PR_MATERIALS_COLLISION_ERROR);
+              throw error;
+            }
             prSnapshot.evidenceDir = pack.evidenceDir;
           }
         } else if (pack !== undefined || providedContext !== undefined) {

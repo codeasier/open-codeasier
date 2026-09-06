@@ -158,7 +158,7 @@ export function configWarning(
 }
 
 export const MISSING_PARENT_CONTEXT_ERROR =
-  "Missing context for non-PR target without judgeModel: pass parent-gathered `context` or set `judgeModel`";
+  "Missing shared evidence for non-PR target without judgeModel: pass parent-gathered `context` or `evidenceDir`, or set `judgeModel`";
 
 export const OMIT_ARRAY_OVERRIDE_DESCRIPTION =
   "Omit when using defaults; do not pass an empty array";

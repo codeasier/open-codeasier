@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import type { PrSnapshotMeta } from "./pr-snapshot.js";
 import { validatePrSnapshot } from "./pr-snapshot.js";
 import type { PrForge } from "./pr-target.js";
+import { findGitRoot } from "./config.js";
 import { writeEvidencePack, type EvidencePack } from "./evidence.js";
 import type { CrossReviewRun } from "./run-store.js";
 
@@ -157,6 +158,11 @@ export function createDefaultPrAdapterRunner(
 
 export type SnapshotRemover = (worktree: string) => Promise<void>;
 
+export const PARENT_SNAPSHOT_REQUIRES_GIT_ERROR =
+  "Non-PR context or evidenceDir starts require a git repository to pin an isolated detached worktree";
+export const INVALID_REVIEW_REVISION_RANGE_ERROR =
+  "Invalid review revision range";
+
 export async function createParentSnapshot(input: {
   repo: string;
   target: string;
@@ -165,6 +171,8 @@ export async function createParentSnapshot(input: {
   context?: string;
   pack?: EvidencePack;
 }): Promise<NonNullable<CrossReviewRun["snapshot"]>> {
+  if ((await findGitRoot(input.repo)) === undefined)
+    throw new Error(PARENT_SNAPSHOT_REQUIRES_GIT_ERROR);
   const git = async (...args: string[]) =>
     (
       await execFileAsync("git", ["-C", input.repo, ...args], {
@@ -174,26 +182,27 @@ export async function createParentSnapshot(input: {
     ).stdout.trim();
   const target = input.target.trim();
   const range = /^([^\s]+?)\.{2,3}([^\s]+)$/.exec(target);
-  // Resolve revisions to commit IDs before passing them to worktree add.
+  // Any target containing `..` is reserved for a revision range. Prose
+  // such as `fix ... bug` is rejected rather than silently pinning HEAD.
   if (target.includes("..") && !range)
-    throw new Error("Invalid review revision range");
-  if (range)
-    await git(
+    throw new Error(INVALID_REVIEW_REVISION_RANGE_ERROR);
+  const paths = snapshotPaths(resolve(input.stateRoot), input.runID);
+  try {
+    if (range)
+      await git(
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        `${range[1]}^{commit}`,
+      );
+    const headSha = await git(
       "rev-parse",
       "--verify",
       "--end-of-options",
-      `${range[1]}^{commit}`,
+      `${range?.[2] ?? "HEAD"}^{commit}`,
     );
-  const headSha = await git(
-    "rev-parse",
-    "--verify",
-    "--end-of-options",
-    `${range?.[2] ?? "HEAD"}^{commit}`,
-  );
-  const paths = snapshotPaths(resolve(input.stateRoot), input.runID);
-  await mkdir(dirname(paths.worktree), { recursive: true });
-  await git("worktree", "add", "--detach", paths.worktree, headSha);
-  try {
+    await mkdir(dirname(paths.worktree), { recursive: true });
+    await git("worktree", "add", "--detach", paths.worktree, headSha);
     // A repository may track this name, even as a symlink. Never write through it.
     await rm(paths.snapshotDir, { recursive: true, force: true });
     if (input.pack) await writeEvidencePack(paths.snapshotDir, input.pack);

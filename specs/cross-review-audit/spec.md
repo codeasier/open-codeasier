@@ -46,20 +46,20 @@ Out of scope: judging review findings, mutating or cancelling runs, Codex workfl
 
 Each check is `{ id, result: "pass" | "fail" | "insufficient-evidence", detail }`.
 
-| id                                | pass when                                                                                                                        |
-| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `runs.found`                      | at least one owner manifest, or `--run-id` resolved                                                                              |
-| `run.legacy_tool.absent`          | parent has no `cross_review` (blocking) tool call                                                                                |
-| `run.context_contract`            | no `judgeModel` ⇒ persisted `context` non-empty; `judgeModel` and no context ⇒ `gatherer` object exists (any gatherer status)    |
-| `run.silent_model_replace.absent` | every reviewer/gatherer/judge prompt model equals the manifest `provider/model`; no extra dispatched model                       |
-| `role.session.linked`             | session exists; `parentID` is the owner; title/agent match the role (`cross-reviewer`; title contains the runID prefix and role) |
-| `role.prompt.messageID`           | user message `id` equals the manifest `messageID`                                                                                |
-| `role.prompt.model`               | that user message model equals the manifest model                                                                                |
-| `role.prompt.tools_deny`          | every key in `READ_ONLY_TOOLS` is `false` on that user message                                                                   |
-| `role.orchestration.absent`       | role session has no `cross_review*` / `session_review` / `cross_review_audit` tool calls                                         |
-| `role.no_children`                | see requirement 14                                                                                                               |
-| `gatherer.judge_session`          | when both exist: same `sessionID`, different `messageID`                                                                         |
-| `gatherer.skipped_when_context`   | persisted `context` ⇒ no gatherer object                                                                                         |
+| id                                | pass when                                                                                                                                                                                         |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runs.found`                      | at least one owner manifest, or `--run-id` resolved                                                                                                                                               |
+| `run.legacy_tool.absent`          | parent has no `cross_review` (blocking) tool call                                                                                                                                                 |
+| `run.evidence_contract`           | no `judgeModel` ⇒ persisted nonblank `context`, successful adapter snapshot, or copied parent-pack snapshot; `judgeModel` and no shared evidence ⇒ `gatherer` object exists (any gatherer status) |
+| `run.silent_model_replace.absent` | every reviewer/gatherer/judge prompt model equals the manifest `provider/model`; no extra dispatched model                                                                                        |
+| `role.session.linked`             | session exists; `parentID` is the owner; title/agent match the role (`cross-reviewer`; title contains the runID prefix and role)                                                                  |
+| `role.prompt.messageID`           | user message `id` equals the manifest `messageID`                                                                                                                                                 |
+| `role.prompt.model`               | that user message model equals the manifest model                                                                                                                                                 |
+| `role.prompt.tools_deny`          | every key in `READ_ONLY_TOOLS` is `false` on that user message                                                                                                                                    |
+| `role.orchestration.absent`       | role session has no `cross_review*` / `session_review` / `cross_review_audit` tool calls                                                                                                          |
+| `role.no_children`                | see requirement 14                                                                                                                                                                                |
+| `gatherer.judge_session`          | when both exist: same `sessionID`, different `messageID`                                                                                                                                          |
+| `gatherer.skipped_when_context`   | persisted `context` ⇒ no gatherer object                                                                                                                                                          |
 
 Empty `context` is omitted, matching start/gather rules.
 
@@ -73,7 +73,7 @@ Severity (worst item wins):
 
 - **P0** evidence unavailable (parent/SDK/store unreadable).
 - **P1** model mismatch, tools-deny miss, isolation/parent-link break, reviewer children, silent model replace, legacy blocking tool used as the review path.
-- **P2** context contract broken; reviewer wander/bash/search loop without shared context; timeout_pending resolved without a user `timeoutAction`; gatherer/judge role bleed.
+- **P2** evidence contract broken; reviewer wander/bash/search loop without shared evidence; timeout_pending resolved without a user `timeoutAction`; gatherer/judge role bleed.
 - **P3** polling waste (repeated finalize while non-terminal, client-side sleep instead of `waitMs`), extra starts that did not replace a cancelled run.
 
 ### Skill and packaging
@@ -87,7 +87,7 @@ Severity (worst item wins):
 ## Scenarios
 
 1. **Happy path, no judge.** Parent collected diff, passed `context`, three reviewers, parent judged. Checks pass. Skill notes reviewers did not need bash/search to obtain the target.
-2. **Missing context, no judge.** Start omitted `context`. Reviewers grep/glob and attempt `bash` (host `invalid`). `run.context_contract` fails. Skill grades P2 and cites the tool histogram.
+2. **Missing evidence, no judge.** Start omitted `context` and `evidenceDir`. Reviewers grep/glob and attempt `bash` (host `invalid`). `run.evidence_contract` fails. Skill grades P2 and cites the tool histogram.
 3. **Judge + gatherer.** Manifest has `judgeModel`, no `context`, gatherer present on the judge session. `gatherer.judge_session` passes. Skill only comments on gatherer-vs-review bleed if evidence shows findings in the gatherer message.
 4. **Multiple runs.** Two manifests under one owner; default report covers both in `createdAt` order. `--run-id` 8-char unique prefix returns one.
 5. **Stuck run.** Phase `reviewing`, one reviewer without final text. Included; wrap-up checks `insufficient-evidence`; skill can still fail `role.prompt.model` if that prompt exists.

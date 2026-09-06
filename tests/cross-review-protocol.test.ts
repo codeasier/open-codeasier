@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewProtocolTools as createProtocolTools,
+  PR_MATERIALS_COLLISION_ERROR,
   STRAY_TIMEOUT_ACTION_WARNING,
   type AsyncCrossReviewClient,
 } from "../src/cross-review/protocol.js";
@@ -429,6 +430,48 @@ describe("evidenceDir protocol", () => {
       expect(
         JSON.stringify(client.session.promptAsync.mock.calls),
       ).not.toContain("parent attachment body");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a PR evidence pack when the head already tracks materials", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "protocol-evidence-"));
+    try {
+      const snapshotDir = join(directory, "worktree", ".cross-review");
+      await mkdir(join(snapshotDir, "materials"), { recursive: true });
+      await mkdir(join(directory, "pack"));
+      await writeFile(
+        join(directory, "pack", "meta.json"),
+        '{"target":"parent"}',
+      );
+      await writeFile(join(directory, "pack", "summary.md"), "attachment");
+      const { client } = mockClient();
+      const adapter = vi.fn().mockResolvedValue({
+        ok: true,
+        worktree: join(directory, "worktree"),
+        snapshotDir,
+        meta: {},
+      });
+      const tools = createCrossReviewProtocolTools(client, {
+        store: new MemoryRunStore(),
+        loadConfig: loadedConfig,
+        classifyTarget: async () => ({ kind: "pr", forge: "github" }),
+        runPrAdapter: adapter,
+      });
+      await expect(
+        tools.cross_review_start.execute(
+          {
+            target: "PR #83",
+            evidenceDir: "pack",
+            reviewModels: ["a/one"],
+            agents: 1,
+          },
+          { ...context(), directory },
+        ),
+      ).rejects.toThrow(PR_MATERIALS_COLLISION_ERROR);
+      expect(adapter).toHaveBeenCalledOnce();
+      expect(client.session.create).not.toHaveBeenCalled();
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

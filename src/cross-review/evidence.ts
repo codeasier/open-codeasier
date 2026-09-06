@@ -10,6 +10,11 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export type EvidencePack = { files: Map<string, Buffer>; evidenceDir: string };
 
+export const EVIDENCE_DIR_PROJECT_ROOT_ERROR =
+  "evidenceDir must be a dedicated project-relative subdirectory, not the project root";
+export const EVIDENCE_PACK_GIT_ENTRY_ERROR =
+  "Evidence pack must not include .git";
+
 /** Capture validated bytes before dispatch; later source edits cannot change the review. */
 export async function readEvidencePack(
   project: string,
@@ -29,10 +34,18 @@ export async function readEvidencePack(
     const rel = relative(base, candidate);
     return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
   };
-  if (!inside(root, path) || !inside(root, await realpath(path)))
+  const canonical = await realpath(path);
+  if (!inside(root, path) || !inside(root, canonical))
     throw new Error("evidenceDir escapes the project directory");
+  if (path === root || canonical === root)
+    throw new Error(EVIDENCE_DIR_PROJECT_ROOT_ERROR);
+  const packRel = relative(root, canonical);
+  if (packRel === ".git" || packRel.split(sep).includes(".git"))
+    throw new Error(EVIDENCE_PACK_GIT_ENTRY_ERROR);
   const files = new Map<string, Buffer>();
   const walk = async (current: string, name: string): Promise<void> => {
+    if (name === ".git" || name.split(sep).includes(".git"))
+      throw new Error(EVIDENCE_PACK_GIT_ENTRY_ERROR);
     const info = await lstat(current);
     if (info.isSymbolicLink())
       throw new Error(`Evidence pack symlinks are not allowed: ${name}`);

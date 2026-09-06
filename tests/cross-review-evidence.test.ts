@@ -11,13 +11,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import { access } from "node:fs/promises";
 import {
+  EVIDENCE_DIR_PROJECT_ROOT_ERROR,
+  EVIDENCE_PACK_GIT_ENTRY_ERROR,
   readEvidencePack,
   writeEvidencePack,
 } from "../src/cross-review/evidence.js";
 import {
   createParentSnapshot,
   defaultRemoveSnapshot,
+  INVALID_REVIEW_REVISION_RANGE_ERROR,
+  PARENT_SNAPSHOT_REQUIRES_GIT_ERROR,
 } from "../src/cross-review/pr-gather.js";
 
 const exec = promisify(execFile);
@@ -47,6 +52,28 @@ describe("parent evidence packs", () => {
       await expect(readEvidencePack(project, path)).rejects.toThrow();
     },
   );
+  it.each([".", "./", "pack/.."])(
+    "rejects the project root as a pack: %s",
+    async (path) => {
+      const { project } = await fixture();
+      await expect(readEvidencePack(project, path)).rejects.toThrow(
+        EVIDENCE_DIR_PROJECT_ROOT_ERROR,
+      );
+    },
+  );
+  it("rejects a pack that is or contains .git", async () => {
+    const { project, pack } = await fixture();
+    await mkdir(join(project, ".git"));
+    await writeFile(join(project, ".git", "HEAD"), "ref: refs/heads/main");
+    await expect(readEvidencePack(project, ".git")).rejects.toThrow(
+      EVIDENCE_PACK_GIT_ENTRY_ERROR,
+    );
+    await mkdir(join(pack, ".git"));
+    await writeFile(join(pack, ".git", "HEAD"), "ref: refs/heads/main");
+    await expect(readEvidencePack(project, "pack")).rejects.toThrow(
+      EVIDENCE_PACK_GIT_ENTRY_ERROR,
+    );
+  });
   it.each([
     ["meta.json", undefined],
     ["summary.md", undefined],
@@ -160,6 +187,63 @@ describe("parent evidence packs", () => {
         }),
       ).rejects.toThrow();
     }
+    for (const target of ["../lib", "fix ... bug"]) {
+      await expect(
+        createParentSnapshot({
+          repo: project,
+          target,
+          stateRoot: join(root, "state"),
+          runID: "invalid-range",
+          context: "context",
+        }),
+      ).rejects.toThrow(INVALID_REVIEW_REVISION_RANGE_ERROR);
+    }
+  });
+  it("fails closed outside a git repository without creating a snapshot dir", async () => {
+    const { project, root } = await fixture();
+    const stateRoot = join(root, "state");
+    await expect(
+      createParentSnapshot({
+        repo: project,
+        target: "issue #83",
+        stateRoot,
+        runID: "nongit",
+        context: "context",
+      }),
+    ).rejects.toThrow(PARENT_SNAPSHOT_REQUIRES_GIT_ERROR);
+    await expect(access(join(stateRoot, "nongit"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+  it("removes the run directory when worktree creation fails", async () => {
+    const { project, root } = await fixture();
+    const git = async (...args: string[]) =>
+      (await exec("git", ["-C", project, ...args])).stdout.trim();
+    await git("init");
+    await git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.invalid",
+      "commit",
+      "--allow-empty",
+      "-m",
+      "first",
+    );
+    const stateRoot = join(root, "state");
+    const runDir = join(stateRoot, "blocked");
+    await mkdir(runDir, { recursive: true });
+    await writeFile(join(runDir, "worktree"), "not a directory");
+    await expect(
+      createParentSnapshot({
+        repo: project,
+        target: "HEAD",
+        stateRoot,
+        runID: "blocked",
+        context: "context",
+      }),
+    ).rejects.toThrow();
+    await expect(access(runDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
   it("copies packs into a detached worktree and appends context to the copied summary only", async () => {
     const { project, root, pack } = await fixture();
