@@ -48,7 +48,17 @@ describe("cross-review initializer", () => {
     ).toEqual({});
     expect(CROSS_REVIEW_CONFIG_TEMPLATE).not.toContain("model");
     expect(crossReviewInitNextStep("/tmp/cross-review.json")).toBe(
-      "next: wrote {}; use only one of `reviewers` or `reviewModels`; then npx open-codeasier validate /tmp/cross-review.json",
+      "next: wrote {}; use only one of `reviewers` or `reviewModels`; then npx open-codeasier validate '/tmp/cross-review.json'",
+    );
+    expect(
+      crossReviewInitNextStep("/tmp/my project/.opencode/cross-review.json"),
+    ).toBe(
+      "next: wrote {}; use only one of `reviewers` or `reviewModels`; then npx open-codeasier validate '/tmp/my project/.opencode/cross-review.json'",
+    );
+    expect(
+      crossReviewInitNextStep("/tmp/it's project/.opencode/cross-review.json"),
+    ).toBe(
+      "next: wrote {}; use only one of `reviewers` or `reviewModels`; then npx open-codeasier validate '/tmp/it'\\''s project/.opencode/cross-review.json'",
     );
   });
 
@@ -223,6 +233,19 @@ describe("init CLI", () => {
     });
   });
 
+  it("quotes the printed validate path when the project directory has spaces", async () => {
+    const { run } = await import("../src/cli.js");
+    const root = await fixture();
+    const home = { home: join(root, "home") };
+    const project = join(root, "my project");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect(await run(["init", "--local", project], home)).toBe(0);
+    const path = projectConfigPath(project);
+    expect(path).toContain(" ");
+    expect(log).toHaveBeenCalledWith(crossReviewInitNextStep(path));
+    expect(crossReviewInitNextStep(path)).toContain(`'${path}'`);
+  });
+
   it("allows init when the ~/.agents copy matches the packaged skill", async () => {
     const { run } = await import("../src/cli.js");
     const root = await fixture();
@@ -306,6 +329,15 @@ describe("validate CLI", () => {
       expect.stringContaining("Cross-review config not found"),
     );
     expect(await run(["validate", "--bogus"])).toBe(2);
+
+    const spaced = join(root, "my project", "cross-review.json");
+    await mkdir(join(root, "my project"));
+    await writeFile(
+      spaced,
+      JSON.stringify({ reviewers: [{ model: "a/one" }] }),
+    );
+    expect(await run(["validate", spaced])).toBe(0);
+    expect(await run(["validate", ...spaced.split(" ")])).toBe(2);
   });
 
   it("defaults to the enclosing project's cross-review config", async () => {
