@@ -1,14 +1,28 @@
-import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sha256 } from "../src/installer/assets.js";
+import { discoverAssets, sha256 } from "../src/installer/assets.js";
 import {
   AssetConflictError,
   installAssets,
   uninstallAssets,
 } from "../src/installer/install.js";
 import { resolveTarget } from "../src/installer/paths.js";
+import {
+  agentsSkillPath,
+  findConflictingShadowSkill,
+  packagedSkillHash,
+  rejectConflictingShadowSkill,
+  ShadowSkillError,
+} from "../src/installer/shadow-skills.js";
 
 const roots: string[] = [];
 afterEach(async () =>
@@ -216,16 +230,66 @@ describe("asset installer", () => {
   });
 });
 
+describe("shadow skills", () => {
+  it("ignores a missing ~/.agents copy and a byte-identical replacement", async () => {
+    const f = await fixture();
+    const home = join(f.root, "home");
+    const expectedSha256 = packagedSkillHash(await discoverAssets());
+    await expect(
+      findConflictingShadowSkill({ home, expectedSha256 }),
+    ).resolves.toBeUndefined();
+    const shadow = agentsSkillPath(home);
+    await mkdir(shadow, { recursive: true });
+    await writeFile(
+      join(shadow, "SKILL.md"),
+      await readFile("skills/cross-review/SKILL.md"),
+    );
+    await expect(
+      findConflictingShadowSkill({ home, expectedSha256 }),
+    ).resolves.toBeUndefined();
+    await expect(
+      rejectConflictingShadowSkill({ home, expectedSha256 }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("reports a stale, incomplete, or non-directory ~/.agents copy", async () => {
+    const f = await fixture();
+    const home = join(f.root, "home");
+    const expectedSha256 = packagedSkillHash(await discoverAssets());
+    const shadow = agentsSkillPath(home);
+    await mkdir(shadow, { recursive: true });
+    await writeFile(join(shadow, "SKILL.md"), "# stale\n");
+    await expect(
+      findConflictingShadowSkill({ home, expectedSha256 }),
+    ).resolves.toBe(shadow);
+    await expect(
+      rejectConflictingShadowSkill({ home, expectedSha256 }),
+    ).rejects.toBeInstanceOf(ShadowSkillError);
+
+    await rm(join(shadow, "SKILL.md"));
+    await expect(
+      findConflictingShadowSkill({ home, expectedSha256 }),
+    ).resolves.toBe(shadow);
+
+    await rm(shadow, { recursive: true });
+    await writeFile(shadow, "not a skill directory\n");
+    await expect(
+      findConflictingShadowSkill({ home, expectedSha256 }),
+    ).resolves.toBe(shadow);
+  });
+});
+
 describe("CLI parser", () => {
   it("prints exact-version runtime guidance for the matching scope", async () => {
     const f = await fixture();
     const project = join(f.root, "project");
+    const home = { home: join(f.root, "home") };
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     try {
       const { run, runtimePluginInstallCommand } = await import(
         "../src/cli.js"
       );
-      expect(await run(["install", "--project", project])).toBe(0);
+      expect(await run(["install", "--project", project], home)).toBe(0);
       const target = resolveTarget({ project });
       const manifest = JSON.parse(
         await readFile(
@@ -241,7 +305,7 @@ describe("CLI parser", () => {
         "opencode plugin open-codeasier@1.2.3 --global --force",
       );
       log.mockClear();
-      expect(await run(["uninstall", "--project", project])).toBe(0);
+      expect(await run(["uninstall", "--project", project], home)).toBe(0);
       expect(
         log.mock.calls.some(([message]) =>
           String(message).startsWith("runtime-plugin"),
@@ -256,5 +320,29 @@ describe("CLI parser", () => {
     const { run } = await import("../src/cli.js");
     expect(await run(["unknown"])).toBe(2);
     expect(await run(["install", "--unknown"])).toBe(2);
+  });
+
+  it("refuses install when ~/.agents/skills/cross-review is stale", async () => {
+    const f = await fixture();
+    const project = join(f.root, "project");
+    const home = join(f.root, "home");
+    const shadow = agentsSkillPath(home);
+    await mkdir(shadow, { recursive: true });
+    await writeFile(join(shadow, "SKILL.md"), "# stale cross-review\n");
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const { run } = await import("../src/cli.js");
+    expect(await run(["install", "--project", project], { home })).toBe(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `Shadow skill outside package-owned paths: ${shadow}`,
+      ),
+    );
+    await expect(
+      readFile(
+        join(project, ".opencode", "skills", "cross-review", "SKILL.md"),
+      ),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

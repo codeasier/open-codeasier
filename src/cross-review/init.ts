@@ -4,6 +4,14 @@ import type { InstallTarget } from "../installer/paths.js";
 
 export const CROSS_REVIEW_CONFIG_TEMPLATE = "{}\n";
 
+function quoteShellArg(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+export function crossReviewInitNextStep(path: string): string {
+  return `next: wrote {}; use only one of \`reviewers\` or \`reviewModels\`; then npx open-codeasier validate ${quoteShellArg(path)}`;
+}
+
 export class CrossReviewConfigConflictError extends Error {
   constructor(path: string) {
     super(`Refusing to overwrite existing or unsafe path: ${path}`);

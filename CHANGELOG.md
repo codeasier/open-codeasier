@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Refuse `install` and `init` when `~/.agents/skills/cross-review` exists and
+  differs from the packaged skill, document that `install` does not update
+  `~/.agents`, and print an `init` next-step to fill only one of `reviewers`
+  or `reviewModels` and then run `npx open-codeasier validate <path>`.
 - Launch GitHub and GitCode PR snapshot adapters with a Node.js executable
   instead of reusing `process.execPath`, so a standalone OpenCode binary no
   longer fails snapshot gathering with its own CLI help. Override the runtime
