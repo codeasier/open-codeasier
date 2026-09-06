@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -14,6 +15,7 @@ import {
 } from "./cross-review/gitcode-cli.js";
 import {
   CrossReviewConfigConflictError,
+  crossReviewInitNextStep,
   initializeCrossReviewConfig,
 } from "./cross-review/init.js";
 import { discoverAssets } from "./installer/assets.js";
@@ -23,6 +25,11 @@ import {
   uninstallAssets,
 } from "./installer/install.js";
 import { resolveTarget } from "./installer/paths.js";
+import {
+  packagedSkillHash,
+  rejectConflictingShadowSkill,
+  ShadowSkillError,
+} from "./installer/shadow-skills.js";
 
 export function runtimePluginInstallCommand(
   packageVersion: string,
@@ -31,7 +38,11 @@ export function runtimePluginInstallCommand(
   return `opencode plugin open-codeasier@${packageVersion}${scope === "global" ? " --global" : ""} --force`;
 }
 
-export async function run(argv: string[]): Promise<number> {
+export async function run(
+  argv: string[],
+  options: { home?: string } = {},
+): Promise<number> {
+  const home = options.home ?? homedir();
   const command = argv.shift();
   if (command === "init") {
     let requestedScope: "local" | "global" | undefined;
@@ -62,13 +73,21 @@ export async function run(argv: string[]): Promise<number> {
             project: (await findGitRoot(requestedProject)) ?? requestedProject,
           });
     try {
+      await rejectConflictingShadowSkill({
+        home,
+        expectedSha256: packagedSkillHash(await discoverAssets()),
+      });
       const result = await initializeCrossReviewConfig({ target, dryRun });
       console.log(
         `${dryRun ? "would-initialize" : "initialized"}: ${result.path}`,
       );
+      console.log(crossReviewInitNextStep(result.path));
       return 0;
     } catch (error) {
-      if (error instanceof CrossReviewConfigConflictError) {
+      if (
+        error instanceof CrossReviewConfigConflictError ||
+        error instanceof ShadowSkillError
+      ) {
         console.error(error.message);
         return 1;
       }
@@ -149,9 +168,14 @@ export async function run(argv: string[]): Promise<number> {
           "utf8",
         ),
       ).version as string;
+      const assets = await discoverAssets();
+      await rejectConflictingShadowSkill({
+        home,
+        expectedSha256: packagedSkillHash(assets),
+      });
       const result = await installAssets({
         target,
-        assets: await discoverAssets(),
+        assets,
         packageVersion,
         dryRun,
       });
@@ -171,7 +195,10 @@ export async function run(argv: string[]): Promise<number> {
     }
     return 0;
   } catch (error) {
-    if (error instanceof AssetConflictError) {
+    if (
+      error instanceof AssetConflictError ||
+      error instanceof ShadowSkillError
+    ) {
       console.error(error.message);
       return 1;
     }

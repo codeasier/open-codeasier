@@ -17,9 +17,11 @@ import {
 import {
   CROSS_REVIEW_CONFIG_TEMPLATE,
   CrossReviewConfigConflictError,
+  crossReviewInitNextStep,
   initializeCrossReviewConfig,
 } from "../src/cross-review/init.js";
 import { resolveTarget } from "../src/installer/paths.js";
+import { agentsSkillPath } from "../src/installer/shadow-skills.js";
 
 const roots: string[] = [];
 
@@ -45,6 +47,9 @@ describe("cross-review initializer", () => {
       ),
     ).toEqual({});
     expect(CROSS_REVIEW_CONFIG_TEMPLATE).not.toContain("model");
+    expect(crossReviewInitNextStep("/tmp/cross-review.json")).toBe(
+      "next: wrote {}; use only one of `reviewers` or `reviewModels`; then npx open-codeasier validate /tmp/cross-review.json",
+    );
   });
 
   it("initializes local and global configuration paths", async () => {
@@ -125,39 +130,47 @@ describe("init CLI", () => {
   it("defaults to the current local project and rejects invalid scope combinations", async () => {
     const { run } = await import("../src/cli.js");
     const root = await fixture();
+    const home = { home: join(root, "home") };
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const previousDirectory = process.cwd();
     try {
       process.chdir(root);
-      expect(await run(["init", "--dry-run"])).toBe(0);
+      expect(await run(["init", "--dry-run"], home)).toBe(0);
     } finally {
       process.chdir(previousDirectory);
     }
-    expect(log).toHaveBeenCalledWith(
-      `would-initialize: ${projectConfigPath(await realpath(root))}`,
-    );
-    expect(await run(["init", "--local", "--global"])).toBe(2);
-    expect(await run(["init", "--global", "unexpected"])).toBe(2);
+    const path = projectConfigPath(await realpath(root));
+    expect(log).toHaveBeenCalledWith(`would-initialize: ${path}`);
+    expect(log).toHaveBeenCalledWith(crossReviewInitNextStep(path));
+    expect(await run(["init", "--local", "--global"], home)).toBe(2);
+    expect(await run(["init", "--global", "unexpected"], home)).toBe(2);
   });
 
   it("initializes local paths with or without the explicit scope flag", async () => {
     const { run } = await import("../src/cli.js");
     const root = await fixture();
+    const home = { home: join(root, "home") };
     const project = join(root, "project");
     const defaultScopeProject = join(root, "default-scope-project");
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const error = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
-    expect(await run(["init", "--local", project])).toBe(0);
-    expect(await run(["init", defaultScopeProject])).toBe(0);
+    expect(await run(["init", "--local", project], home)).toBe(0);
+    expect(await run(["init", defaultScopeProject], home)).toBe(0);
     expect(log).toHaveBeenCalledWith(
       `initialized: ${projectConfigPath(project)}`,
     );
     expect(log).toHaveBeenCalledWith(
+      crossReviewInitNextStep(projectConfigPath(project)),
+    );
+    expect(log).toHaveBeenCalledWith(
       `initialized: ${projectConfigPath(defaultScopeProject)}`,
     );
-    expect(await run(["init", "--local", project])).toBe(1);
+    expect(log).toHaveBeenCalledWith(
+      crossReviewInitNextStep(projectConfigPath(defaultScopeProject)),
+    );
+    expect(await run(["init", "--local", project], home)).toBe(1);
     expect(error).toHaveBeenCalledWith(
       expect.stringContaining("Refusing to overwrite"),
     );
@@ -166,6 +179,7 @@ describe("init CLI", () => {
   it("defaults local initialization to the enclosing repository root", async () => {
     const { run } = await import("../src/cli.js");
     const root = await fixture();
+    const home = { home: join(root, "home") };
     const subDir = join(root, "packages", "nested");
     await mkdir(join(root, ".git"), { recursive: true });
     await mkdir(subDir, { recursive: true });
@@ -173,12 +187,63 @@ describe("init CLI", () => {
     const previousDirectory = process.cwd();
     try {
       process.chdir(subDir);
-      expect(await run(["init", "--dry-run"])).toBe(0);
+      expect(await run(["init", "--dry-run"], home)).toBe(0);
     } finally {
       process.chdir(previousDirectory);
     }
+    const path = projectConfigPath(await realpath(root));
+    expect(log).toHaveBeenCalledWith(`would-initialize: ${path}`);
+    expect(log).toHaveBeenCalledWith(crossReviewInitNextStep(path));
+  });
+
+  it("refuses a stale ~/.agents cross-review skill before writing", async () => {
+    const { run } = await import("../src/cli.js");
+    const root = await fixture();
+    const home = join(root, "home");
+    const project = join(root, "project");
+    const shadow = agentsSkillPath(home);
+    await mkdir(shadow, { recursive: true });
+    await writeFile(join(shadow, "SKILL.md"), "# stale cross-review\n");
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    expect(await run(["init", "--local", project], { home })).toBe(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `Shadow skill outside package-owned paths: ${shadow}`,
+      ),
+    );
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "npx open-codeasier install does not update ~/.agents",
+      ),
+    );
+    await expect(readFile(projectConfigPath(project))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("allows init when the ~/.agents copy matches the packaged skill", async () => {
+    const { run } = await import("../src/cli.js");
+    const root = await fixture();
+    const home = join(root, "home");
+    const project = join(root, "project");
+    const shadow = agentsSkillPath(home);
+    await mkdir(shadow, { recursive: true });
+    await writeFile(
+      join(shadow, "SKILL.md"),
+      await readFile("skills/cross-review/SKILL.md"),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    expect(await run(["init", "--local", project], { home })).toBe(0);
     expect(log).toHaveBeenCalledWith(
-      `would-initialize: ${projectConfigPath(await realpath(root))}`,
+      `initialized: ${projectConfigPath(project)}`,
+    );
+    expect(log).toHaveBeenCalledWith(
+      crossReviewInitNextStep(projectConfigPath(project)),
+    );
+    await expect(readFile(projectConfigPath(project), "utf8")).resolves.toBe(
+      CROSS_REVIEW_CONFIG_TEMPLATE,
     );
   });
 });
@@ -214,6 +279,20 @@ describe("validate CLI", () => {
       expect.stringContaining(
         '`reviewers` must be 1-8 `{ "model", "focus"? }` entries',
       ),
+    );
+
+    // The dual-key shape from issue #86. validate stays the runtime gate;
+    // a syntax-only JSON check cannot see this.
+    await writeFile(
+      path,
+      JSON.stringify({
+        reviewers: [{ model: "a/one" }],
+        reviewModels: ["b/two"],
+      }),
+    );
+    expect(await run(["validate", path])).toBe(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining("use only one of `reviewers` or `reviewModels`"),
     );
 
     await writeFile(path, "{ invalid");

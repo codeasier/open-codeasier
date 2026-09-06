@@ -25,7 +25,7 @@ opencode plugin "open-codeasier@$VERSION" --force
 npx "open-codeasier@$VERSION" install --project .
 ```
 
-Use the same paired commands to upgrade, then restart OpenCode. An exact version avoids OpenCode reusing a stale runtime for a floating npm tag. Pair the plugin's `--global` scope with the asset installer's global default; for project scope, omit the plugin's `--global` flag and pass `--project` to the asset installer. The asset installer also prints the matching exact-version runtime command. Assets are installed under `~/.config/opencode/` or `<project>/.opencode/`. Preview asset operations with `--dry-run`; files changed after installation are never overwritten. Remove only package-owned assets with:
+Use the same paired commands to upgrade, then restart OpenCode. An exact version avoids OpenCode reusing a stale runtime for a floating npm tag. Pair the plugin's `--global` scope with the asset installer's global default; for project scope, omit the plugin's `--global` flag and pass `--project` to the asset installer. The asset installer also prints the matching exact-version runtime command. Assets are installed under `~/.config/opencode/` or `<project>/.opencode/`. `npx open-codeasier install` does not update `~/.agents`. If `~/.agents/skills/cross-review` exists and differs from the packaged skill, `install` and `init` refuse until that shadow is removed or replaced with the packaged `skills/cross-review/SKILL.md`. Preview asset operations with `--dry-run`; files changed after installation are never overwritten. Remove only package-owned assets with:
 
 ```bash
 npx open-codeasier uninstall
@@ -70,7 +70,7 @@ npx open-codeasier init --local /path/to/project
 npx open-codeasier init --global
 ```
 
-The CLI initializer writes an empty, model-free configuration and refuses to overwrite an existing file. It never guesses which providers or models you can use. Add `--dry-run` to preview the destination without writing.
+The CLI initializer writes an empty, model-free configuration and refuses to overwrite an existing file. It never guesses which providers or models you can use. It prints a next-step that the file is `{}`, to use only one of `reviewers` or `reviewModels`, and then to run `npx open-codeasier validate <path>`. Add `--dry-run` to preview the destination without writing.
 
 After editing a configuration, validate it exactly the way the runtime parses it:
 

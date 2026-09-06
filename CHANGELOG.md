@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Refuse `install` and `init` when `~/.agents/skills/cross-review` exists and
+  differs from the packaged skill, document that `install` does not update
+  `~/.agents`, and print an `init` next-step to fill only one of `reviewers`
+  or `reviewModels` and then run `npx open-codeasier validate <path>`.
+
 ## [0.3.0] - 2026-09-06
 
 ### Added
