@@ -8,7 +8,7 @@ import {
   STRAY_TIMEOUT_ACTION_WARNING,
   type AsyncCrossReviewClient,
 } from "../src/cross-review/protocol.js";
-import { MISSING_PARENT_CONTEXT_WARNING } from "../src/cross-review/tool.js";
+import { MISSING_PARENT_CONTEXT_ERROR } from "../src/cross-review/tool.js";
 import type {
   CrossReviewRun,
   CrossReviewRunStore,
@@ -236,6 +236,7 @@ describe("asynchronous cross-review protocol", () => {
       await tools.cross_review_start.execute(
         {
           target: "HEAD",
+          context: "already gathered",
           reviewModels: ["a/one"],
           agents: 3,
           maxConcurrency: 2,
@@ -283,19 +284,34 @@ describe("asynchronous cross-review protocol", () => {
     const tools = protocol(client, store);
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 9 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 9,
+        },
         context(),
       ),
     ).rejects.toThrow("`agents` must be an integer from 1 to 8");
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], maxConcurrency: 9 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          maxConcurrency: 9,
+        },
         context(),
       ),
     ).rejects.toThrow("`maxConcurrency` must be an integer from 1 to 8");
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], reviewerTimeoutMs: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          reviewerTimeoutMs: 1,
+        },
         context(),
       ),
     ).rejects.toThrow(
@@ -303,7 +319,11 @@ describe("asynchronous cross-review protocol", () => {
     );
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["malformed"] },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["malformed"],
+        },
         context(),
       ),
     ).rejects.toThrow(
@@ -377,7 +397,7 @@ describe("asynchronous cross-review protocol", () => {
     const tools = protocol(client, store);
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: [] },
+        { target: "HEAD", context: "already gathered", reviewModels: [] },
         context(),
       ),
     ).rejects.toThrow("No review models configured");
@@ -479,6 +499,7 @@ describe("asynchronous cross-review protocol", () => {
       await tools.cross_review_start.execute(
         {
           target: "HEAD",
+          context: "already gathered",
           reviewModels: ["a/one"],
           agents: 2,
           maxConcurrency: 2,
@@ -503,6 +524,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one", "a/two"],
         agents: 3,
         maxConcurrency: 2,
@@ -557,6 +579,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 2,
         maxConcurrency: 2,
@@ -578,7 +601,12 @@ describe("asynchronous cross-review protocol", () => {
     const { client } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
     await tools.cross_review_start.execute(
-      { target: longTarget, reviewModels: ["a/one"], agents: 1 },
+      {
+        target: longTarget,
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
 
@@ -605,6 +633,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 2,
         maxConcurrency: 1,
@@ -640,6 +669,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 2,
         maxConcurrency: 1,
@@ -685,6 +715,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 2,
         maxConcurrency: 1,
@@ -738,6 +769,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 2,
         maxConcurrency: 1,
@@ -772,6 +804,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 2,
         maxConcurrency: 1,
@@ -818,6 +851,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 1,
         reviewerTimeoutMs: 20_000,
@@ -854,6 +888,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 1,
         reviewerTimeoutMs: 5_000,
@@ -900,7 +935,12 @@ describe("asynchronous cross-review protocol", () => {
       canonicalize: async (directory) => directory,
     });
     await tools.cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
     expect(store.runs.get(RUN_ID)?.reviewerTimeoutMs).toBe(900_000);
@@ -928,6 +968,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 1,
         reviewerTimeoutMs: 5_000,
@@ -942,7 +983,12 @@ describe("asynchronous cross-review protocol", () => {
     const store = new MemoryRunStore();
     const tools = protocol(client, store);
     await tools.cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
     expect(store.runs.get(RUN_ID)?.reviewerTimeoutMs).toBe(600_000);
@@ -956,6 +1002,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 2,
         maxConcurrency: 1,
@@ -992,6 +1039,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 1,
         reviewerTimeoutMs: 5_000,
@@ -1022,7 +1070,12 @@ describe("asynchronous cross-review protocol", () => {
     const tools = protocol(client, new MemoryRunStore(), () => timestamp);
     const started = output(
       await tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       ),
     );
@@ -1049,7 +1102,12 @@ describe("asynchronous cross-review protocol", () => {
     const store = new MemoryRunStore();
     const tools = protocol(client, store, () => timestamp);
     await tools.cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
 
@@ -1082,6 +1140,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 1,
         reviewerTimeoutMs: 30_000,
@@ -1119,6 +1178,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 1,
         reviewerTimeoutMs: 5_000,
@@ -1148,7 +1208,12 @@ describe("asynchronous cross-review protocol", () => {
     client.session.status.mockRejectedValue(new Error("status unavailable"));
     const tools = protocol(client, new MemoryRunStore());
     await tools.cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
     messages.set("child-1", completed("candidate despite status failure"));
@@ -1172,6 +1237,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 2,
         maxConcurrency: 2,
@@ -1203,7 +1269,12 @@ describe("asynchronous cross-review protocol", () => {
     const { client, messages } = mockClient();
     const store = new MemoryRunStore();
     await protocol(client, store).cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
     messages.set("child-1", completed("resumed review"));
@@ -1231,6 +1302,7 @@ describe("asynchronous cross-review protocol", () => {
     await first.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 3,
         maxConcurrency: 2,
@@ -1260,6 +1332,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 2,
         maxConcurrency: 1,
@@ -1291,7 +1364,12 @@ describe("asynchronous cross-review protocol", () => {
     client.session.abort.mockResolvedValueOnce({ data: false });
     const tools = protocol(client, new MemoryRunStore());
     await tools.cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
 
@@ -1309,7 +1387,12 @@ describe("asynchronous cross-review protocol", () => {
     const { client, messages } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
     await tools.cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
     messages.set("child-1", completed("candidate"));
@@ -2083,7 +2166,12 @@ describe("asynchronous cross-review protocol", () => {
 
     const started = output(
       await tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       ),
     );
@@ -2100,6 +2188,7 @@ describe("asynchronous cross-review protocol", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 3,
         maxConcurrency: 3,
@@ -2133,7 +2222,12 @@ describe("asynchronous cross-review protocol", () => {
 
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context("child-session"),
       ),
     ).rejects.toThrow(
@@ -2149,7 +2243,12 @@ describe("asynchronous cross-review protocol", () => {
 
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       ),
     ).rejects.toThrow(
@@ -2167,7 +2266,12 @@ describe("asynchronous cross-review protocol", () => {
 
     await expect(
       tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       ),
     ).rejects.toThrow("Session inspection failed: unavailable");
@@ -2183,7 +2287,12 @@ describe("asynchronous cross-review protocol", () => {
 
     const started = output(
       await tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context("primary-session"),
       ),
     );
@@ -2212,7 +2321,12 @@ describe("asynchronous cross-review protocol", () => {
         sleepMock,
       );
       await tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       );
       statuses["child-1"] = { type: "busy" };
@@ -2240,7 +2354,12 @@ describe("asynchronous cross-review protocol", () => {
         sleepMock,
       );
       await tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       );
       messages.set("child-1", completed("done"));
@@ -2278,7 +2397,12 @@ describe("asynchronous cross-review protocol", () => {
         sleepMock,
       );
       await tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       );
       statuses["child-1"] = { type: "busy" };
@@ -2311,6 +2435,7 @@ describe("asynchronous cross-review protocol", () => {
       await tools.cross_review_start.execute(
         {
           target: "HEAD",
+          context: "already gathered",
           reviewModels: ["a/one"],
           agents: 2,
           maxConcurrency: 1,
@@ -2370,7 +2495,12 @@ describe("asynchronous cross-review protocol", () => {
         sleepMock,
       );
       await tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       );
       statuses["child-1"] = { type: "busy" };
@@ -2402,7 +2532,12 @@ describe("asynchronous cross-review protocol", () => {
         sleepMock,
       );
       await tools.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       );
       statuses["child-1"] = { type: "busy" };
@@ -2449,7 +2584,12 @@ describe("asynchronous cross-review protocol", () => {
         sleepMock,
       );
       await statusProtocol.cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       );
       statuses["child-1"] = { type: "busy" };
@@ -2528,39 +2668,22 @@ describe("parent-session protocol defenses", () => {
     expect(tools.cross_review_finalize.description).toMatch(/readyToFinalize/);
   });
 
-  it("warns when a non-PR start has no judgeModel and no context", async () => {
+  it("rejects a non-PR start that has no judgeModel and no context", async () => {
     const { client } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
-    const startedResult = await tools.cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
-      context(),
-    );
-    const started = output(startedResult);
-    expect(started.warning).toBe(MISSING_PARENT_CONTEXT_WARNING);
-    expect(started.summary).toContain("Missing context");
-    expect(
-      (startedResult as { metadata: Record<string, unknown> }).metadata.warning,
-    ).toBe(MISSING_PARENT_CONTEXT_WARNING);
-
-    const compact = output(
-      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
-    );
-    expect(compact).not.toHaveProperty("warning");
-    expect(compact.summary).toContain("Missing context");
-
-    const detailed = output(
-      await tools.cross_review_status.execute(
-        { runID: RUN_ID, detail: true },
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
         context(),
       ),
-    );
-    expect(detailed.warning).toBe(MISSING_PARENT_CONTEXT_WARNING);
+    ).rejects.toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(client.session.create).not.toHaveBeenCalled();
   });
 
-  it("combines the config fallback warning with a missing-context warning", async () => {
+  it("rejects a missing-context start before applying a config fallback warning", async () => {
     const { client } = mockClient();
-    const started = output(
-      await protocol(
+    await expect(
+      protocol(
         client,
         new MemoryRunStore(),
         () => 1_000,
@@ -2569,9 +2692,8 @@ describe("parent-session protocol defenses", () => {
         { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
         context(),
       ),
-    );
-    expect(started.warning).toContain(GLOBAL_FALLBACK_WARNING);
-    expect(started.warning).toContain("Missing context");
+    ).rejects.toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(client.session.create).not.toHaveBeenCalled();
   });
 
   it("does not warn about missing context when the parent supplied it", async () => {
@@ -2611,7 +2733,12 @@ describe("parent-session protocol defenses", () => {
     const { client, statuses } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
     await tools.cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
     statuses["child-1"] = { type: "busy" };
@@ -2632,7 +2759,12 @@ describe("parent-session protocol defenses", () => {
     const { client, statuses } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
     await tools.cross_review_start.execute(
-      { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
       context(),
     );
     statuses["child-1"] = { type: "busy" };
@@ -2721,6 +2853,7 @@ describe("parent-session protocol defenses", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 1,
         reviewerTimeoutMs: 5_000,
@@ -2787,6 +2920,7 @@ describe("parent-session protocol defenses", () => {
     await tools.cross_review_start.execute(
       {
         target: "HEAD",
+        context: "already gathered",
         reviewModels: ["a/one"],
         agents: 1,
         reviewerTimeoutMs: 5_000,
@@ -2923,10 +3057,10 @@ describe("parent-session protocol defenses", () => {
     expect(cancelled.readyToFinalize).toBe(true);
   });
 
-  it("warns when a non-PR start has whitespace-only context and no judge", async () => {
+  it("rejects a non-PR start that has whitespace-only context and no judge", async () => {
     const { client } = mockClient();
-    const started = output(
-      await protocol(client, new MemoryRunStore()).cross_review_start.execute(
+    await expect(
+      protocol(client, new MemoryRunStore()).cross_review_start.execute(
         {
           target: "HEAD",
           context: "   ",
@@ -2935,9 +3069,8 @@ describe("parent-session protocol defenses", () => {
         },
         context(),
       ),
-    );
-    expect(started.warning).toBe(MISSING_PARENT_CONTEXT_WARNING);
-    expect(started.phase).toBe("reviewing");
+    ).rejects.toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(client.session.create).not.toHaveBeenCalled();
   });
 });
 
@@ -3067,7 +3200,12 @@ describe("cross_review_config preview", () => {
         () => 1_000,
         previewConfig,
       ).cross_review_start.execute(
-        { target: "HEAD", reviewModels: ["a/one", "a/two"], agents: 2 },
+        {
+          target: "HEAD",
+          context: "already gathered",
+          reviewModels: ["a/one", "a/two"],
+          agents: 2,
+        },
         context(),
       ),
     );
@@ -3561,7 +3699,12 @@ describe("cross-review PR snapshot protocol", () => {
 
     await expect(
       tools.cross_review_start.execute(
-        { target: "#42", reviewModels: ["a/one"], agents: 1 },
+        {
+          target: "#42",
+          context: "already gathered",
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
         context(),
       ),
     ).rejects.toThrow("unknown forge");

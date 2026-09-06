@@ -54,12 +54,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `readyToFinalize` is true when reviewers are terminal, the explicit
   judge is terminal, or the run is already in a terminal phase. A
   `timeoutAction` on the poll that first observes an already-overdue
-  session is applied instead of being ignored. A non-PR start without
-  `judgeModel` and `context` still runs but warns. Empty or
+  session is applied instead of being ignored. Empty or
   whitespace-only `context` is omitted,
   including PR snapshot `notes.md`. A stray `timeoutAction` on an
   ordinary poll is ignored with a warning, including `abort` after a
   preserved session has already finished.
+- Reject a non-PR `cross_review_start` or legacy `cross_review` when
+  parent-session judging omits `context`, instead of dispatching
+  reviewers with a warning. Read-only reviewer, gatherer, and judge
+  briefs now forbid `.git/**` reads, guessed historical or host-absolute
+  paths, whole-tree glob/re-read detours, and webfetch retries after
+  403/404/429.
 
 ## [0.2.12] - 2026-09-04
 
