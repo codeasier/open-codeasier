@@ -2136,9 +2136,7 @@ export function createCrossReviewProtocolTools(
             ? {}
             : { context: providedContext }),
           ...(warning === undefined ? {} : { warning }),
-          ...(embedLimit === MAX_EMBEDDED_CONTEXT_LENGTH
-            ? {}
-            : { embedLimit }),
+          ...(embedLimit === MAX_EMBEDDED_CONTEXT_LENGTH ? {} : { embedLimit }),
           quorum: Math.floor(reviewers.length / 2) + 1,
           maxConcurrency,
           reviewerTimeoutMs: plan.reviewerTimeoutMs,
