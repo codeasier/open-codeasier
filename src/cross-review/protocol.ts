@@ -1904,6 +1904,9 @@ export function createCrossReviewProtocolTools(
       const reviewers = plan.reviewers;
       const judgeModel = plan.judgeModel;
       const maxConcurrency = plan.maxConcurrency;
+      // Empty or whitespace-only context is omitted for both reviewer
+      // briefs and PR snapshot notes.md.
+      const providedContext = normalizeProvidedContext(args.context);
 
       const runID = createRunID();
       const childSessions: string[] = [];
@@ -1931,9 +1934,9 @@ export function createCrossReviewProtocolTools(
             target: args.target,
             runID,
             stateRoot,
-            ...(args.context === undefined || args.context.length === 0
+            ...(providedContext === undefined
               ? {}
-              : { notes: args.context }),
+              : { notes: providedContext }),
             ...(loaded.config.gitcodeCli === undefined
               ? {}
               : { gitcodeCli: loaded.config.gitcodeCli }),
@@ -2049,9 +2052,6 @@ export function createCrossReviewProtocolTools(
             await assertSessionDirectory(prSnapshot, session.id);
         }
         const timestamp = now();
-        // An empty or whitespace-only context is treated as "not provided":
-        // it must not disable gathering while embedding nothing into briefs.
-        const providedContext = normalizeProvidedContext(args.context);
         const warning = joinWarnings(
           configWarning(loaded),
           missingParentContextWarning({

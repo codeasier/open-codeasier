@@ -2734,6 +2734,27 @@ describe("parent-session protocol defenses", () => {
     ).rejects.toThrow("timeoutAction");
   });
 
+  it("rejects finalize while a gatherer timeout is pending", async () => {
+    let timestamp = 1_000;
+    const { client } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    timestamp = 6_001;
+
+    await expect(
+      tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    ).rejects.toThrow("timeoutAction");
+  });
+
   it("rejects finalize while a judge timeout is pending", async () => {
     let timestamp = 1_000;
     const { client, statuses, messages } = mockClient();
@@ -2792,6 +2813,39 @@ describe("parent-session protocol defenses", () => {
     );
     expect(status.warning).toBe(STRAY_TIMEOUT_ACTION_WARNING);
     expect(status.counts).toEqual({ succeeded: 1 });
+  });
+
+  it("accepts abort for an active preserved session without a stray warning", async () => {
+    let timestamp = 1_000;
+    const { client, statuses } = mockClient();
+    const tools = protocol(client, new MemoryRunStore(), () => timestamp);
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        context: "already gathered",
+        reviewModels: ["a/one"],
+        agents: 1,
+        reviewerTimeoutMs: 5_000,
+      },
+      context(),
+    );
+    statuses["child-1"] = { type: "busy" };
+    timestamp = 6_001;
+    await tools.cross_review_status.execute({ runID: RUN_ID }, context());
+    await tools.cross_review_status.execute(
+      { runID: RUN_ID, timeoutAction: "preserve" },
+      context(),
+    );
+
+    timestamp = 7_000;
+    const aborted = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true, timeoutAction: "abort" },
+        context(),
+      ),
+    );
+    expect(aborted).not.toHaveProperty("warning");
+    expect(aborted.reviewers[0].status).toBe("timed_out");
   });
 
   it("warns when a non-PR start has whitespace-only context and no judge", async () => {
@@ -3213,6 +3267,32 @@ describe("cross-review PR snapshot protocol", () => {
       client.session.promptAsync.mock.calls[0][0].body.parts[0].text;
     expect(brief).not.toContain("watch the auth rewrite");
     expect(brief).not.toContain("Shared target context");
+  });
+
+  it("does not forward whitespace-only context as adapter notes", async () => {
+    const { client } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const { tools, runPrAdapter } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+    );
+
+    await tools.cross_review_start.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+        context: "   ",
+      },
+      context(),
+    );
+
+    expect(runPrAdapter).toHaveBeenCalledWith(
+      expect.not.objectContaining({ notes: expect.anything() }),
+    );
+    const notesArg = runPrAdapter.mock.calls[0]?.[0];
+    expect(notesArg).not.toHaveProperty("notes");
   });
 
   it("does not warn about missing context for a parent-judged PR snapshot", async () => {
