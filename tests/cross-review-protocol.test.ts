@@ -10,6 +10,7 @@ import {
 } from "../src/cross-review/protocol.js";
 import {
   embeddedContextWarning,
+  joinWarnings,
   MAX_EMBEDDED_CONTEXT_LENGTH,
   MISSING_PARENT_CONTEXT_ERROR,
 } from "../src/cross-review/tool.js";
@@ -1940,6 +1941,34 @@ describe("asynchronous cross-review protocol", () => {
     expect(reviewerText).not.toContain("-end");
   });
 
+  it("joins the config fallback warning with an oversized parent context warning", async () => {
+    const { client } = mockClient();
+    const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
+    const started = output(
+      await protocol(
+        client,
+        new MemoryRunStore(),
+        () => 1_000,
+        globalFallbackConfig,
+      ).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: oversized,
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started.warning).toBe(
+      joinWarnings(GLOBAL_FALLBACK_WARNING, embeddedContextWarning(oversized)),
+    );
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("-end");
+  });
+
   it("rejects an empty context through the argument schema", async () => {
     const { client } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
@@ -3561,6 +3590,38 @@ describe("cross-review PR snapshot protocol", () => {
       client.session.promptAsync.mock.calls[0][0].body.parts[0].text;
     expect(brief).not.toContain("watch the auth rewrite");
     expect(brief).not.toContain("Shared target context");
+  });
+
+  it("does not emit an embed warning for oversized PR-snapshot caller context", async () => {
+    const { client } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const { tools, runPrAdapter } = prProtocol(
+      client,
+      new MemoryRunStore(),
+      classify,
+    );
+    const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
+    const started = output(
+      await tools.cross_review_start.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+          context: oversized,
+        },
+        context(),
+      ),
+    );
+
+    expect(started).not.toHaveProperty("warning");
+    expect(runPrAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ notes: oversized }),
+    );
+    const brief =
+      client.session.promptAsync.mock.calls[0][0].body.parts[0].text;
+    expect(brief).not.toContain("-end");
+    expect(brief).not.toContain("Shared target context");
+    expect(brief).not.toContain("context truncated");
   });
 
   it("does not forward whitespace-only context as adapter notes", async () => {
