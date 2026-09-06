@@ -1,6 +1,13 @@
 import { execFile } from "node:child_process";
 import { stat, rm, mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import {
+  basename,
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { PrSnapshotMeta } from "./pr-snapshot.js";
@@ -16,7 +23,9 @@ export const ADAPTER_TIMEOUT_MS = 120_000;
 // Buffer above the 1MB diff contract so an oversized patch reaches the
 // on-disk validator (which reports the largest hunks) instead of failing
 // as a truncated exec.
-const ADAPTER_MAX_BUFFER = 16 * 1024 * 1024;
+export const ADAPTER_MAX_BUFFER = 16 * 1024 * 1024;
+/** Absolute Node executable used when the host process cannot run adapters. */
+export const ADAPTER_NODE_ENV = "OPEN_CODEASIER_NODE";
 // Notes travel through argv; beyond this size spawns fail with E2BIG /
 // ENAMETOOLONG depending on the platform, so reject with guidance first.
 const MAX_NOTES_LENGTH = 32 * 1024;
@@ -55,6 +64,100 @@ export type ExecFileLike = (
   },
 ) => Promise<{ stdout: string; stderr: string }>;
 
+export type AdapterRuntimeHost = {
+  execPath: string;
+  versions: { node?: string | undefined; bun?: string | undefined };
+};
+
+export type AdapterRuntimeOptions = {
+  env?: NodeJS.ProcessEnv;
+  host?: AdapterRuntimeHost;
+  isFile?: (path: string) => Promise<boolean>;
+  platform?: NodeJS.Platform;
+  pathDelimiter?: string;
+};
+
+export type AdapterRuntimeResolution =
+  | { ok: true; executable: string }
+  | { ok: false; error: string };
+
+function nodeCommandNames(platform: NodeJS.Platform): string[] {
+  return platform === "win32" ? ["node.exe", "node.cmd", "node"] : ["node"];
+}
+
+function nodeExecutableName(execPath: string): boolean {
+  const base = basename(execPath).toLowerCase();
+  return base === "node" || base === "node.exe" || base === "nodejs";
+}
+
+function hostCanRunAdapterScripts(host: AdapterRuntimeHost): boolean {
+  if (host.versions.bun !== undefined && host.versions.bun.length > 0)
+    return false;
+  if (host.versions.node === undefined || host.versions.node.length === 0)
+    return false;
+  return nodeExecutableName(host.execPath);
+}
+
+async function defaultIsRuntimeFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function missingAdapterRuntimeError(hostExecPath: string): string {
+  return `Node.js 22+ is required to gather PR snapshots, but the host executable (${hostExecPath}) cannot run adapter scripts. Install Node.js 22+ on PATH or set ${ADAPTER_NODE_ENV} to an absolute node executable.`;
+}
+
+function adapterRuntimeLaunchError(executable: string): string {
+  return `could not launch Node.js runtime at ${executable}. Install Node.js 22+ on PATH or set ${ADAPTER_NODE_ENV} to an absolute node executable.`;
+}
+
+/**
+ * Choose a Node.js executable that can run the forge adapter scripts.
+ * Standalone OpenCode binaries reuse `process.execPath` as themselves, so
+ * the host is used only when it is actually Node.
+ */
+export async function resolveAdapterRuntime(
+  options: AdapterRuntimeOptions = {},
+): Promise<AdapterRuntimeResolution> {
+  const env = options.env ?? process.env;
+  const host = options.host ?? process;
+  const isFile = options.isFile ?? defaultIsRuntimeFile;
+  const platform = options.platform ?? process.platform;
+  const pathDelimiter = options.pathDelimiter ?? delimiter;
+
+  const override = env[ADAPTER_NODE_ENV]?.trim();
+  if (override !== undefined && override.length > 0) {
+    if (!isAbsolute(override))
+      return {
+        ok: false,
+        error: `\`${ADAPTER_NODE_ENV}\` must be an absolute path to a Node.js executable`,
+      };
+    if (!(await isFile(override)))
+      return {
+        ok: false,
+        error: `${ADAPTER_NODE_ENV} is not a file: ${override}`,
+      };
+    return { ok: true, executable: override };
+  }
+
+  if (hostCanRunAdapterScripts(host) && (await isFile(host.execPath)))
+    return { ok: true, executable: host.execPath };
+
+  const pathEnv = env.PATH ?? env.Path ?? "";
+  for (const directory of pathEnv.split(pathDelimiter)) {
+    if (directory.length === 0) continue;
+    for (const name of nodeCommandNames(platform)) {
+      const candidate = join(directory, name);
+      if (await isFile(candidate)) return { ok: true, executable: candidate };
+    }
+  }
+
+  return { ok: false, error: missingAdapterRuntimeError(host.execPath) };
+}
+
 export function snapshotPaths(stateRoot: string, runID: string) {
   const worktree = join(stateRoot, runID, "worktree");
   return { worktree, snapshotDir: join(worktree, ".cross-review") };
@@ -81,10 +184,12 @@ export async function existingPath(path: string): Promise<string | undefined> {
   }
 }
 
-function spawnError(error: unknown): string {
+function spawnError(error: unknown, executable: string): string {
   if (error instanceof Error) {
     if ((error as { killed?: boolean }).killed === true)
       return `adapter timed out after ${ADAPTER_TIMEOUT_MS}ms`;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return adapterRuntimeLaunchError(executable);
     const stderr = (error as { stderr?: string }).stderr;
     const detail =
       stderr !== undefined && stderr.trim().length > 0
@@ -96,18 +201,26 @@ function spawnError(error: unknown): string {
 }
 
 /**
- * Default adapter runner: spawns the forge adapter as a Node ESM entrypoint
- * with `execFile(process.execPath, …)` (no shell), then validates the
- * on-disk contract. Adapters live next to this module in `adapters/`.
+ * Default adapter runner: resolves a Node.js executable, spawns the forge
+ * adapter as an ESM entrypoint with `execFile` (no shell), then validates
+ * the on-disk contract. Adapters live next to this module in `adapters/`.
+ * A standalone OpenCode/Bun host is never reused as the adapter runtime.
  */
 export function createDefaultPrAdapterRunner(
   execFileLike: ExecFileLike = execFileAsync,
+  runtime: AdapterRuntimeOptions = {},
 ): PrAdapterRunner {
   return async (request) => {
     if (request.notes !== undefined && request.notes.length > MAX_NOTES_LENGTH)
       return {
         ok: false,
         error: `\`context\` for a pull request snapshot must be at most ${MAX_NOTES_LENGTH} characters; got ${request.notes.length}. Write large context to a file and reference it from shorter notes.`,
+      };
+    const resolved = await resolveAdapterRuntime(runtime);
+    if (!resolved.ok)
+      return {
+        ok: false,
+        error: `PR snapshot adapter (${request.forge}) failed: ${resolved.error}`,
       };
     const { worktree, snapshotDir } = snapshotPaths(
       request.stateRoot,
@@ -126,7 +239,7 @@ export function createDefaultPrAdapterRunner(
       ...(request.notes === undefined ? [] : ["--notes", request.notes]),
     ];
     try {
-      await execFileLike(process.execPath, args, {
+      await execFileLike(resolved.executable, args, {
         timeout: ADAPTER_TIMEOUT_MS,
         maxBuffer: ADAPTER_MAX_BUFFER,
         ...(request.gitcodeCli === undefined
@@ -136,7 +249,7 @@ export function createDefaultPrAdapterRunner(
     } catch (error) {
       return {
         ok: false,
-        error: `PR snapshot adapter (${request.forge}) failed: ${spawnError(error)}`,
+        error: `PR snapshot adapter (${request.forge}) failed: ${spawnError(error, resolved.executable)}`,
         snapshotPath: await existingPath(worktree),
       };
     }

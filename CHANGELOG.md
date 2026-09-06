@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Launch GitHub and GitCode PR snapshot adapters with a Node.js executable
+  instead of reusing `process.execPath`, so a standalone OpenCode binary no
+  longer fails snapshot gathering with its own CLI help. Override the runtime
+  with `OPEN_CODEASIER_NODE`.
+
 ## [0.3.0] - 2026-09-06
 
 ### Added
