@@ -8,7 +8,11 @@ import {
   STRAY_TIMEOUT_ACTION_WARNING,
   type AsyncCrossReviewClient,
 } from "../src/cross-review/protocol.js";
-import { MISSING_PARENT_CONTEXT_ERROR } from "../src/cross-review/tool.js";
+import {
+  embeddedContextWarning,
+  MAX_EMBEDDED_CONTEXT_LENGTH,
+  MISSING_PARENT_CONTEXT_ERROR,
+} from "../src/cross-review/tool.js";
 import type {
   CrossReviewRun,
   CrossReviewRunStore,
@@ -1833,6 +1837,58 @@ describe("asynchronous cross-review protocol", () => {
     ).toContain("context gatherer");
   });
 
+  it("keeps a 100000-1000000 character parent context in reviewer briefs", async () => {
+    const { client } = mockClient();
+    const midRange = `start-${"x".repeat(150_000)}-end`;
+    const started = output(
+      await protocol(client, new MemoryRunStore()).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: midRange,
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started).not.toHaveProperty("warning");
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("start-");
+    expect(reviewerText).toContain("-end");
+    expect(reviewerText).not.toContain("context truncated");
+  });
+
+  it("keeps a 100000-1000000 character gathered context in reviewer briefs", async () => {
+    const { client, messages } = mockClient();
+    const tools = protocol(client, new MemoryRunStore());
+    await tools.cross_review_start.execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const midRange = `start-${"x".repeat(150_000)}-end`;
+    messages.set("child-2", completed(midRange));
+
+    const status = output(
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
+    );
+    expect(status.phase).toBe("reviewing");
+    expect(status).not.toHaveProperty("warning");
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("start-");
+    expect(reviewerText).toContain("-end");
+    expect(reviewerText).not.toContain("context truncated");
+  });
+
   it("truncates an oversized gathered context in reviewer briefs", async () => {
     const { client, messages } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
@@ -1845,16 +1901,41 @@ describe("asynchronous cross-review protocol", () => {
       },
       context(),
     );
-    const oversized = `start-${"x".repeat(100_100)}-end`;
+    const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
     messages.set("child-2", completed(oversized));
 
     const status = output(
-      await tools.cross_review_status.execute({ runID: RUN_ID }, context()),
+      await tools.cross_review_status.execute(
+        { runID: RUN_ID, detail: true },
+        context(),
+      ),
     );
     expect(status.phase).toBe("reviewing");
+    expect(status.warning).toBe(embeddedContextWarning(oversized));
     const reviewerText =
       client.session.promptAsync.mock.calls.at(-1)?.[0].body.parts[0].text;
     expect(reviewerText).toContain("start-");
+    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("-end");
+  });
+
+  it("warns when an unenforced parent context exceeds the embed limit", async () => {
+    const { client } = mockClient();
+    const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
+    const started = output(
+      await protocol(client, new MemoryRunStore()).cross_review_start.execute(
+        {
+          target: "HEAD",
+          context: oversized,
+          reviewModels: ["a/one"],
+          agents: 1,
+        },
+        context(),
+      ),
+    );
+    expect(started.warning).toBe(embeddedContextWarning(oversized));
+    const reviewerText =
+      client.session.promptAsync.mock.calls.at(0)?.[0].body.parts[0].text;
     expect(reviewerText).toContain("[...context truncated");
     expect(reviewerText).not.toContain("-end");
   });

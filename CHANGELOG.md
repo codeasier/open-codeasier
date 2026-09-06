@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Embed non-PR shared context up to the 1,000,000-character schema cap
+  instead of silently clipping reviewer and judge briefs at 100,000
+  characters, and set `warning` when gatherer output (or an unenforced
+  parent `context`) still exceeds the embed limit.
 - Treat never-dispatched cross-review roles as `insufficient-evidence` in
   `/cross-review-audit`, keep per-run protocol timelines attributed by
   `runID`, and let a later silent-model-replace `fail` win over an earlier

@@ -5,8 +5,11 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewTool,
+  embeddedContext,
+  embeddedContextWarning,
   gatherBrief,
   joinWarnings,
+  MAX_EMBEDDED_CONTEXT_LENGTH,
   MISSING_PARENT_CONTEXT_ERROR,
   normalizeProvidedContext,
   prSnapshotJudgeBrief,
@@ -100,6 +103,30 @@ describe("missing parent-context requirement", () => {
   it("joins present warnings and skips empty ones", () => {
     expect(joinWarnings("a", undefined, "b", "")).toBe("a; b");
     expect(joinWarnings(undefined, "")).toBeUndefined();
+  });
+
+  it("keeps context through the 100000-1000000 range and warns only when clipped", () => {
+    const midRange = `start-${"x".repeat(150_000)}-end`;
+    expect(midRange.length).toBeGreaterThan(100_000);
+    expect(midRange.length).toBeLessThanOrEqual(MAX_EMBEDDED_CONTEXT_LENGTH);
+    expect(embeddedContext(midRange)).toBe(midRange);
+    expect(embeddedContextWarning(midRange)).toBeUndefined();
+    expect(reviewBrief("HEAD", undefined, midRange)).toContain("-end");
+    expect(reviewBrief("HEAD", undefined, midRange)).not.toContain(
+      "context truncated",
+    );
+
+    const atCap = "y".repeat(MAX_EMBEDDED_CONTEXT_LENGTH);
+    expect(embeddedContext(atCap)).toBe(atCap);
+    expect(embeddedContextWarning(atCap)).toBeUndefined();
+
+    const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
+    const omitted = oversized.length - MAX_EMBEDDED_CONTEXT_LENGTH;
+    expect(embeddedContext(oversized)).toContain("[...context truncated");
+    expect(embeddedContext(oversized)).not.toContain("-end");
+    expect(embeddedContextWarning(oversized)).toBe(
+      `warning: shared context exceeded the ${MAX_EMBEDDED_CONTEXT_LENGTH}-character embed limit and was truncated (${omitted} characters omitted)`,
+    );
   });
 
   it("rejects only non-PR parent-judged starts without context", () => {
@@ -820,6 +847,64 @@ describe("cross_review tool", () => {
     expect(calls).toHaveLength(2);
     expect(calls[0].body.parts[0].text).toContain("shared diff context");
     expect(calls[1].body.parts[0].text).toContain("shared diff context");
+  });
+
+  it("embeds a 100000-1000000 character parent context in full", async () => {
+    const prompt = vi.fn().mockResolvedValue({
+      data: { parts: [{ type: "text", text: "candidate" }] },
+    });
+    const mock = client(prompt);
+    const midRange = `start-${"x".repeat(150_000)}-end`;
+    const result = await createCrossReviewTool(mock, () =>
+      wrapConfig({}),
+    ).execute(
+      {
+        target: "HEAD",
+        context: midRange,
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed).not.toHaveProperty("warning");
+    const calls = prompt.mock.calls.map((call) => call[0]);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.body.parts[0].text).toContain("-end");
+      expect(call.body.parts[0].text).not.toContain("context truncated");
+    }
+  });
+
+  it("warns when gathered context still exceeds the embed limit", async () => {
+    const oversized = `start-${"x".repeat(MAX_EMBEDDED_CONTEXT_LENGTH)}-end`;
+    const prompt = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: { parts: [{ type: "text", text: oversized }] },
+      })
+      .mockResolvedValue({
+        data: { parts: [{ type: "text", text: "candidate" }] },
+      });
+    const mock = client(prompt);
+    const result = await createCrossReviewTool(mock, () =>
+      wrapConfig({}),
+    ).execute(
+      {
+        target: "HEAD",
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+    expect(parsed.warning).toBe(embeddedContextWarning(oversized));
+    const reviewerText = prompt.mock.calls[1]?.[0].body.parts[0].text;
+    expect(reviewerText).toContain("start-");
+    expect(reviewerText).toContain("[...context truncated");
+    expect(reviewerText).not.toContain("-end");
   });
 
   it("degrades to independent fetching when gathering fails", async () => {

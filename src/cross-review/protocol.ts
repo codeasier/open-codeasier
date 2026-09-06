@@ -6,6 +6,7 @@ import { assertPrimarySession } from "../primary-session.js";
 import {
   configWarning,
   embeddedContext,
+  embeddedContextWarning,
   errorMessage,
   gatherBrief,
   joinWarnings,
@@ -1665,7 +1666,14 @@ export function createCrossReviewProtocolTools(
       gatherer.status = outcome.status;
       gatherer.completedAt = timestamp;
       gatherer.latestActivityAt = outcome.latestActivityAt;
-      if (outcome.output !== undefined) gatherer.output = outcome.output;
+      if (outcome.output !== undefined) {
+        gatherer.output = outcome.output;
+        const nextWarning = joinWarnings(
+          run.warning,
+          embeddedContextWarning(outcome.output),
+        );
+        if (nextWarning !== undefined) run.warning = nextWarning;
+      }
       if (outcome.error !== undefined) gatherer.error = outcome.error;
       else delete gatherer.error;
       delete gatherer.retry;
@@ -2086,7 +2094,12 @@ export function createCrossReviewProtocolTools(
             await assertSessionDirectory(prSnapshot, session.id);
         }
         const timestamp = now();
-        const warning = configWarning(loaded);
+        const warning = joinWarnings(
+          configWarning(loaded),
+          prSnapshot === undefined
+            ? embeddedContextWarning(providedContext)
+            : undefined,
+        );
         // A classified PR always used the adapter; `context` became notes.md
         // and never suppresses gathering.
         const gathers =

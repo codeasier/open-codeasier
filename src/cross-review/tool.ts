@@ -262,12 +262,26 @@ export function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export const MAX_EMBEDDED_CONTEXT_LENGTH = 100_000;
+/** Aligns with the `context` schema max on `cross_review` / `cross_review_start`. */
+export const MAX_EMBEDDED_CONTEXT_LENGTH = 1_000_000;
+
+export function embeddedContextOmitted(context: string): number {
+  return Math.max(0, context.length - MAX_EMBEDDED_CONTEXT_LENGTH);
+}
+
+export function embeddedContextWarning(
+  context: string | undefined,
+): string | undefined {
+  if (context === undefined) return undefined;
+  const omitted = embeddedContextOmitted(context);
+  if (omitted === 0) return undefined;
+  return `warning: shared context exceeded the ${MAX_EMBEDDED_CONTEXT_LENGTH}-character embed limit and was truncated (${omitted} characters omitted)`;
+}
 
 export function embeddedContext(context: string): string | undefined {
   if (context.length === 0) return undefined;
-  if (context.length <= MAX_EMBEDDED_CONTEXT_LENGTH) return context;
-  const omitted = context.length - MAX_EMBEDDED_CONTEXT_LENGTH;
+  const omitted = embeddedContextOmitted(context);
+  if (omitted === 0) return context;
   return `${context.slice(0, MAX_EMBEDDED_CONTEXT_LENGTH)}\n[...context truncated: ${omitted} chars omitted...]`;
 }
 
@@ -717,7 +731,6 @@ export function createCrossReviewTool(
         // and the snapshot briefs; caller context is already notes.md.
         const sessionRoot = prSnapshot?.worktree ?? context.directory;
         childSessionDirectory = sessionRoot;
-        const warning = configNotice;
         let completed = false;
         try {
           if (
@@ -775,6 +788,12 @@ export function createCrossReviewTool(
           }
 
           const gathered = providedContext ?? gatheredContext;
+          const warning = joinWarnings(
+            configNotice,
+            prSnapshot === undefined
+              ? embeddedContextWarning(gathered)
+              : undefined,
+          );
           const brief =
             prSnapshot === undefined
               ? reviewBrief(args.target, sharedFocus, gathered)
