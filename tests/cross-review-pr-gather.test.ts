@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import {
   chmod,
+  mkdir,
   mkdtemp,
   readFile,
   rm,
@@ -143,6 +144,84 @@ describe("resolveAdapterRuntime", () => {
       expect(result.error).not.toContain("opencode pr");
     }
   });
+
+  it("skips a win32 node.cmd shim and continues to node.exe", async () => {
+    const shimDir = "C:\\nvm-shim";
+    const nodeDir = "C:\\nodejs";
+    const result = await resolveAdapterRuntime({
+      host: {
+        execPath: "C:\\opencode.exe",
+        versions: { bun: "1.2.19" },
+      },
+      env: { PATH: `${shimDir};${nodeDir}` },
+      isFile: async (path) =>
+        path === join(shimDir, "node.cmd") || path === join(nodeDir, "node.exe"),
+      platform: "win32",
+      pathDelimiter: ";",
+    });
+    expect(result).toEqual({ ok: true, executable: join(nodeDir, "node.exe") });
+  });
+
+  it("does not select a win32 node.cmd as the adapter runtime", async () => {
+    const shimDir = "C:\\nvm-shim";
+    const result = await resolveAdapterRuntime({
+      host: {
+        execPath: "C:\\opencode.exe",
+        versions: { bun: "1.2.19" },
+      },
+      env: { PATH: shimDir },
+      isFile: async (path) => path === join(shimDir, "node.cmd"),
+      platform: "win32",
+      pathDelimiter: ";",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("Node.js 22+");
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "skips a non-executable PATH node and continues",
+    async () => {
+      const root = await tempRoot();
+      const shadow = join(root, "shadow");
+      const real = join(root, "real");
+      await mkdir(shadow);
+      await mkdir(real);
+      const shadowNode = join(shadow, "node");
+      const realNode = join(real, "node");
+      await writeFile(shadowNode, "not executable");
+      await writeFile(realNode, `#!${process.execPath}\n`);
+      await chmod(realNode, 0o755);
+
+      const result = await resolveAdapterRuntime({
+        host: {
+          execPath: "/opt/opencode",
+          versions: { bun: "1.2.19" },
+        },
+        env: { PATH: `${shadow}:${real}` },
+        platform: "darwin",
+        pathDelimiter: ":",
+      });
+      expect(result).toEqual({ ok: true, executable: realNode });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a non-executable OPEN_CODEASIER_NODE",
+    async () => {
+      const root = await tempRoot();
+      const override = join(root, "node");
+      await writeFile(override, "not executable");
+
+      const result = await resolveAdapterRuntime({
+        env: { [ADAPTER_NODE_ENV]: override },
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain(ADAPTER_NODE_ENV);
+        expect(result.error).toContain(override);
+      }
+    },
+  );
 });
 
 describe("createDefaultPrAdapterRunner", () => {

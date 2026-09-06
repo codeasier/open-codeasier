@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { stat, rm, mkdir, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import {
   basename,
   delimiter,
@@ -82,7 +83,8 @@ export type AdapterRuntimeResolution =
   | { ok: false; error: string };
 
 function nodeCommandNames(platform: NodeJS.Platform): string[] {
-  return platform === "win32" ? ["node.exe", "node.cmd", "node"] : ["node"];
+  // `execFile` is shell-free, so Windows `.cmd` shims are not launchable.
+  return platform === "win32" ? ["node.exe", "node"] : ["node"];
 }
 
 function nodeExecutableName(execPath: string): boolean {
@@ -100,7 +102,12 @@ function hostCanRunAdapterScripts(host: AdapterRuntimeHost): boolean {
 
 async function defaultIsRuntimeFile(path: string): Promise<boolean> {
   try {
-    return (await stat(path)).isFile();
+    if (!(await stat(path)).isFile()) return false;
+    // POSIX execute bit: a stray non-executable `node` earlier on PATH
+    // must not shadow a later working runtime. Windows file modes are
+    // not a reliable execute signal.
+    if (process.platform !== "win32") await access(path, constants.X_OK);
+    return true;
   } catch {
     return false;
   }
@@ -138,7 +145,7 @@ export async function resolveAdapterRuntime(
     if (!(await isFile(override)))
       return {
         ok: false,
-        error: `${ADAPTER_NODE_ENV} is not a file: ${override}`,
+        error: `${ADAPTER_NODE_ENV} is not a usable Node.js executable: ${override}`,
       };
     return { ok: true, executable: override };
   }
