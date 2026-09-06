@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-06
+
 ### Added
 
 - Add `/cross-review-audit` and the `cross_review_audit` tool to inspect a
@@ -291,7 +293,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.2.12...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/codeasier/open-codeasier/compare/v0.2.12...v0.3.0
 [0.2.12]: https://github.com/codeasier/open-codeasier/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/codeasier/open-codeasier/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/codeasier/open-codeasier/compare/v0.2.9...v0.2.10
