@@ -37,8 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   parent-provided context) at 100,000 characters, set `warning` when
   gatherer output or an unenforced parent `context` still exceeds the
   embed limit, and tighten that budget from the tightest known
-  reviewer/judge `limit.context` so a 1M payload cannot blow a smaller
-  model window.
+  reviewer/judge `limit.context` (4 ASCII chars/token, 1 non-ASCII
+  char/token, 25% reserve) so a typical payload cannot blow a smaller
+  known window. Models without `limit.context` still use the 1M schema
+  cap.
 - Treat never-dispatched cross-review roles as `insufficient-evidence` in
   `/cross-review-audit`, keep per-run protocol timelines attributed by
   `runID`, and let a later silent-model-replace `fail` win over an earlier

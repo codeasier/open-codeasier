@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewTool,
+  CHARS_PER_TOKEN_ESTIMATE,
   embedLimitForContextWindow,
   embeddedContext,
   embeddedContextWarning,
@@ -166,6 +167,30 @@ describe("missing parent-context requirement", () => {
     expect(embeddedContext(oversized, windowLimit)).not.toContain("-end");
     expect(embeddedContextWarning(oversized, windowLimit)).toBe(
       `warning: shared context exceeded the ${windowLimit}-character embed limit and was truncated (${omitted} characters omitted)`,
+    );
+
+    const cjkAtCap = "中".repeat(windowLimit / CHARS_PER_TOKEN_ESTIMATE);
+    expect(cjkAtCap.length).toBe(96_000);
+    expect(embeddedContext(cjkAtCap, windowLimit)).toBe(cjkAtCap);
+    expect(embeddedContextWarning(cjkAtCap, windowLimit)).toBeUndefined();
+
+    const cjkOver = `始${"中".repeat(96_000)}终`;
+    expect(embeddedContext(cjkOver, windowLimit)).toContain("始");
+    expect(embeddedContext(cjkOver, windowLimit)).toContain(
+      "[...context truncated",
+    );
+    expect(embeddedContext(cjkOver, windowLimit)).not.toContain("终");
+    expect(embeddedContextWarning(cjkOver, windowLimit)).toBe(
+      `warning: shared context exceeded the ${windowLimit}-character embed limit and was truncated (${cjkOver.length - 96_000} characters omitted)`,
+    );
+
+    const mixed = `${"x".repeat(380_000)}${"中".repeat(2_000)}`;
+    expect(embeddedContext(mixed, windowLimit)?.length).toBeLessThan(
+      mixed.length,
+    );
+    expect(embeddedContext(mixed, windowLimit)).toContain("x".repeat(380_000));
+    expect(embeddedContextWarning(mixed, windowLimit)).toBe(
+      `warning: shared context exceeded the ${windowLimit}-character embed limit and was truncated (${mixed.length - 381_000} characters omitted)`,
     );
   });
 
@@ -1019,6 +1044,52 @@ describe("cross_review tool", () => {
       expect(call.body.parts[0].text).toContain("start-");
       expect(call.body.parts[0].text).toContain("[...context truncated");
       expect(call.body.parts[0].text).not.toContain("-end");
+    }
+  });
+
+  it("clips CJK parent context tighter than the ASCII unit budget", async () => {
+    const prompt = vi.fn().mockResolvedValue({
+      data: { parts: [{ type: "text", text: "candidate" }] },
+    });
+    const mock = client(prompt);
+    mock.provider.list.mockResolvedValue({
+      data: {
+        all: [
+          {
+            id: "a",
+            models: { one: { limit: { context: 128_000, output: 4_096 } } },
+          },
+          {
+            id: "b",
+            models: { judge: { limit: { context: 128_000, output: 4_096 } } },
+          },
+        ],
+        connected: ["a", "b"],
+      },
+    });
+    const windowLimit = embedLimitForContextWindow(128_000);
+    const oversized = `始${"中".repeat(150_000)}终`;
+    const result = await createCrossReviewTool(mock, () =>
+      wrapConfig({}),
+    ).execute(
+      {
+        target: "HEAD",
+        context: oversized,
+        reviewModels: ["a/one"],
+        agents: 1,
+        judgeModel: "b/judge",
+      },
+      context(),
+    );
+    const parsed = JSON.parse((result as any).output);
+    expect(oversized.length).toBeLessThan(windowLimit);
+    expect(parsed.warning).toBe(embeddedContextWarning(oversized, windowLimit));
+    const calls = prompt.mock.calls.map((call) => call[0]);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.body.parts[0].text).toContain("始");
+      expect(call.body.parts[0].text).toContain("[...context truncated");
+      expect(call.body.parts[0].text).not.toContain("终");
     }
   });
 

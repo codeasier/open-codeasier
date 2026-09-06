@@ -264,10 +264,33 @@ export function errorMessage(error: unknown) {
 
 /** Aligns with the `context` schema max on `cross_review` / `cross_review_start`. */
 export const MAX_EMBEDDED_CONTEXT_LENGTH = 1_000_000;
-/** ASCII-oriented estimate from the 1M-window review (400k chars ≈ 100k tokens). */
+/**
+ * ASCII-equivalent units per estimated token. One ASCII char costs 1 unit;
+ * one non-ASCII char costs this many (≈ 1 token for CJK).
+ */
 export const CHARS_PER_TOKEN_ESTIMATE = 4;
 /** Leave room in the model window for the brief, tools, and output. */
 export const CONTEXT_WINDOW_RESERVE_RATIO = 0.25;
+
+export function embedUnitCost(charCode: number): number {
+  return charCode <= 0x7f ? 1 : CHARS_PER_TOKEN_ESTIMATE;
+}
+
+/** Prefix length that fits in `limit` ASCII-equivalent units. */
+export function embedKeepLength(
+  context: string,
+  limit = MAX_EMBEDDED_CONTEXT_LENGTH,
+): number {
+  const maxChars = Math.min(context.length, Math.max(0, limit));
+  let units = 0;
+  let kept = 0;
+  for (; kept < maxChars; kept++) {
+    const cost = embedUnitCost(context.charCodeAt(kept));
+    if (units + cost > limit) break;
+    units += cost;
+  }
+  return kept;
+}
 
 export function modelContextTokens(entry: unknown): number | undefined {
   if (typeof entry !== "object" || entry === null) return undefined;
@@ -301,6 +324,7 @@ export function tightestContextTokens(
   return tightest;
 }
 
+/** ASCII-equivalent unit budget from a token window; 1M when the window is unknown. */
 export function embedLimitForContextWindow(
   windowTokens: number | undefined,
 ): number {
@@ -326,7 +350,7 @@ export function embeddedContextOmitted(
   context: string,
   limit = MAX_EMBEDDED_CONTEXT_LENGTH,
 ): number {
-  return Math.max(0, context.length - limit);
+  return context.length - embedKeepLength(context, limit);
 }
 
 export function embeddedContextWarning(
@@ -344,9 +368,9 @@ export function embeddedContext(
   limit = MAX_EMBEDDED_CONTEXT_LENGTH,
 ): string | undefined {
   if (context.length === 0) return undefined;
-  const omitted = embeddedContextOmitted(context, limit);
-  if (omitted === 0) return context;
-  return `${context.slice(0, limit)}\n[...context truncated: ${omitted} chars omitted...]`;
+  const kept = embedKeepLength(context, limit);
+  if (kept === context.length) return context;
+  return `${context.slice(0, kept)}\n[...context truncated: ${context.length - kept} chars omitted...]`;
 }
 
 export function reviewBrief(
