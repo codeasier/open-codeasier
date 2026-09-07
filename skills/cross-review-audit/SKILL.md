@@ -17,7 +17,7 @@ Write a report from the payload only:
 2. Run list
 3. Check table (`id`, result, detail, run, role)
 4. Parent protocol behavior (timeline counts, `protocolCallCount` / `protocolTimelineOmitted`, and selected args; never invent omitted `timeoutAction` or other omitted fields). Grade polling from counts, not only the capped list. Per-run timelines are attributed by `runID`; unattributed calls may appear on every run.
-5. Gatherer / reviewer / judge behavior (tool histograms, denied or `invalid` attempts, shared-context marker, final assistant text or `finish=tool-calls`)
+5. Gatherer / reviewer / judge behavior (tool histograms, denied or `invalid` attempts, shared-context marker from the embed sentence or snapshot worktree language, final assistant text or `finish=tool-calls`). `hasSharedContextMarker` means the prompt named shared evidence, not that those files were read.
 6. Worst severity
 7. Assumptions
 8. Residual gaps

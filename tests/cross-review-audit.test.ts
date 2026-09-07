@@ -4,7 +4,10 @@ import {
   createCrossReviewAuditTool,
   resolveOwnerRuns,
 } from "../src/cross-review/audit.js";
-import { READ_ONLY_TOOLS } from "../src/cross-review/tool.js";
+import {
+  prSnapshotReviewBrief,
+  READ_ONLY_TOOLS,
+} from "../src/cross-review/tool.js";
 import {
   RUN_SCHEMA_VERSION,
   type CrossReviewRun,
@@ -423,6 +426,50 @@ describe("cross_review_audit tool", () => {
         (item: any) => item.id === "run.evidence_contract",
       ),
     ).toMatchObject({ result: "pass" });
+    expect(
+      payload.runs[0].roles.reviewers.every(
+        (role: any) => role.behavior.hasSharedContextMarker === true,
+      ),
+    ).toBe(true);
+  });
+
+  it("marks snapshot-brief reviewers as having shared context without embed text", async () => {
+    const store = new MemoryRunStore();
+    await store.create(
+      run({
+        context: undefined,
+        snapshot: {
+          source: "adapter",
+          worktree: "/snapshot",
+          snapshotDir: "/snapshot/.cross-review",
+        },
+      }),
+    );
+    const brief = prSnapshotReviewBrief("https://example/pull/1");
+    expect(brief).not.toContain("Shared target context");
+    const sessions = {
+      [PARENT]: {
+        session: {
+          id: PARENT,
+          directory: "/repo",
+          title: "parent",
+          version: "1",
+          time: { created: 1, updated: 2 },
+          projectID: "p",
+        },
+        messages: parentMessages([
+          toolPart("cross_review_start", {
+            target: "https://example/pull/1",
+          }),
+        ]),
+      },
+      "rev-1": reviewerSession("rev-1", "msg-rev-1", brief),
+      "rev-2": reviewerSession("rev-2", "msg-rev-2", brief),
+      "rev-3": reviewerSession("rev-3", "msg-rev-3", brief),
+    };
+    const { payload } = await execute(store, sessions, {
+      parentSessionID: PARENT,
+    });
     expect(
       payload.runs[0].roles.reviewers.every(
         (role: any) => role.behavior.hasSharedContextMarker === true,

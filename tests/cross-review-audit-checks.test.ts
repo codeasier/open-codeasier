@@ -13,8 +13,15 @@ import {
   roleNeverDispatched,
   roleNeverPrompted,
 } from "../src/cross-review/audit-checks.js";
-import { READ_ONLY_TOOLS } from "../src/cross-review/tool.js";
-import type { AuditSessionEvidence } from "../src/cross-review/audit-types.js";
+import {
+  prSnapshotJudgeBrief,
+  prSnapshotReviewBrief,
+  READ_ONLY_TOOLS,
+} from "../src/cross-review/tool.js";
+import {
+  SHARED_CONTEXT_MARKER,
+  type AuditSessionEvidence,
+} from "../src/cross-review/audit-types.js";
 import {
   RUN_SCHEMA_VERSION,
   type CrossReviewRun,
@@ -832,5 +839,47 @@ describe("audit session projection", () => {
     expect(bounded.omitted).toBe(20);
     expect(bounded.calls[0]?.args.waitMs).toBe(0);
     expect(bounded.calls.at(-1)?.args.waitMs).toBe(MAX_PROTOCOL_CALLS + 19);
+  });
+});
+
+describe("roleBehavior shared-context markers", () => {
+  function messages(text: string) {
+    return [
+      {
+        id: "u",
+        role: "user" as const,
+        parts: [{ type: "text" as const, text }],
+      },
+      {
+        id: "a",
+        role: "assistant" as const,
+        parts: [{ type: "text" as const, text: "ok" }],
+      },
+    ];
+  }
+
+  it("detects the embed marker and snapshot worktree language", () => {
+    expect(
+      roleBehavior(messages(`${SHARED_CONTEXT_MARKER}\nthe diff`))
+        .hasSharedContextMarker,
+    ).toBe(true);
+    expect(
+      roleBehavior(messages(prSnapshotReviewBrief("https://example/pull/1")))
+        .hasSharedContextMarker,
+    ).toBe(true);
+    expect(
+      roleBehavior(messages(prSnapshotJudgeBrief("https://example/pull/1")))
+        .hasSharedContextMarker,
+    ).toBe(true);
+    expect(
+      roleBehavior(
+        messages(
+          prSnapshotReviewBrief("HEAD", undefined, { parentPack: true }),
+        ),
+      ).hasSharedContextMarker,
+    ).toBe(true);
+    expect(roleBehavior(messages("review HEAD")).hasSharedContextMarker).toBe(
+      false,
+    );
   });
 });

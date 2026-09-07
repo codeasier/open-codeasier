@@ -152,6 +152,8 @@ export type CrossReviewRun = {
     source?: "parent-pack" | "adapter";
     /** Original project-relative pack path, recorded only after a successful copy. */
     evidenceDir?: string;
+    /** True when caller notes were written to `.cross-review/notes.md`. */
+    notes?: boolean;
     /** Canonical PR URL; unknown when the adapter failed early. */
     url?: string;
     headSha?: string;

@@ -66,7 +66,7 @@ Empty `context` is omitted, matching start/gather rules.
 ### Behavioral evidence (tool emits, skill judges)
 
 18. Per run, emit a compact parent protocol timeline attributed by `runID` from start outputs and status/cancel/finalize args. Unattributed calls remain on every run. Each start/status/cancel/finalize/legacy call includes time, selected args (`context` length or omitted, `timeoutAction`, `detail`, `includeOutputs`, `waitMs`, `runID` when present), and result phase/status/`runID` — not full status payloads. The emitted list is capped (first/last); omitted entries are counted and must not be invented. `run.legacy_tool.absent` stays parent-scoped over the unbounded call list.
-19. Per reviewer/gatherer/judge: tool-name histogram, denied/`invalid` attempts (especially `bash`), whether the linked user text contains the shared-context marker from `reviewBrief`, and whether a final assistant text exists (`finish=tool-calls` / no text is evidence, not a finding verdict).
+19. Per reviewer/gatherer/judge: tool-name histogram, denied/`invalid` attempts (especially `bash`), whether the linked user text contains the shared-context marker from `reviewBrief` or the isolated-worktree language from `prSnapshotReviewBrief`/`prSnapshotJudgeBrief` (this boolean is prompt presence, not proof the files were read), and whether a final assistant text exists (`finish=tool-calls` / no text is evidence, not a finding verdict).
 20. The skill does not re-fetch. It writes: executive summary; run list; check table; parent / gatherer / reviewer / judge behavior; worst severity; assumptions; residual gaps.
 
 Severity (worst item wins):
