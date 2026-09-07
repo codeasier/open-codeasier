@@ -408,15 +408,53 @@ export function gatherBrief(target: string) {
   ].join("\n");
 }
 
+export type SnapshotBriefEvidence = {
+  parentPack?: boolean;
+  notes?: boolean;
+  materials?: boolean;
+};
+
+/** Map persisted snapshot provenance to the files this run actually wrote. */
+export function snapshotBriefEvidence(
+  snapshot:
+    | {
+        source?: "parent-pack" | "adapter";
+        evidenceDir?: string;
+        notes?: boolean;
+      }
+    | undefined,
+): SnapshotBriefEvidence {
+  return {
+    parentPack: snapshot?.source === "parent-pack",
+    notes: snapshot?.notes === true,
+    materials:
+      snapshot !== undefined &&
+      snapshot.source !== "parent-pack" &&
+      typeof snapshot.evidenceDir === "string" &&
+      snapshot.evidenceDir.length > 0,
+  };
+}
+
+function adapterContractFiles(evidence: SnapshotBriefEvidence): string[] {
+  return [
+    "meta.json",
+    "diff.patch",
+    "pr.md",
+    ...(evidence.notes === true ? ["notes.md"] : []),
+    ...(evidence.materials === true ? ["materials/ attachments"] : []),
+  ];
+}
+
 /**
  * Brief for classified pull-request snapshot runs: the current directory is
  * the pinned PR head worktree, and evidence is the worktree plus the
- * `.cross-review/` contract files. Never embeds the diff or caller context.
+ * `.cross-review/` contract files that exist for this run. Never embeds the
+ * diff or caller context.
  */
 export function prSnapshotReviewBrief(
   target: string,
   focus?: string,
-  parentPack = false,
+  evidence: SnapshotBriefEvidence = {},
 ) {
   return [
     "Independently review the specified target. Remain read-only.",
@@ -425,7 +463,7 @@ export function prSnapshotReviewBrief(
     "The current directory is an isolated git worktree snapshot at the pinned commit. Treat only this worktree as evidence.",
     "Evidence sources (read them from the current directory):",
     "- Worktree files at the pinned commit (the exact code under review).",
-    ...(parentPack
+    ...(evidence.parentPack === true
       ? [
           "- .cross-review/meta.json (parent evidence metadata).",
           "- .cross-review/summary.md (shared target context).",
@@ -435,8 +473,14 @@ export function prSnapshotReviewBrief(
           "- .cross-review/meta.json (forge, canonical URL, base/head/merge-base SHAs).",
           "- .cross-review/diff.patch (the complete authoritative diff).",
           "- .cross-review/pr.md (title and description).",
-          "- .cross-review/notes.md (caller notes), when present.",
-          "- .cross-review/materials/ (additional parent evidence, including meta.json and summary.md), when present; these do not replace the authoritative adapter diff or metadata.",
+          ...(evidence.notes === true
+            ? ["- .cross-review/notes.md (caller notes)."]
+            : []),
+          ...(evidence.materials === true
+            ? [
+                "- .cross-review/materials/ (additional parent evidence, including meta.json and summary.md); these do not replace the authoritative adapter diff or metadata.",
+              ]
+            : []),
         ]),
     "Do not treat any other checkout or directory as evidence.",
     ...readOnlyEvidenceRules(),
@@ -447,13 +491,16 @@ export function prSnapshotReviewBrief(
 }
 
 /** Judge prompt prefix for classified pull-request snapshot runs. */
-export function prSnapshotJudgeBrief(target: string, parentPack = false) {
+export function prSnapshotJudgeBrief(
+  target: string,
+  evidence: SnapshotBriefEvidence = {},
+) {
   return [
     "Act as the read-only cross-review judge.",
     `Target: ${target}`,
-    parentPack
+    evidence.parentPack === true
       ? "The current directory is an isolated git worktree at the pinned commit. Read .cross-review/meta.json, .cross-review/summary.md and other .cross-review/ evidence files. Do not treat any other checkout as evidence."
-      : "The current directory is an isolated git worktree snapshot at the pull request head commit. Evidence is this worktree plus .cross-review/ (meta.json, diff.patch, pr.md, optional notes.md and materials/ attachments). Do not treat any other checkout as evidence.",
+      : `The current directory is an isolated git worktree snapshot at the pull request head commit. Evidence is this worktree plus .cross-review/ (${adapterContractFiles(evidence).join(", ")}). Do not treat any other checkout as evidence.`,
     ...readOnlyEvidenceRules(),
   ].join("\n");
 }
@@ -842,6 +889,9 @@ export function createCrossReviewTool(
         // and the snapshot briefs; caller context is already notes.md.
         const sessionRoot = prSnapshot?.worktree ?? context.directory;
         childSessionDirectory = sessionRoot;
+        const snapshotEvidence = {
+          notes: providedContext !== undefined,
+        };
         let completed = false;
         try {
           if (
@@ -908,7 +958,11 @@ export function createCrossReviewTool(
           const brief =
             prSnapshot === undefined
               ? reviewBrief(args.target, sharedFocus, gathered, embedLimit)
-              : prSnapshotReviewBrief(args.target, sharedFocus);
+              : prSnapshotReviewBrief(
+                  args.target,
+                  sharedFocus,
+                  snapshotEvidence,
+                );
           const reviewerResults = await runLimited(
             reviewers.length,
             maxConcurrency,
@@ -976,6 +1030,7 @@ export function createCrossReviewTool(
                                 : prSnapshotReviewBrief(
                                     args.target,
                                     reviewer.focus,
+                                    snapshotEvidence,
                                   ),
                           },
                         ],
@@ -1136,7 +1191,10 @@ export function createCrossReviewTool(
                           text: [
                             prSnapshot === undefined
                               ? "Act as the read-only cross-review judge."
-                              : prSnapshotJudgeBrief(args.target),
+                              : prSnapshotJudgeBrief(
+                                  args.target,
+                                  snapshotEvidence,
+                                ),
                             prSnapshot === undefined
                               ? `Target: ${args.target}`
                               : "",

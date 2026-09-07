@@ -9,6 +9,7 @@ import type { ReviewLimits, ReviewMessage } from "../session-review/schema.js";
 import {
   PROTOCOL_TOOL_NAMES,
   SHARED_CONTEXT_MARKER,
+  SNAPSHOT_EVIDENCE_MARKER,
   type AuditMessage,
   type AuditSessionEvidence,
   type ProtocolCall,
@@ -193,7 +194,9 @@ export function roleBehavior(messages: AuditMessage[]): RoleBehavior {
   return {
     toolHistogram,
     deniedAttempts,
-    hasSharedContextMarker: userText.includes(SHARED_CONTEXT_MARKER),
+    hasSharedContextMarker:
+      userText.includes(SHARED_CONTEXT_MARKER) ||
+      userText.includes(SNAPSHOT_EVIDENCE_MARKER),
     hasFinalAssistantText: assistantText.length > 0,
     ...(lastAssistant?.finish === undefined
       ? {}

@@ -71,6 +71,7 @@ describe("distributed workflow assets", () => {
     expect(content).toContain("ask whether GitCode support is needed");
     expect(content).toContain("npx open-codeasier detect-gitcode");
     expect(content).toContain("materializes an isolated snapshot worktree");
+    expect(content).toContain("do not read paths the brief omitted");
     expect(content).toContain("invoke that absolute path with `issue view`");
     expect(content).toContain(
       "the parent must not fall back to `gh` or fetch the PR itself",

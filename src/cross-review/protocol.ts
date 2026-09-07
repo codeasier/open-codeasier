@@ -18,6 +18,7 @@ import {
   OMIT_ZERO_OVERRIDE_DESCRIPTION,
   prSnapshotJudgeBrief,
   prSnapshotReviewBrief,
+  snapshotBriefEvidence,
   readOnlyEvidenceRules,
   type ApiResult,
   READ_ONLY_TOOLS,
@@ -969,7 +970,7 @@ function reviewerPrompt(
               prSnapshotReviewBrief(
                 run.target,
                 reviewer.focus,
-                run.snapshot.source === "parent-pack",
+                snapshotBriefEvidence(run.snapshot),
               ),
       },
     ],
@@ -1005,7 +1006,7 @@ function judgePrompt(run: CrossReviewRun): AsyncPrompt["body"] {
             ? "Act as the read-only cross-review judge."
             : prSnapshotJudgeBrief(
                 run.target,
-                run.snapshot.source === "parent-pack",
+                snapshotBriefEvidence(run.snapshot),
               ),
           run.snapshot === undefined ? `Target: ${run.target}` : "",
           ...(run.snapshot !== undefined
@@ -2062,6 +2063,7 @@ export function createCrossReviewProtocolTools(
             url: gather.meta.url,
             headSha: gather.meta.headSha,
             mergeBaseSha: gather.meta.mergeBaseSha,
+            ...(providedContext === undefined ? {} : { notes: true }),
           };
           adapterGatherer = {
             kind: "adapter",
@@ -2171,7 +2173,7 @@ export function createCrossReviewProtocolTools(
               : prSnapshotReviewBrief(
                   args.target,
                   overrides.focus ?? loaded.config.focus,
-                  prSnapshot.source === "parent-pack",
+                  snapshotBriefEvidence(prSnapshot),
                 ),
           ...(providedContext === undefined || prSnapshot !== undefined
             ? {}

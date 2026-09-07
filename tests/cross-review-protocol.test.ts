@@ -417,6 +417,12 @@ describe("evidenceDir protocol", () => {
         source: "adapter",
         evidenceDir: "pack",
       });
+      expect(
+        client.session.promptAsync.mock.calls[0]?.[0].body.parts[0].text,
+      ).toContain(".cross-review/materials/");
+      expect(
+        client.session.promptAsync.mock.calls[0]?.[0].body.parts[0].text,
+      ).not.toContain("notes.md");
       expect(store.runs.get(started.runID)?.snapshot?.evidenceDir).toBe("pack");
       expect(await readFile(join(snapshotDir, "meta.json"), "utf8")).toBe(
         "adapter meta",
@@ -3868,7 +3874,11 @@ describe("cross-review PR snapshot protocol", () => {
     expect(prompt.body.parts[0].text).toContain(
       "isolated git worktree snapshot",
     );
+    expect(prompt.body.parts[0].text).toContain(".cross-review/diff.patch");
+    expect(prompt.body.parts[0].text).not.toContain("notes.md");
+    expect(prompt.body.parts[0].text).not.toContain("materials/");
     expect(prompt.body.parts[0].text).not.toContain("Shared target context");
+    expect(run?.snapshot?.notes).toBeUndefined();
 
     messages.set("child-1", completed("snapshot review"));
     const status = output(
@@ -3889,11 +3899,8 @@ describe("cross-review PR snapshot protocol", () => {
   it("forwards caller context as adapter notes without embedding it in briefs (S2)", async () => {
     const { client } = mockClient();
     const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
-    const { tools, runPrAdapter } = prProtocol(
-      client,
-      new MemoryRunStore(),
-      classify,
-    );
+    const store = new MemoryRunStore();
+    const { tools, runPrAdapter } = prProtocol(client, store, classify);
 
     await tools.cross_review_start.execute(
       {
@@ -3908,10 +3915,13 @@ describe("cross-review PR snapshot protocol", () => {
     expect(runPrAdapter).toHaveBeenCalledWith(
       expect.objectContaining({ notes: "watch the auth rewrite" }),
     );
+    expect(store.runs.get(RUN_ID)?.snapshot?.notes).toBe(true);
     const brief =
       client.session.promptAsync.mock.calls[0][0].body.parts[0].text;
     expect(brief).not.toContain("watch the auth rewrite");
     expect(brief).not.toContain("Shared target context");
+    expect(brief).toContain(".cross-review/notes.md (caller notes).");
+    expect(brief).not.toContain("materials/");
   });
 
   it("does not emit an embed warning for oversized PR-snapshot caller context", async () => {

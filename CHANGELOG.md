@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- List only the `.cross-review/` files that exist for a PR snapshot run in
+  reviewer and judge briefs, and treat snapshot worktree language as a
+  shared-context marker in `/cross-review-audit` without embedding caller
+  notes.
+
 ## [0.3.1] - 2026-09-07
 
 ### Fixed

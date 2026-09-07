@@ -141,6 +141,10 @@ export type CrossReviewAuditPayload = {
 export const SHARED_CONTEXT_MARKER =
   "Shared target context (already gathered; verify findings against it):";
 
+/** Prefix shared by snapshot reviewer and judge briefs; does not imply embed. */
+export const SNAPSHOT_EVIDENCE_MARKER =
+  "The current directory is an isolated git worktree";
+
 export const PROTOCOL_TOOL_NAMES = [
   "cross_review",
   "cross_review_start",

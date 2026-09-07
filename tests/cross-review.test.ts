@@ -16,6 +16,7 @@ import {
   normalizeProvidedContext,
   prSnapshotJudgeBrief,
   prSnapshotReviewBrief,
+  snapshotBriefEvidence,
   readOnlyEvidenceRules,
   requireSharedEvidence,
   resolveEmbedLimit,
@@ -273,6 +274,91 @@ describe("read-only evidence briefs", () => {
     }
     expect(review).toContain("Shared target context");
     expect(review).toContain("the diff");
+  });
+});
+
+describe("PR snapshot evidence briefs", () => {
+  it("maps persisted snapshot provenance to present files only", () => {
+    expect(snapshotBriefEvidence(undefined)).toEqual({
+      parentPack: false,
+      notes: false,
+      materials: false,
+    });
+    expect(snapshotBriefEvidence({ source: "adapter", notes: true })).toEqual({
+      parentPack: false,
+      notes: true,
+      materials: false,
+    });
+    expect(
+      snapshotBriefEvidence({ source: "adapter", evidenceDir: "pack" }),
+    ).toEqual({
+      parentPack: false,
+      notes: false,
+      materials: true,
+    });
+    expect(
+      snapshotBriefEvidence({
+        source: "parent-pack",
+        evidenceDir: "pack",
+        notes: true,
+      }),
+    ).toEqual({
+      parentPack: true,
+      notes: true,
+      materials: false,
+    });
+  });
+
+  it("lists only contract files that exist for this adapter run", () => {
+    const target = "https://example/pull/1";
+    const def = prSnapshotReviewBrief(target);
+    expect(def).toContain(".cross-review/meta.json");
+    expect(def).toContain(".cross-review/diff.patch");
+    expect(def).toContain(".cross-review/pr.md");
+    expect(def).not.toContain("notes.md");
+    expect(def).not.toContain("materials/");
+    expect(def).not.toContain("when present");
+    expect(def).not.toContain("Shared target context");
+
+    const notes = prSnapshotReviewBrief(target, undefined, { notes: true });
+    expect(notes).toContain(".cross-review/notes.md (caller notes).");
+    expect(notes).not.toContain("materials/");
+    expect(notes).not.toContain("watch the auth rewrite");
+    expect(notes).not.toContain("Shared target context");
+
+    const materials = prSnapshotReviewBrief(target, undefined, {
+      materials: true,
+    });
+    expect(materials).toContain(".cross-review/materials/");
+    expect(materials).not.toContain("notes.md");
+
+    const parent = prSnapshotReviewBrief(target, undefined, {
+      parentPack: true,
+      notes: true,
+      materials: true,
+    });
+    expect(parent).toContain(".cross-review/summary.md");
+    expect(parent).not.toContain("notes.md");
+    expect(parent).not.toContain("materials/");
+    expect(parent).not.toContain("diff.patch");
+    expect(parent).not.toContain("Shared target context");
+  });
+
+  it("names only present files in the adapter judge prefix", () => {
+    const target = "https://example/pull/1";
+    const def = prSnapshotJudgeBrief(target);
+    expect(def).toContain("meta.json, diff.patch, pr.md");
+    expect(def).not.toContain("notes.md");
+    expect(def).not.toContain("materials/");
+    expect(def).not.toContain("optional");
+    expect(def).not.toContain("Shared target context");
+
+    expect(prSnapshotJudgeBrief(target, { notes: true })).toContain(
+      "meta.json, diff.patch, pr.md, notes.md",
+    );
+    expect(prSnapshotJudgeBrief(target, { materials: true })).toContain(
+      "meta.json, diff.patch, pr.md, materials/ attachments",
+    );
   });
 });
 
@@ -1472,6 +1558,9 @@ describe("cross_review tool PR snapshot path", () => {
     // Reviewer brief points at the snapshot, not embedded context.
     const brief = mock.session.prompt.mock.calls[0][0].body.parts[0].text;
     expect(brief).toContain("isolated git worktree snapshot");
+    expect(brief).toContain(".cross-review/diff.patch");
+    expect(brief).not.toContain("notes.md");
+    expect(brief).not.toContain("materials/");
     expect(brief).not.toContain("Shared target context");
     expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
   });
@@ -1557,6 +1646,8 @@ describe("cross_review tool PR snapshot path", () => {
     const brief = mock.session.prompt.mock.calls[0][0].body.parts[0].text;
     expect(brief).not.toContain("watch the auth rewrite");
     expect(brief).not.toContain("Shared target context");
+    expect(brief).toContain(".cross-review/notes.md (caller notes).");
+    expect(brief).not.toContain("materials/");
   });
 
   it("does not attach an embed warning when PR-snapshot context is oversized", async () => {
