@@ -2403,93 +2403,103 @@ export function createCrossReviewProtocolTools(
     },
   });
 
+  async function withExpiredRunReclaim<T>(action: () => Promise<T>) {
+    try {
+      return await action();
+    } finally {
+      await store.cleanupExpiredRuns().catch(() => undefined);
+    }
+  }
+
   const cancel = tool({
     description:
       "Cancel one asynchronous cross-review run; invoke only with explicit user review intent from primary sessions",
     args: { runID: tool.schema.string().uuid() },
     async execute(args, context) {
-      return withAuthorizedRun(args.runID, context, async (run, save) => {
-        if (run.phase === "cancelled")
-          return result(
-            `Cross-review cancelled: ${run.target}`,
-            progress(run, false, true, now()),
-          );
-        if (
-          run.phase === "completed" ||
-          run.phase === "quorum-not-met" ||
-          run.phase === "failed"
-        ) {
+      return withExpiredRunReclaim(() =>
+        withAuthorizedRun(args.runID, context, async (run, save) => {
+          if (run.phase === "cancelled")
+            return result(
+              `Cross-review cancelled: ${run.target}`,
+              progress(run, false, true, now()),
+            );
+          if (
+            run.phase === "completed" ||
+            run.phase === "quorum-not-met" ||
+            run.phase === "failed"
+          ) {
+            const cleanupWarning = await cleanupSnapshot(run);
+            return result(
+              `Cross-review already finished: ${run.target}${cleanupWarning ?? ""}`,
+              progress(run, false, true, now()),
+            );
+          }
+          const timestamp = now();
+          for (const reviewer of run.reviewers) {
+            if (reviewer.status === "queued") {
+              reviewer.status = "cancelled";
+              reviewer.completedAt = timestamp;
+              reviewer.error = "Cross-review cancelled";
+              await save();
+              continue;
+            }
+            if (ACTIVE_REVIEWER_STATUSES.has(reviewer.status)) {
+              let abortWarning: string | undefined;
+              try {
+                await abortSession(reviewer.sessionID, sessionDirectory(run));
+              } catch (error) {
+                abortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
+              }
+              reviewer.status = "cancelled";
+              reviewer.completedAt = timestamp;
+              reviewer.error = `Cross-review cancelled${abortWarning ?? ""}`;
+              await save();
+            }
+          }
+          let gathererAbortWarning: string | undefined;
+          if (
+            run.gatherer?.sessionID !== undefined &&
+            (run.gatherer.status === "queued" ||
+              ACTIVE_REVIEWER_STATUSES.has(
+                run.gatherer.status as ReviewerRunStatus,
+              ))
+          ) {
+            try {
+              await abortSession(run.gatherer.sessionID, sessionDirectory(run));
+            } catch (error) {
+              gathererAbortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
+            }
+            run.gatherer.status = "cancelled";
+            run.gatherer.completedAt = timestamp;
+            run.gatherer.error = `Cross-review cancelled${gathererAbortWarning ?? ""}`;
+            await save();
+          }
+          let judgeAbortWarning: string | undefined;
+          if (
+            run.judge?.sessionID !== undefined &&
+            ACTIVE_REVIEWER_STATUSES.has(run.judge.status as ReviewerRunStatus)
+          ) {
+            try {
+              await abortSession(run.judge.sessionID, sessionDirectory(run));
+            } catch (error) {
+              judgeAbortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
+            }
+          }
+          if (run.judge !== undefined) {
+            run.judge.status = "cancelled";
+            run.judge.completedAt = timestamp;
+            run.judge.error = `Cross-review cancelled${judgeAbortWarning ?? ""}`;
+            await save();
+          }
+          run.phase = "cancelled";
+          await save();
           const cleanupWarning = await cleanupSnapshot(run);
           return result(
-            `Cross-review already finished: ${run.target}${cleanupWarning ?? ""}`,
+            `Cross-review cancelled: ${run.target}${cleanupWarning ?? ""}`,
             progress(run, false, true, now()),
           );
-        }
-        const timestamp = now();
-        for (const reviewer of run.reviewers) {
-          if (reviewer.status === "queued") {
-            reviewer.status = "cancelled";
-            reviewer.completedAt = timestamp;
-            reviewer.error = "Cross-review cancelled";
-            await save();
-            continue;
-          }
-          if (ACTIVE_REVIEWER_STATUSES.has(reviewer.status)) {
-            let abortWarning: string | undefined;
-            try {
-              await abortSession(reviewer.sessionID, sessionDirectory(run));
-            } catch (error) {
-              abortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
-            }
-            reviewer.status = "cancelled";
-            reviewer.completedAt = timestamp;
-            reviewer.error = `Cross-review cancelled${abortWarning ?? ""}`;
-            await save();
-          }
-        }
-        let gathererAbortWarning: string | undefined;
-        if (
-          run.gatherer?.sessionID !== undefined &&
-          (run.gatherer.status === "queued" ||
-            ACTIVE_REVIEWER_STATUSES.has(
-              run.gatherer.status as ReviewerRunStatus,
-            ))
-        ) {
-          try {
-            await abortSession(run.gatherer.sessionID, sessionDirectory(run));
-          } catch (error) {
-            gathererAbortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
-          }
-          run.gatherer.status = "cancelled";
-          run.gatherer.completedAt = timestamp;
-          run.gatherer.error = `Cross-review cancelled${gathererAbortWarning ?? ""}`;
-          await save();
-        }
-        let judgeAbortWarning: string | undefined;
-        if (
-          run.judge?.sessionID !== undefined &&
-          ACTIVE_REVIEWER_STATUSES.has(run.judge.status as ReviewerRunStatus)
-        ) {
-          try {
-            await abortSession(run.judge.sessionID, sessionDirectory(run));
-          } catch (error) {
-            judgeAbortWarning = `; abort unconfirmed: ${errorMessage(error)}`;
-          }
-        }
-        if (run.judge !== undefined) {
-          run.judge.status = "cancelled";
-          run.judge.completedAt = timestamp;
-          run.judge.error = `Cross-review cancelled${judgeAbortWarning ?? ""}`;
-          await save();
-        }
-        run.phase = "cancelled";
-        await save();
-        const cleanupWarning = await cleanupSnapshot(run);
-        return result(
-          `Cross-review cancelled: ${run.target}${cleanupWarning ?? ""}`,
-          progress(run, false, true, now()),
-        );
-      });
+        }),
+      );
     },
   });
 
@@ -2498,134 +2508,96 @@ export function createCrossReviewProtocolTools(
       "Finalize an asynchronous cross-review run or start its explicit judge once reviewers or the explicit judge are terminal; rejects while work is still active — poll cross_review_status until readyToFinalize=true, or resolve a pending timeout with timeoutAction first",
     args: { runID: tool.schema.string().uuid() },
     async execute(args, context) {
-      return withAuthorizedRun(args.runID, context, async (run, save) => {
-        if (run.finalResult !== undefined)
-          return result(
-            `Cross-review finalized: ${run.target}`,
-            run.finalResult,
-          );
-        await reconcile(run, save, context);
-        if (run.phase === "cancelled")
-          return result(
-            `Cross-review cancelled: ${run.target}`,
-            progress(run, false, true, now()),
-          );
-        // A terminal phase with no finalResult (e.g. the failed manifests
-        // persisted when a gather fails and the snapshot is retained) must
-        // report a definite failure, not "still running". The snapshot is
-        // intentionally left for the 7-day terminal cleanup (S5).
-        if (run.phase === "failed") {
-          run.finalResult = {
-            ...(run.warning === undefined ? {} : { warning: run.warning }),
-            runID: run.runID,
-            phase: run.phase,
-            status: "gather-failed",
-            target: run.target,
-            brief: run.brief,
-            quorum: run.quorum,
-            ...(run.gatherer === undefined && run.adapterGatherer === undefined
-              ? {}
-              : run.gatherer !== undefined
-                ? { gatherer: publicGatherer(run.gatherer, true) }
-                : {
-                    gatherer: publicAdapterGatherer(run.adapterGatherer),
-                  }),
-            reviewers: run.reviewers.map((reviewer) =>
-              publicReviewer(reviewer, true),
-            ),
-          };
-          await save();
-          return result(`Cross-review failed: ${run.target}`, run.finalResult);
-        }
-        if (pendingTimeouts(run).length > 0)
-          throw new Error(
-            "Cannot finalize cross-review: a timeout decision is pending; resolve it with cross_review_status and timeoutAction after the user chooses preserve or abort",
-          );
-        if (run.phase === "gathering")
-          throw new Error(
-            "Cannot finalize cross-review: gathering is still active; poll using cross_review_status until readyToFinalize=true",
-          );
-        if (run.phase === "reviewing" && !reviewersTerminal(run))
-          throw new Error(
-            "Cannot finalize cross-review: reviewers are still active; poll using cross_review_status until readyToFinalize=true",
-          );
-
-        const successful = successfulReviewers(run);
-        if (run.phase === "reviewing" && successful.length < run.quorum) {
-          run.phase = "quorum-not-met";
-          run.finalResult = {
-            ...(run.warning === undefined ? {} : { warning: run.warning }),
-            runID: run.runID,
-            phase: run.phase,
-            status: "quorum-not-met",
-            target: run.target,
-            brief: run.brief,
-            quorum: run.quorum,
-            ...(run.gatherer === undefined && run.adapterGatherer === undefined
-              ? {}
-              : run.gatherer !== undefined
-                ? { gatherer: publicGatherer(run.gatherer, true) }
-                : {
-                    gatherer: publicAdapterGatherer(run.adapterGatherer),
-                  }),
-            reviewers: run.reviewers.map((reviewer) =>
-              publicReviewer(reviewer, true),
-            ),
-          };
-          return result(`Cross-review failed: ${run.target}`, run.finalResult);
-        }
-
-        if (run.phase === "reviewing" && run.judgeModel === undefined) {
-          run.phase = "completed";
-          run.finalResult = {
-            ...(run.snapshot === undefined ? {} : { snapshot: run.snapshot }),
-            ...(run.warning === undefined ? {} : { warning: run.warning }),
-            runID: run.runID,
-            phase: run.phase,
-            target: run.target,
-            brief: run.brief,
-            quorum: run.quorum,
-            ...(run.gatherer === undefined && run.adapterGatherer === undefined
-              ? {}
-              : run.gatherer !== undefined
-                ? { gatherer: publicGatherer(run.gatherer, true) }
-                : {
-                    gatherer: publicAdapterGatherer(run.adapterGatherer),
-                  }),
-            reviewers: run.reviewers.map((reviewer) =>
-              publicReviewer(reviewer, true),
-            ),
-            judge: {
-              model: "parent-session",
-              status: "pending-parent-consolidation",
-            },
-          };
-          await save();
-          return result(
-            `Cross-review finalized: ${run.target}`,
-            run.finalResult,
-          );
-        }
-
-        if (run.phase === "reviewing" && run.judgeModel !== undefined) {
-          run.phase = "judging";
-          if (run.judge === undefined)
-            throw new Error(
-              `Cross-review judge session is missing: ${run.runID}`,
+      return withExpiredRunReclaim(() =>
+        withAuthorizedRun(args.runID, context, async (run, save) => {
+          if (run.finalResult !== undefined)
+            return result(
+              `Cross-review finalized: ${run.target}`,
+              run.finalResult,
             );
-          await save();
-          await reconcileJudge(run, {}, save, context);
-          return result(
-            `Cross-review judge started: ${run.target}`,
-            progress(run, false, true, now()),
-          );
-        }
+          await reconcile(run, save, context);
+          if (run.phase === "cancelled")
+            return result(
+              `Cross-review cancelled: ${run.target}`,
+              progress(run, false, true, now()),
+            );
+          // A terminal phase with no finalResult (e.g. the failed manifests
+          // persisted when a gather fails and the snapshot is retained) must
+          // report a definite failure, not "still running". The snapshot is
+          // intentionally left for cancel or the 7-day expired-run cleanup (S5).
+          if (run.phase === "failed") {
+            run.finalResult = {
+              ...(run.warning === undefined ? {} : { warning: run.warning }),
+              runID: run.runID,
+              phase: run.phase,
+              status: "gather-failed",
+              target: run.target,
+              brief: run.brief,
+              quorum: run.quorum,
+              ...(run.gatherer === undefined &&
+              run.adapterGatherer === undefined
+                ? {}
+                : run.gatherer !== undefined
+                  ? { gatherer: publicGatherer(run.gatherer, true) }
+                  : {
+                      gatherer: publicAdapterGatherer(run.adapterGatherer),
+                    }),
+              reviewers: run.reviewers.map((reviewer) =>
+                publicReviewer(reviewer, true),
+              ),
+            };
+            await save();
+            return result(
+              `Cross-review failed: ${run.target}`,
+              run.finalResult,
+            );
+          }
+          if (pendingTimeouts(run).length > 0)
+            throw new Error(
+              "Cannot finalize cross-review: a timeout decision is pending; resolve it with cross_review_status and timeoutAction after the user chooses preserve or abort",
+            );
+          if (run.phase === "gathering")
+            throw new Error(
+              "Cannot finalize cross-review: gathering is still active; poll using cross_review_status until readyToFinalize=true",
+            );
+          if (run.phase === "reviewing" && !reviewersTerminal(run))
+            throw new Error(
+              "Cannot finalize cross-review: reviewers are still active; poll using cross_review_status until readyToFinalize=true",
+            );
 
-        if (run.phase === "judging") {
-          const judge = run.judge;
-          if (judge?.status === "succeeded") {
+          const successful = successfulReviewers(run);
+          if (run.phase === "reviewing" && successful.length < run.quorum) {
+            run.phase = "quorum-not-met";
+            run.finalResult = {
+              ...(run.warning === undefined ? {} : { warning: run.warning }),
+              runID: run.runID,
+              phase: run.phase,
+              status: "quorum-not-met",
+              target: run.target,
+              brief: run.brief,
+              quorum: run.quorum,
+              ...(run.gatherer === undefined &&
+              run.adapterGatherer === undefined
+                ? {}
+                : run.gatherer !== undefined
+                  ? { gatherer: publicGatherer(run.gatherer, true) }
+                  : {
+                      gatherer: publicAdapterGatherer(run.adapterGatherer),
+                    }),
+              reviewers: run.reviewers.map((reviewer) =>
+                publicReviewer(reviewer, true),
+              ),
+            };
+            return result(
+              `Cross-review failed: ${run.target}`,
+              run.finalResult,
+            );
+          }
+
+          if (run.phase === "reviewing" && run.judgeModel === undefined) {
             run.phase = "completed";
             run.finalResult = {
+              ...(run.snapshot === undefined ? {} : { snapshot: run.snapshot }),
               ...(run.warning === undefined ? {} : { warning: run.warning }),
               runID: run.runID,
               phase: run.phase,
@@ -2643,51 +2615,100 @@ export function createCrossReviewProtocolTools(
               reviewers: run.reviewers.map((reviewer) =>
                 publicReviewer(reviewer, true),
               ),
-              judge: publicJudge(judge, true),
+              judge: {
+                model: "parent-session",
+                status: "pending-parent-consolidation",
+              },
             };
             await save();
-            const cleanupWarning = await cleanupSnapshot(run);
             return result(
-              `Cross-review finalized: ${run.target}${cleanupWarning ?? ""}`,
+              `Cross-review finalized: ${run.target}`,
               run.finalResult,
             );
           }
-          if (
-            judge?.status === "failed" ||
-            judge?.status === "timed_out" ||
-            judge?.status === "cancelled"
-          ) {
-            run.phase = "failed";
-            run.finalResult = {
-              ...(run.warning === undefined ? {} : { warning: run.warning }),
-              runID: run.runID,
-              phase: run.phase,
-              status: "judge-failed",
-              target: run.target,
-              quorum: run.quorum,
-              ...(run.gatherer === undefined &&
-              run.adapterGatherer === undefined
-                ? {}
-                : run.gatherer !== undefined
-                  ? { gatherer: publicGatherer(run.gatherer, true) }
-                  : {
-                      gatherer: publicAdapterGatherer(run.adapterGatherer),
-                    }),
-              reviewers: run.reviewers.map((reviewer) =>
-                publicReviewer(reviewer, true),
-              ),
-              judge: publicJudge(judge, true),
-            };
+
+          if (run.phase === "reviewing" && run.judgeModel !== undefined) {
+            run.phase = "judging";
+            if (run.judge === undefined)
+              throw new Error(
+                `Cross-review judge session is missing: ${run.runID}`,
+              );
+            await save();
+            await reconcileJudge(run, {}, save, context);
             return result(
-              `Cross-review judge failed: ${run.target}`,
-              run.finalResult,
+              `Cross-review judge started: ${run.target}`,
+              progress(run, false, true, now()),
             );
           }
-        }
-        throw new Error(
-          "Cannot finalize cross-review: judge is still active; poll using cross_review_status until readyToFinalize=true",
-        );
-      });
+
+          if (run.phase === "judging") {
+            const judge = run.judge;
+            if (judge?.status === "succeeded") {
+              run.phase = "completed";
+              run.finalResult = {
+                ...(run.warning === undefined ? {} : { warning: run.warning }),
+                runID: run.runID,
+                phase: run.phase,
+                target: run.target,
+                brief: run.brief,
+                quorum: run.quorum,
+                ...(run.gatherer === undefined &&
+                run.adapterGatherer === undefined
+                  ? {}
+                  : run.gatherer !== undefined
+                    ? { gatherer: publicGatherer(run.gatherer, true) }
+                    : {
+                        gatherer: publicAdapterGatherer(run.adapterGatherer),
+                      }),
+                reviewers: run.reviewers.map((reviewer) =>
+                  publicReviewer(reviewer, true),
+                ),
+                judge: publicJudge(judge, true),
+              };
+              await save();
+              const cleanupWarning = await cleanupSnapshot(run);
+              return result(
+                `Cross-review finalized: ${run.target}${cleanupWarning ?? ""}`,
+                run.finalResult,
+              );
+            }
+            if (
+              judge?.status === "failed" ||
+              judge?.status === "timed_out" ||
+              judge?.status === "cancelled"
+            ) {
+              run.phase = "failed";
+              run.finalResult = {
+                ...(run.warning === undefined ? {} : { warning: run.warning }),
+                runID: run.runID,
+                phase: run.phase,
+                status: "judge-failed",
+                target: run.target,
+                quorum: run.quorum,
+                ...(run.gatherer === undefined &&
+                run.adapterGatherer === undefined
+                  ? {}
+                  : run.gatherer !== undefined
+                    ? { gatherer: publicGatherer(run.gatherer, true) }
+                    : {
+                        gatherer: publicAdapterGatherer(run.adapterGatherer),
+                      }),
+                reviewers: run.reviewers.map((reviewer) =>
+                  publicReviewer(reviewer, true),
+                ),
+                judge: publicJudge(judge, true),
+              };
+              return result(
+                `Cross-review judge failed: ${run.target}`,
+                run.finalResult,
+              );
+            }
+          }
+          throw new Error(
+            "Cannot finalize cross-review: judge is still active; poll using cross_review_status until readyToFinalize=true",
+          );
+        }),
+      );
     },
   });
 

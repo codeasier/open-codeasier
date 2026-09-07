@@ -22,6 +22,7 @@ const RUN_C = "aaaaaaaa-0000-4000-8000-000000000003";
 
 class MemoryRunStore implements CrossReviewRunStore {
   readonly runs = new Map<string, CrossReviewRun>();
+  async cleanupExpiredRuns() {}
   extraErrors: Array<{
     code: "MANIFEST_CORRUPT" | "MANIFEST_NOT_FOUND";
     detail: string;

@@ -193,6 +193,11 @@ describe("workflow generator", () => {
     expect(openCrossReview).toContain("Poll with `cross_review_status`");
     expect(openCrossReview).toContain("Call `cross_review_finalize`");
     expect(openCrossReview).toContain("Use `cross_review_cancel`");
+    expect(openCrossReview).toContain(
+      "After parent-session judging is complete",
+    );
+    expect(openCrossReview).toContain("do not offer reuse");
+    expect(openCrossReview).toContain("Expired-run cleanup is best-effort");
     expect(openCrossReview).toContain("`--reviewer-timeout-ms`");
     expect(openCrossReview).toContain(
       ".opencode/.open-codeasier/installed-assets.json",

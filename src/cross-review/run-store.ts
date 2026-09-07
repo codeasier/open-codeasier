@@ -188,21 +188,21 @@ export interface CrossReviewRunStore {
   ): Promise<T>;
   listByOwner(ownerSessionID: string): Promise<ListByOwnerResult>;
   read(runID: string): Promise<ReadRunResult>;
+  /**
+   * Best-effort GC of manifests whose `updatedAt` is older than
+   * {@link EXPIRED_RUN_RETENTION_MS}, including abandoned non-terminal
+   * phases. `updatedAt` is the only liveness signal.
+   */
+  cleanupExpiredRuns(): Promise<void>;
 }
 
-const TERMINAL_PHASES = new Set<CrossReviewRunPhase>([
-  "completed",
-  "quorum-not-met",
-  "failed",
-  "cancelled",
-]);
 const STALE_LOCK_MS = 60_000;
 const LOCK_UPDATE_MS = 10_000;
 // The lock holder can perform several SDK requests (status plus per-active
 // reviewer messages and aborts, each up to 15s). Wait long enough that a
 // concurrent poll after reload does not give up before the holder finishes.
 const LOCK_RETRIES = 4_800;
-const TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+export const EXPIRED_RUN_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const LOCAL_LOCKS = new Map<string, Promise<void>>();
 
 export function defaultCrossReviewStateDirectory(
@@ -351,7 +351,7 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
     } finally {
       await release();
     }
-    await this.cleanupTerminalRuns().catch(() => undefined);
+    await this.cleanupExpiredRuns().catch(() => undefined);
   }
 
   async withRun<T>(
@@ -431,9 +431,16 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
     }
   }
 
-  private async cleanupTerminalRuns() {
-    const cutoff = this.now() - TERMINAL_RETENTION_MS;
-    for (const entry of await readdir(this.root)) {
+  async cleanupExpiredRuns() {
+    let entries: string[];
+    try {
+      entries = await readdir(this.root);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+    const cutoff = this.now() - EXPIRED_RUN_RETENTION_MS;
+    for (const entry of entries) {
       if (!entry.endsWith(".json")) continue;
       const runID = entry.slice(0, -".json".length);
       if (!RUN_ID.test(runID)) continue;
@@ -441,19 +448,15 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
       let release: (() => Promise<void>) | undefined;
       try {
         const candidate = parseRun(path, await readFile(path, "utf8"));
-        if (
-          !TERMINAL_PHASES.has(candidate.phase) ||
-          candidate.updatedAt >= cutoff
-        )
-          continue;
+        if (candidate.updatedAt >= cutoff) continue;
         release = await this.acquire(runID, 0);
         const run = parseRun(path, await readFile(path, "utf8"));
-        if (TERMINAL_PHASES.has(run.phase) && run.updatedAt < cutoff) {
-          // A failed run may still hold its snapshot worktree; remove it
-          // (worktree-aware) before the manifest is unlinked so git
-          // metadata never leaks. Removal errors must not keep the
-          // manifest alive forever: unlink regardless so the retry loop
-          // terminates.
+        if (run.updatedAt < cutoff) {
+          // Terminal and abandoned non-terminal runs may still hold a
+          // snapshot worktree. Remove it (worktree-aware) before the
+          // manifest is unlinked so git metadata never leaks. Removal
+          // errors must not keep the manifest alive forever: unlink
+          // regardless so the retry loop terminates.
           if (run.snapshot !== undefined) {
             try {
               await this.removeSnapshot(run.snapshot.worktree);
