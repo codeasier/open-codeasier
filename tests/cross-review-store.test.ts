@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  EXPIRED_RUN_RETENTION_MS,
   FileCrossReviewRunStore,
   RUN_SCHEMA_VERSION,
   defaultCrossReviewStateDirectory,
@@ -218,14 +219,14 @@ describe("cross-review run store", () => {
 
   it("serializes concurrent recovery of the same stale lock", async () => {
     const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
-    const initial = new FileCrossReviewRunStore(root);
+    const initial = new FileCrossReviewRunStore(root, () => 10);
     await initial.create(run());
     const lockPath = join(root, `${RUN_ID}.lock`);
     await mkdir(lockPath);
     const stale = new Date(Date.now() - 61_000);
     await utimes(lockPath, stale, stale);
-    const first = new FileCrossReviewRunStore(root);
-    const second = new FileCrossReviewRunStore(root);
+    const first = new FileCrossReviewRunStore(root, () => 10);
+    const second = new FileCrossReviewRunStore(root, () => 10);
     const increment = async (stored: CrossReviewRun) => {
       const reviewer = stored.reviewers[0];
       if (reviewer === undefined) throw new Error("Missing reviewer");
@@ -256,7 +257,7 @@ describe("cross-review run store", () => {
       () => now,
       removeSnapshot,
     );
-    const stale = now - 8 * 24 * 60 * 60 * 1_000;
+    const stale = now - EXPIRED_RUN_RETENTION_MS - 24 * 60 * 60 * 1_000;
     await expired.create({
       ...run(),
       // `create` persists `updatedAt` verbatim; backdate it past retention.
@@ -270,7 +271,7 @@ describe("cross-review run store", () => {
       },
     } as CrossReviewRun);
 
-    // Creating any run triggers terminal cleanup of the expired manifest.
+    // Creating any run triggers expired-run cleanup of the stale manifest.
     const fresh = new FileCrossReviewRunStore(root, () => now, removeSnapshot);
     await fresh.create({
       ...run(),
@@ -281,5 +282,135 @@ describe("cross-review run store", () => {
     await expect(
       readFile(join(root, `${RUN_ID}.json`), "utf8"),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["reviewing", "gathering", "judging"] as const)(
+    "reclaims an abandoned %s run after the same retention",
+    async (phase) => {
+      const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+      const now = Date.now();
+      const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+      const store = new FileCrossReviewRunStore(
+        root,
+        () => now,
+        removeSnapshot,
+      );
+      const stale = now - EXPIRED_RUN_RETENTION_MS - 1;
+      const expiredID = "00000000-0000-4000-8000-00000000000a";
+      await writeFile(
+        join(root, `${expiredID}.json`),
+        JSON.stringify({
+          ...run(),
+          runID: expiredID,
+          createdAt: stale,
+          updatedAt: stale,
+          phase,
+          snapshot: {
+            worktree: join(root, expiredID, "worktree"),
+            snapshotDir: join(root, expiredID, "worktree", ".cross-review"),
+            forge: "github",
+          },
+        }),
+      );
+
+      await store.cleanupExpiredRuns();
+
+      expect(removeSnapshot).toHaveBeenCalledWith(
+        join(root, expiredID, "worktree"),
+      );
+      await expect(
+        readFile(join(root, `${expiredID}.json`), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it("skips an expired run whose lock is held", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+    const now = Date.now();
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const store = new FileCrossReviewRunStore(root, () => now, removeSnapshot);
+    const stale = now - EXPIRED_RUN_RETENTION_MS - 1;
+    await writeFile(
+      join(root, `${RUN_ID}.json`),
+      JSON.stringify({
+        ...run(),
+        createdAt: stale,
+        updatedAt: stale,
+        phase: "reviewing",
+        snapshot: {
+          worktree: join(root, RUN_ID, "worktree"),
+          snapshotDir: join(root, RUN_ID, "worktree", ".cross-review"),
+        },
+      }),
+    );
+    await mkdir(join(root, `${RUN_ID}.lock`));
+
+    await store.cleanupExpiredRuns();
+
+    expect(removeSnapshot).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(await readFile(join(root, `${RUN_ID}.json`), "utf8")).phase,
+    ).toBe("reviewing");
+  });
+
+  it("unlinks an expired manifest even when snapshot removal fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+    const now = Date.now();
+    const removeSnapshot = vi.fn().mockRejectedValue(new Error("busy"));
+    const store = new FileCrossReviewRunStore(root, () => now, removeSnapshot);
+    const stale = now - EXPIRED_RUN_RETENTION_MS - 1;
+    await writeFile(
+      join(root, `${RUN_ID}.json`),
+      JSON.stringify({
+        ...run(),
+        createdAt: stale,
+        updatedAt: stale,
+        phase: "failed",
+        snapshot: {
+          worktree: join(root, RUN_ID, "worktree"),
+          snapshotDir: join(root, RUN_ID, "worktree", ".cross-review"),
+        },
+      }),
+    );
+
+    await store.cleanupExpiredRuns();
+
+    expect(removeSnapshot).toHaveBeenCalledWith(join(root, RUN_ID, "worktree"));
+    await expect(
+      readFile(join(root, `${RUN_ID}.json`), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps recent non-terminal runs and no-ops a missing state directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+    const now = Date.now();
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const store = new FileCrossReviewRunStore(root, () => now, removeSnapshot);
+    await writeFile(
+      join(root, `${RUN_ID}.json`),
+      JSON.stringify({
+        ...run(),
+        createdAt: now,
+        updatedAt: now,
+        phase: "reviewing",
+        snapshot: {
+          worktree: join(root, RUN_ID, "worktree"),
+          snapshotDir: join(root, RUN_ID, "worktree", ".cross-review"),
+        },
+      }),
+    );
+
+    await store.cleanupExpiredRuns();
+    expect(removeSnapshot).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(await readFile(join(root, `${RUN_ID}.json`), "utf8")).phase,
+    ).toBe("reviewing");
+
+    const missing = new FileCrossReviewRunStore(
+      join(root, "absent"),
+      () => now,
+      removeSnapshot,
+    );
+    await expect(missing.cleanupExpiredRuns()).resolves.toBeUndefined();
   });
 });

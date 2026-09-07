@@ -8,13 +8,17 @@ import {
   createCrossReviewProtocolTools,
   type AsyncCrossReviewClient,
 } from "./cross-review/protocol.js";
+import { FileCrossReviewRunStore } from "./cross-review/run-store.js";
 import { createCrossReviewAuditTool } from "./cross-review/audit.js";
 import type { SessionClient } from "./session-review/fetch.js";
 import { createSessionReviewTool } from "./session-review/tool.js";
 
 export const server: Plugin = async ({ client }) => {
+  const store = new FileCrossReviewRunStore();
+  await store.cleanupExpiredRuns().catch(() => undefined);
   const protocol = createCrossReviewProtocolTools(
     client as AsyncCrossReviewClient,
+    { store },
   );
   return {
     config: async (config) => {

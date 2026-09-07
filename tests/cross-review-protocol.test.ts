@@ -52,6 +52,7 @@ const createCrossReviewProtocolTools: typeof createProtocolTools = (
 
 class MemoryRunStore implements CrossReviewRunStore {
   readonly runs = new Map<string, CrossReviewRun>();
+  cleanupExpiredRuns = vi.fn().mockResolvedValue(undefined);
 
   async create(run: CrossReviewRun) {
     this.runs.set(run.runID, structuredClone(run));
@@ -4214,7 +4215,7 @@ describe("cross-review PR snapshot protocol", () => {
         status: "failed",
       },
     });
-    // The retained snapshot stays for the 7-day terminal cleanup (S5).
+    // The retained snapshot stays for the 7-day expired-run cleanup (S5).
     expect(removeSnapshot).not.toHaveBeenCalled();
     // The finalResult is persisted so later calls return it directly.
     const stored = store.runs.get(RUN_ID);
@@ -4339,6 +4340,44 @@ describe("cross-review PR snapshot protocol", () => {
     expect(removeSnapshot).not.toHaveBeenCalled();
     await tools.cross_review_cancel.execute({ runID: RUN_ID }, context());
     expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+  });
+
+  it("reclaims expired runs after finalize and cancel without dropping a live snapshot", async () => {
+    const { client, messages } = mockClient();
+    const classify = vi.fn().mockResolvedValue({ kind: "pr", forge: "github" });
+    const store = new MemoryRunStore();
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const { tools } = prProtocol(
+      client,
+      store,
+      classify,
+      okAdapter(),
+      removeSnapshot,
+    );
+    await tools.cross_review_start.execute(
+      {
+        target: "https://github.com/org/repo/pull/69",
+        reviewModels: ["a/one"],
+        agents: 1,
+      },
+      context(),
+    );
+    messages.set("child-1", completed("done"));
+    store.cleanupExpiredRuns.mockClear();
+
+    const finalized = output(
+      await tools.cross_review_finalize.execute({ runID: RUN_ID }, context()),
+    );
+
+    expect(finalized.phase).toBe("completed");
+    expect(finalized.snapshot.worktree).toBe(WORKTREE);
+    expect(removeSnapshot).not.toHaveBeenCalled();
+    expect(store.cleanupExpiredRuns).toHaveBeenCalledTimes(1);
+    store.cleanupExpiredRuns.mockClear();
+
+    await tools.cross_review_cancel.execute({ runID: RUN_ID }, context());
+    expect(removeSnapshot).toHaveBeenCalledWith(WORKTREE);
+    expect(store.cleanupExpiredRuns).toHaveBeenCalledTimes(1);
   });
 
   it("retains the snapshot when quorum is not met", async () => {

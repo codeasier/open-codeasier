@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- After parent-session judging, ask whether to clean up a retained snapshot
+  with `cross_review_cancel` or keep it. Do not ask at finalize, and do not
+  offer reuse.
+
 ### Fixed
 
 - List only the `.cross-review/` files that exist for a PR snapshot run in
@@ -17,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   pull-request target as `#<n>`, and when a non-PR start lacks shared
   evidence say the target was not classified as a PR and list the accepted
   PR forms.
+- Reclaim leftover cross-review snapshot worktrees on plugin load, finalize,
+  and cancel, not only when a new run is created. Abandoned non-terminal
+  runs whose `updatedAt` is older than 7 days are collected with the same
+  best-effort retention as terminal manifests.
 
 ## [0.3.1] - 2026-09-07
 
