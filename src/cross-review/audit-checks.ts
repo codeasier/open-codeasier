@@ -1,4 +1,5 @@
-import { READ_ONLY_TOOLS, REVIEWER_AGENT } from "./tool.js";
+import { resolve } from "node:path";
+import { PRIMARY_TOOL_IDS, READ_ONLY_TOOLS, REVIEWER_AGENT } from "./tool.js";
 import type {
   CrossReviewRun,
   GathererRun,
@@ -12,7 +13,21 @@ import type {
   CheckResult,
   ProtocolCall,
 } from "./audit-types.js";
-import { TERMINAL_AUDIT_PHASES } from "./audit-types.js";
+import { boundText, TERMINAL_AUDIT_PHASES } from "./audit-types.js";
+
+const PRIMARY_GATED = new Set<string>(PRIMARY_TOOL_IDS);
+
+/**
+ * Deny keys that guard file and process access. They have been in
+ * `READ_ONLY_TOOLS` since the first release, so a prompt that lacks one was
+ * dispatched without the deny map. The remaining keys are orchestration tools
+ * that `assertPrimarySession` already rejects for child sessions; they joined
+ * the map later, so their absence from an older prompt is reported but not
+ * failed.
+ */
+export const WRITE_DENY_TOOLS = Object.keys(READ_ONLY_TOOLS).filter(
+  (name) => !PRIMARY_GATED.has(name),
+);
 
 export function persistedContext(
   run: Pick<CrossReviewRun, "context">,
@@ -119,7 +134,48 @@ type EvidenceRun = Pick<
   | "runID"
   | "snapshot"
   | "adapterGatherer"
+  | "reviewers"
 >;
+
+/**
+ * A PR adapter that failed persists a `failed` run with no reviewers so the
+ * retained snapshot stays discoverable. Nothing was reviewed, so evidence
+ * checks have nothing to grade; `adapter.gather` reports the failure itself.
+ */
+function adapterFailedBeforeReview(run: EvidenceRun): boolean {
+  return run.adapterGatherer?.status === "failed" && run.reviewers.length === 0;
+}
+
+export function checkAdapterGather(
+  run: Pick<CrossReviewRun, "adapterGatherer" | "runID">,
+): AuditCheck {
+  const extra = { runID: run.runID };
+  const adapter = run.adapterGatherer;
+  if (adapter === undefined)
+    return annotated(
+      "adapter.gather",
+      "pass",
+      "Run did not use a PR snapshot adapter",
+      extra,
+    );
+  if (adapter.status === "succeeded")
+    return annotated(
+      "adapter.gather",
+      "pass",
+      `Adapter gatherer (${adapter.forge}) materialized the PR snapshot`,
+      extra,
+    );
+  return annotated(
+    "adapter.gather",
+    "fail",
+    boundText(
+      `Adapter gatherer (${adapter.forge}) failed before any reviewer was dispatched${
+        adapter.error === undefined ? "" : `: ${adapter.error}`
+      }`,
+    ),
+    extra,
+  );
+}
 
 function sharedEvidence(run: EvidenceRun): string | undefined {
   if (persistedContext(run) !== undefined)
@@ -148,6 +204,13 @@ export function checkEvidenceContract(run: EvidenceRun): AuditCheck {
   const extra = { runID: run.runID };
   if (evidence !== undefined)
     return annotated("run.evidence_contract", "pass", evidence, extra);
+  if (adapterFailedBeforeReview(run))
+    return annotated(
+      "run.evidence_contract",
+      "insufficient-evidence",
+      "Adapter gather failed before any reviewer was dispatched; see adapter.gather",
+      extra,
+    );
   if (run.judgeModel !== undefined && run.gatherer !== undefined)
     return annotated(
       "run.evidence_contract",
@@ -346,17 +409,38 @@ export function checkToolsDeny(input: {
       pendingPromptDetail(input),
       extra,
     );
-  if (found.message.tools === undefined)
+  const tools = found.message.tools;
+  if (tools === undefined)
     return annotated(
       "role.prompt.tools_deny",
       "fail",
       "Linked user message has no tools deny map",
       extra,
     );
-  const missing = Object.keys(READ_ONLY_TOOLS).filter(
-    (name) => found.message.tools?.[name] !== false,
+  const enabled = Object.keys(READ_ONLY_TOOLS).filter(
+    (name) => tools[name] !== undefined && tools[name] !== false,
   );
-  if (missing.length === 0)
+  if (enabled.length > 0)
+    return annotated(
+      "role.prompt.tools_deny",
+      "fail",
+      `Linked user message enables read-only-denied tools: ${enabled.join(", ")}`,
+      extra,
+    );
+  const missingWrite = WRITE_DENY_TOOLS.filter(
+    (name) => tools[name] === undefined,
+  );
+  if (missingWrite.length > 0)
+    return annotated(
+      "role.prompt.tools_deny",
+      "fail",
+      `Linked user message does not deny: ${missingWrite.join(", ")}`,
+      extra,
+    );
+  const absentGated = Object.keys(READ_ONLY_TOOLS).filter(
+    (name) => PRIMARY_GATED.has(name) && tools[name] === undefined,
+  );
+  if (absentGated.length === 0)
     return annotated(
       "role.prompt.tools_deny",
       "pass",
@@ -365,8 +449,58 @@ export function checkToolsDeny(input: {
     );
   return annotated(
     "role.prompt.tools_deny",
+    "pass",
+    `Write tools are denied; primary-session-gated keys absent from this prompt's deny map (added to READ_ONLY_TOOLS later): ${absentGated.join(", ")}`,
+    extra,
+  );
+}
+
+/**
+ * `snapshotWorktree` and `evidence.directory` should already be canonical
+ * (see `canonicalDirectory` in audit.ts); `resolve` only normalizes separators
+ * and trailing slashes for callers that pass raw manifest values.
+ */
+export function checkRoleSessionDirectory(input: {
+  runID: string;
+  role: string;
+  snapshotWorktree?: string;
+  evidence?: AuditSessionEvidence;
+}): AuditCheck {
+  const extra = { runID: input.runID, role: input.role };
+  if (input.snapshotWorktree === undefined)
+    return annotated(
+      "role.session.directory",
+      "pass",
+      "Run has no snapshot worktree, so no directory binding applies",
+      extra,
+    );
+  if (input.evidence === undefined)
+    return annotated(
+      "role.session.directory",
+      "insufficient-evidence",
+      "Role session was not readable",
+      extra,
+    );
+  if (input.evidence.directory === undefined)
+    return annotated(
+      "role.session.directory",
+      "insufficient-evidence",
+      "SDK did not report the role session directory",
+      extra,
+    );
+  const bound = resolve(input.evidence.directory);
+  const expected = resolve(input.snapshotWorktree);
+  if (bound === expected)
+    return annotated(
+      "role.session.directory",
+      "pass",
+      "Role session is bound to the snapshot worktree",
+      extra,
+    );
+  return annotated(
+    "role.session.directory",
     "fail",
-    `Linked user message does not deny: ${missing.join(", ")}`,
+    `Role session is bound to ${bound} instead of the snapshot worktree ${expected}`,
     extra,
   );
 }
@@ -641,7 +775,11 @@ export function evaluateRoleChecks(input: {
   status: string;
   startedAt?: number;
   evidence?: AuditSessionEvidence;
+  /** Canonical snapshot worktree; defaults to the manifest value. */
+  snapshotWorktree?: string;
 }): AuditCheck[] {
+  const snapshotWorktree =
+    input.snapshotWorktree ?? input.run.snapshot?.worktree;
   const inProgress = !isTerminalPhase(input.run.phase);
   const neverDispatched = roleNeverPrompted(
     {
@@ -700,15 +838,28 @@ export function evaluateRoleChecks(input: {
       role: input.role,
       ...evidence,
     }),
+    checkRoleSessionDirectory({
+      runID: input.run.runID,
+      role: input.role,
+      ...(snapshotWorktree === undefined ? {} : { snapshotWorktree }),
+      ...evidence,
+    }),
   ];
 }
 
 export function evaluateRunChecks(input: {
   run: CrossReviewRun;
   sessions: Map<string, AuditSessionEvidence | undefined>;
+  /** Canonical snapshot worktree; defaults to the manifest value. */
+  snapshotWorktree?: string;
 }): AuditCheck[] {
+  const worktree =
+    input.snapshotWorktree === undefined
+      ? {}
+      : { snapshotWorktree: input.snapshotWorktree };
   const checks = [
     checkEvidenceContract(input.run),
+    checkAdapterGather(input.run),
     checkSilentModelReplace({ run: input.run, sessions: input.sessions }),
     checkGathererJudgeSession(input.run),
     checkGathererSkippedWhenContext(input.run),
@@ -728,6 +879,7 @@ export function evaluateRunChecks(input: {
         ...(gathererEvidence === undefined
           ? {}
           : { evidence: gathererEvidence }),
+        ...worktree,
       }),
     );
   }
@@ -744,6 +896,7 @@ export function evaluateRunChecks(input: {
           ? {}
           : { startedAt: input.run.judge.startedAt }),
         ...(judgeEvidence === undefined ? {} : { evidence: judgeEvidence }),
+        ...worktree,
       }),
     );
   }
@@ -762,6 +915,7 @@ export function evaluateRunChecks(input: {
         ...(reviewerEvidence === undefined
           ? {}
           : { evidence: reviewerEvidence }),
+        ...worktree,
       }),
     );
   }

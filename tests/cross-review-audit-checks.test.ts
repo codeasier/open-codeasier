@@ -1,19 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
+  checkAdapterGather,
   checkEvidenceContract,
   checkGathererJudgeSession,
   checkGathererSkippedWhenContext,
   checkLegacyToolAbsent,
   checkPromptMessageID,
   checkPromptModel,
+  checkRoleSessionDirectory,
   checkSilentModelReplace,
   checkToolsDeny,
   evaluateRoleChecks,
+  evaluateRunChecks,
   persistedContext,
   roleNeverDispatched,
   roleNeverPrompted,
+  WRITE_DENY_TOOLS,
 } from "../src/cross-review/audit-checks.js";
 import {
+  PRIMARY_TOOL_IDS,
   prSnapshotJudgeBrief,
   prSnapshotReviewBrief,
   READ_ONLY_TOOLS,
@@ -193,6 +198,70 @@ describe("deterministic audit checks", () => {
     }
   });
 
+  it("does not grade the evidence contract when the adapter failed before any reviewer", () => {
+    const failed = run({
+      phase: "failed",
+      reviewers: [],
+      snapshot: {
+        worktree: "/snapshot",
+        snapshotDir: "/snapshot/.cross-review",
+        forge: "github",
+        source: "adapter",
+      },
+      adapterGatherer: {
+        kind: "adapter",
+        forge: "github",
+        status: "failed",
+        error: "gh pr view failed",
+      },
+    });
+    expect(checkEvidenceContract(failed)).toMatchObject({
+      result: "insufficient-evidence",
+      detail: expect.stringContaining("adapter.gather"),
+    });
+    expect(checkAdapterGather(failed)).toMatchObject({
+      id: "adapter.gather",
+      result: "fail",
+      detail: expect.stringContaining("gh pr view failed"),
+    });
+    // Reviewers dispatched despite a failed adapter is a real contract break.
+    expect(
+      checkEvidenceContract({ ...failed, reviewers: run().reviewers }).result,
+    ).toBe("fail");
+    expect(checkAdapterGather(run())).toMatchObject({ result: "pass" });
+    expect(
+      checkAdapterGather(
+        run({
+          adapterGatherer: {
+            kind: "adapter",
+            forge: "gitcode",
+            status: "succeeded",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      result: "pass",
+      detail: expect.stringContaining("gitcode"),
+    });
+    const longError = "e".repeat(2_000);
+    const bounded = checkAdapterGather(
+      run({
+        adapterGatherer: {
+          kind: "adapter",
+          forge: "github",
+          status: "failed",
+          error: longError,
+        },
+      }),
+    );
+    expect(bounded.detail.length).toBeLessThan(longError.length);
+    expect(
+      evaluateRunChecks({ run: failed, sessions: new Map() }).map(
+        (check) => check.id,
+      ),
+    ).toContain("adapter.gather");
+  });
+
   it("supports legacy context and judge gatherer evidence", () => {
     expect(checkEvidenceContract(run()).result).toBe("fail");
     expect(checkEvidenceContract(run({ context: "diff" })).result).toBe("pass");
@@ -339,8 +408,11 @@ describe("deterministic audit checks", () => {
           ],
         }),
         inProgress: false,
-      }).result,
-    ).toBe("fail");
+      }),
+    ).toMatchObject({
+      result: "fail",
+      detail: expect.stringContaining("enables read-only-denied tools: bash"),
+    });
     expect(
       checkPromptModel({
         runID: RUN_ID,
@@ -357,6 +429,128 @@ describe("deterministic audit checks", () => {
         inProgress: false,
       }).result,
     ).toBe("insufficient-evidence");
+  });
+
+  it("grades tools-deny by write tools and reports later-added gated keys", () => {
+    const deny = (tools: Record<string, boolean>) =>
+      checkToolsDeny({
+        runID: RUN_ID,
+        role: "reviewer:1",
+        messageID: "msg-1",
+        evidence: evidence({
+          messages: [
+            {
+              id: "msg-1",
+              role: "user",
+              tools,
+              parts: [{ type: "text", text: "x" }],
+            },
+          ],
+        }),
+        inProgress: false,
+      });
+    expect(WRITE_DENY_TOOLS.sort()).toEqual(
+      ["bash", "edit", "patch", "task", "write"].sort(),
+    );
+    for (const name of WRITE_DENY_TOOLS)
+      expect(PRIMARY_TOOL_IDS).not.toContain(name);
+
+    // A prompt dispatched before cross_review_config / cross_review_audit
+    // joined READ_ONLY_TOOLS denied everything the plugin knew about.
+    const older: Record<string, boolean> = { ...READ_ONLY_TOOLS };
+    delete older.cross_review_config;
+    delete older.cross_review_audit;
+    expect(deny(older)).toMatchObject({
+      result: "pass",
+      detail: expect.stringContaining(
+        "absent from this prompt's deny map (added to READ_ONLY_TOOLS later): cross_review_config, cross_review_audit",
+      ),
+    });
+
+    // An absent write tool means the deny map was not applied.
+    const missingWrite: Record<string, boolean> = { ...READ_ONLY_TOOLS };
+    delete missingWrite.write;
+    expect(deny(missingWrite)).toMatchObject({
+      result: "fail",
+      detail: expect.stringContaining("does not deny: write"),
+    });
+
+    // A gated key that is present but enabled is still a miss.
+    expect(
+      deny({ ...READ_ONLY_TOOLS, cross_review_start: true }),
+    ).toMatchObject({
+      result: "fail",
+      detail: expect.stringContaining("cross_review_start"),
+    });
+    expect(deny({ ...READ_ONLY_TOOLS })).toMatchObject({
+      result: "pass",
+      detail: "READ_ONLY_TOOLS are all denied on the linked user message",
+    });
+  });
+
+  it("verifies snapshot runs bind role sessions to the worktree", () => {
+    const snapshotWorktree = "/state/run/worktree";
+    const snapshot = {
+      worktree: snapshotWorktree,
+      snapshotDir: `${snapshotWorktree}/.cross-review`,
+      source: "parent-pack" as const,
+    };
+    expect(
+      checkRoleSessionDirectory({
+        runID: RUN_ID,
+        role: "reviewer:1",
+        evidence: evidence({ directory: "/repo" }),
+      }),
+    ).toMatchObject({ id: "role.session.directory", result: "pass" });
+    expect(
+      checkRoleSessionDirectory({
+        runID: RUN_ID,
+        role: "reviewer:1",
+        snapshotWorktree,
+        evidence: evidence({ directory: "/state/run/worktree/" }),
+      }).result,
+    ).toBe("pass");
+    expect(
+      checkRoleSessionDirectory({
+        runID: RUN_ID,
+        role: "reviewer:1",
+        snapshotWorktree,
+        evidence: evidence({ directory: "/repo" }),
+      }),
+    ).toMatchObject({
+      result: "fail",
+      detail: expect.stringContaining(
+        "/repo instead of the snapshot worktree /state/run/worktree",
+      ),
+    });
+    expect(
+      checkRoleSessionDirectory({
+        runID: RUN_ID,
+        role: "reviewer:1",
+        snapshotWorktree,
+        evidence: evidence(),
+      }).result,
+    ).toBe("insufficient-evidence");
+    expect(
+      checkRoleSessionDirectory({
+        runID: RUN_ID,
+        role: "reviewer:1",
+        snapshotWorktree,
+      }).result,
+    ).toBe("insufficient-evidence");
+    // Defaults to the manifest worktree; an explicit canonical value wins.
+    const roleChecks = (worktree?: string) =>
+      evaluateRoleChecks({
+        run: run({ snapshot }),
+        role: "reviewer:1",
+        messageID: "msg-1",
+        model: "a/one",
+        status: "succeeded",
+        evidence: evidence({ directory: "/real/worktree" }),
+        ...(worktree === undefined ? {} : { snapshotWorktree: worktree }),
+      }).find((check) => check.id === "role.session.directory");
+    expect(roleChecks()?.result).toBe("fail");
+    expect(roleChecks("/real/worktree")?.result).toBe("pass");
   });
 
   it("does not hard-fail prompt checks for roles that were never dispatched", () => {
@@ -660,6 +854,7 @@ describe("audit session projection", () => {
         cross_review_audit: false,
       }),
     });
+    expect(projected.directory).toBe("/repo");
   });
 
   it("keeps shared gatherer/judge windows in original session order", () => {

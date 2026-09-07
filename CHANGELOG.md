@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Catch `/cross-review-audit` up with the current cross-review protocol.
+  The payload now carries `cross_review_config` previews, start arguments
+  (`target`, `hasEvidenceDir`, `reviewModelCount`, `judgeModel`), status
+  results (`readyToFinalize`, `actionRequired` roles, stray-`timeoutAction`
+  `warning`), rejected-call errors, `adapterGatherer`, `snapshot`,
+  `finalStatus`, and per-role timing, timeout, retry, and bounded `error`
+  fields, so timeout decisions, adapter failures, and evidence provenance can
+  be graded instead of inferred.
+- Stop grading a failed PR adapter as a broken evidence contract: a new
+  `adapter.gather` check reports the adapter error and
+  `run.evidence_contract` is `insufficient-evidence` when no reviewer was
+  dispatched.
+- Stop failing `role.prompt.tools_deny` for prompts dispatched before
+  `cross_review_config` or `cross_review_audit` joined `READ_ONLY_TOOLS`. The
+  check fails only when a write tool is absent or any deny key is enabled,
+  and names absent primary-session-gated keys in its detail.
+- Add `role.session.directory`, which verifies that snapshot-run role
+  sessions are bound to the snapshot worktree, and read role sessions
+  through the run and caller directories when the worktree no longer
+  answers.
+
 ## [0.3.2] - 2026-09-07
 
 ### Changed

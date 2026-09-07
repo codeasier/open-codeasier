@@ -7,6 +7,7 @@ import {
 import type { SessionBundle } from "../session-review/fetch.js";
 import type { ReviewLimits, ReviewMessage } from "../session-review/schema.js";
 import {
+  boundText,
   PROTOCOL_TOOL_NAMES,
   SHARED_CONTEXT_MARKER,
   SNAPSHOT_EVIDENCE_MARKER,
@@ -18,11 +19,15 @@ import {
 
 const PROTOCOL_TOOLS = new Set<string>(PROTOCOL_TOOL_NAMES);
 export const MAX_PROTOCOL_CALLS = 80;
+const MAX_TARGET_LENGTH = 120;
 const SELECTED_ARGS = [
   "timeoutAction",
   "detail",
   "includeOutputs",
   "waitMs",
+  "judgeModel",
+  "agents",
+  "maxConcurrency",
 ] as const;
 
 function userModel(
@@ -72,6 +77,14 @@ function compactArgs(input: unknown): {
         record.context.length === 0 ? "omitted" : record.context.length;
     else omitted.push("context");
   }
+  if (typeof record.target === "string")
+    args.target = boundText(record.target, MAX_TARGET_LENGTH);
+  if ("evidenceDir" in record)
+    args.hasEvidenceDir =
+      typeof record.evidenceDir === "string" &&
+      record.evidenceDir.trim().length > 0;
+  if (Array.isArray(record.reviewModels))
+    args.reviewModelCount = record.reviewModels.length;
   if (typeof record.runID === "string") args.runID = record.runID;
   for (const key of SELECTED_ARGS) {
     if (!(key in record)) continue;
@@ -80,6 +93,23 @@ function compactArgs(input: unknown): {
     else args[key] = value;
   }
   return { args, omitted };
+}
+
+/** Roles named by a status `actionRequired` block, as `reviewer:N`, `gatherer`, or `judge`. */
+function actionRequiredRoles(value: unknown): string[] | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const sessions = (value as { sessions?: unknown }).sessions;
+  if (!Array.isArray(sessions)) return [];
+  return sessions.flatMap((session) => {
+    if (typeof session !== "object" || session === null) return [];
+    const entry = session as { role?: unknown; reviewer?: unknown };
+    if (typeof entry.role !== "string") return [];
+    return [
+      entry.role === "reviewer" && typeof entry.reviewer === "number"
+        ? `reviewer:${entry.reviewer}`
+        : entry.role,
+    ];
+  });
 }
 
 function compactResult(output: unknown): Record<string, unknown> {
@@ -93,10 +123,18 @@ function compactResult(output: unknown): Record<string, unknown> {
   }
   if (typeof parsed !== "object" || parsed === null) return {};
   const record = parsed as Record<string, unknown>;
+  const actionRequired = actionRequiredRoles(record.actionRequired);
   return {
     ...(typeof record.phase === "string" ? { phase: record.phase } : {}),
     ...(typeof record.status === "string" ? { status: record.status } : {}),
     ...(typeof record.runID === "string" ? { runID: record.runID } : {}),
+    ...(typeof record.readyToFinalize === "boolean"
+      ? { readyToFinalize: record.readyToFinalize }
+      : {}),
+    ...(actionRequired === undefined ? {} : { actionRequired }),
+    ...(typeof record.warning === "string"
+      ? { warning: boundText(record.warning) }
+      : {}),
   };
 }
 
@@ -104,6 +142,11 @@ function toolOutput(part: Part): unknown {
   if (part.type !== "tool") return undefined;
   if (part.state.status === "completed") return part.state.output;
   return undefined;
+}
+
+function toolError(part: Part): string | undefined {
+  if (part.type !== "tool" || part.state.status !== "error") return undefined;
+  return boundText(part.state.error);
 }
 
 function toolInput(part: Part): unknown {
@@ -120,6 +163,7 @@ export function extractProtocolCalls(
       if (part.type !== "tool" || !PROTOCOL_TOOLS.has(part.tool)) continue;
       const extracted = compactArgs(toolInput(part));
       const createdAt = message.info.time?.created;
+      const error = toolError(part);
       calls.push({
         name: part.tool,
         status: part.state.status,
@@ -127,6 +171,7 @@ export function extractProtocolCalls(
         args: extracted.args,
         omitted: extracted.omitted,
         result: compactResult(toolOutput(part)),
+        ...(error === undefined ? {} : { error }),
       });
     }
   }
@@ -296,6 +341,9 @@ export function projectAuditSession(input: {
     ...(input.bundle.session.title === undefined
       ? {}
       : { title: input.bundle.session.title }),
+    ...(typeof input.bundle.session.directory === "string"
+      ? { directory: input.bundle.session.directory }
+      : {}),
     messages,
     totalMessages: normalized.totalMessages,
     includedMessages,
