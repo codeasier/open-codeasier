@@ -1,9 +1,21 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "../src/plugin.js";
 import { FileCrossReviewRunStore } from "../src/cross-review/run-store.js";
 
 describe("plugin module", () => {
+  let cleanup: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    cleanup = vi
+      .spyOn(FileCrossReviewRunStore.prototype, "cleanupExpiredRuns")
+      .mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    cleanup.mockRestore();
+  });
+
   it("exports the OpenCode server entry", () => {
     expect(plugin).toEqual(
       expect.objectContaining({
@@ -84,21 +96,14 @@ describe("plugin module", () => {
   });
 
   it("reclaims expired cross-review runs when the plugin loads", async () => {
-    const cleanup = vi
-      .spyOn(FileCrossReviewRunStore.prototype, "cleanupExpiredRuns")
-      .mockResolvedValue(undefined);
-    try {
-      await plugin.server({
-        client: {},
-        project: {},
-        directory: "/repo",
-        worktree: "/repo",
-        serverUrl: new URL("http://localhost"),
-      } as any);
-      expect(cleanup).toHaveBeenCalled();
-    } finally {
-      cleanup.mockRestore();
-    }
+    await plugin.server({
+      client: {},
+      project: {},
+      directory: "/repo",
+      worktree: "/repo",
+      serverUrl: new URL("http://localhost"),
+    } as any);
+    expect(cleanup).toHaveBeenCalled();
   });
 
   it("configures review tools as primary_tools in experimental config hook", async () => {

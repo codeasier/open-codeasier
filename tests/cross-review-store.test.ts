@@ -284,36 +284,100 @@ describe("cross-review run store", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("reclaims abandoned non-terminal runs after the same retention", async () => {
+  it.each(["reviewing", "gathering", "judging"] as const)(
+    "reclaims an abandoned %s run after the same retention",
+    async (phase) => {
+      const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+      const now = Date.now();
+      const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+      const store = new FileCrossReviewRunStore(
+        root,
+        () => now,
+        removeSnapshot,
+      );
+      const stale = now - EXPIRED_RUN_RETENTION_MS - 1;
+      const expiredID = "00000000-0000-4000-8000-00000000000a";
+      await writeFile(
+        join(root, `${expiredID}.json`),
+        JSON.stringify({
+          ...run(),
+          runID: expiredID,
+          createdAt: stale,
+          updatedAt: stale,
+          phase,
+          snapshot: {
+            worktree: join(root, expiredID, "worktree"),
+            snapshotDir: join(root, expiredID, "worktree", ".cross-review"),
+            forge: "github",
+          },
+        }),
+      );
+
+      await store.cleanupExpiredRuns();
+
+      expect(removeSnapshot).toHaveBeenCalledWith(
+        join(root, expiredID, "worktree"),
+      );
+      await expect(
+        readFile(join(root, `${expiredID}.json`), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
+  it("skips an expired run whose lock is held", async () => {
     const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
     const now = Date.now();
     const removeSnapshot = vi.fn().mockResolvedValue(undefined);
     const store = new FileCrossReviewRunStore(root, () => now, removeSnapshot);
     const stale = now - EXPIRED_RUN_RETENTION_MS - 1;
-    const reviewingID = "00000000-0000-4000-8000-00000000000a";
     await writeFile(
-      join(root, `${reviewingID}.json`),
+      join(root, `${RUN_ID}.json`),
       JSON.stringify({
         ...run(),
-        runID: reviewingID,
         createdAt: stale,
         updatedAt: stale,
         phase: "reviewing",
         snapshot: {
-          worktree: join(root, reviewingID, "worktree"),
-          snapshotDir: join(root, reviewingID, "worktree", ".cross-review"),
-          forge: "github",
+          worktree: join(root, RUN_ID, "worktree"),
+          snapshotDir: join(root, RUN_ID, "worktree", ".cross-review"),
+        },
+      }),
+    );
+    await mkdir(join(root, `${RUN_ID}.lock`));
+
+    await store.cleanupExpiredRuns();
+
+    expect(removeSnapshot).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(await readFile(join(root, `${RUN_ID}.json`), "utf8")).phase,
+    ).toBe("reviewing");
+  });
+
+  it("unlinks an expired manifest even when snapshot removal fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cross-review-store-"));
+    const now = Date.now();
+    const removeSnapshot = vi.fn().mockRejectedValue(new Error("busy"));
+    const store = new FileCrossReviewRunStore(root, () => now, removeSnapshot);
+    const stale = now - EXPIRED_RUN_RETENTION_MS - 1;
+    await writeFile(
+      join(root, `${RUN_ID}.json`),
+      JSON.stringify({
+        ...run(),
+        createdAt: stale,
+        updatedAt: stale,
+        phase: "failed",
+        snapshot: {
+          worktree: join(root, RUN_ID, "worktree"),
+          snapshotDir: join(root, RUN_ID, "worktree", ".cross-review"),
         },
       }),
     );
 
     await store.cleanupExpiredRuns();
 
-    expect(removeSnapshot).toHaveBeenCalledWith(
-      join(root, reviewingID, "worktree"),
-    );
+    expect(removeSnapshot).toHaveBeenCalledWith(join(root, RUN_ID, "worktree"));
     await expect(
-      readFile(join(root, `${reviewingID}.json`), "utf8"),
+      readFile(join(root, `${RUN_ID}.json`), "utf8"),
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 

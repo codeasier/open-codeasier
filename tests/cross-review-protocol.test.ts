@@ -4215,7 +4215,7 @@ describe("cross-review PR snapshot protocol", () => {
         status: "failed",
       },
     });
-    // The retained snapshot stays for the 7-day terminal cleanup (S5).
+    // The retained snapshot stays for the 7-day expired-run cleanup (S5).
     expect(removeSnapshot).not.toHaveBeenCalled();
     // The finalResult is persisted so later calls return it directly.
     const stored = store.runs.get(RUN_ID);

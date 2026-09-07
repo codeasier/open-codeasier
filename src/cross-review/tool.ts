@@ -882,9 +882,9 @@ export function createCrossReviewTool(
             ),
           }));
           if (!gather.ok) {
-            // Persist a terminal failed manifest so the 7-day cleanup can
-            // reclaim the worktree; the blocking tool has no protocol
-            // lifecycle to do it.
+            // Persist a terminal failed manifest so the 7-day expired-run
+            // cleanup can reclaim the worktree; the blocking tool has no
+            // protocol lifecycle to do it.
             if (gather.snapshotPath !== undefined)
               await persistFailedSnapshotRun(gather.snapshotPath, gather.error);
             // The retained snapshot stays for diagnosis (S5).
@@ -1305,14 +1305,14 @@ export function createCrossReviewTool(
           // Successful completion and cancellation remove the snapshot
           // worktree (R6); failures and quorum misses retain it for
           // diagnosis and persist a terminal failed manifest so the 7-day
-          // cleanup can reclaim it later.
+          // expired-run cleanup can reclaim it later.
           if (prSnapshot !== undefined) {
             if (completed || context.abort.aborted) {
               await removeSnapshot(prSnapshot.worktree).catch(() => undefined);
             } else {
               await persistFailedSnapshotRun(
                 prSnapshot.worktree,
-                "run failed before terminal cleanup",
+                "run failed before expired-run cleanup",
               );
             }
           }

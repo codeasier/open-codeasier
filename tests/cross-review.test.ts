@@ -1774,7 +1774,7 @@ describe("cross_review tool snapshot leak recovery", () => {
       ),
     ).rejects.toThrow("gh not authenticated");
 
-    // The failed manifest exists so the 7-day terminal cleanup can find it.
+    // The failed manifest exists so the 7-day expired-run cleanup can find it.
     const manifests = (await readdir(root)).filter((name) =>
       name.endsWith(".json"),
     );
