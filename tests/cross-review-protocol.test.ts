@@ -617,7 +617,7 @@ describe("asynchronous cross-review protocol", () => {
     const started = output(
       await tools.cross_review_start.execute(
         {
-          target: "PR #72",
+          target: "HEAD",
           context: "already gathered",
           reviewModels: [],
           agents: 0,
@@ -3114,7 +3114,15 @@ describe("parent-session protocol defenses", () => {
         { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
         context(),
       ),
-    ).rejects.toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    ).rejects.toThrow(
+      `${MISSING_PARENT_CONTEXT_ERROR}. Target "HEAD" was not recognized as a pull request`,
+    );
+    await expect(
+      tools.cross_review_start.execute(
+        { target: "pr-123", reviewModels: ["a/one"], agents: 1 },
+        context(),
+      ),
+    ).rejects.toThrow("accepted PR forms are a `/pull/<n>` URL");
     expect(client.session.create).not.toHaveBeenCalled();
   });
 

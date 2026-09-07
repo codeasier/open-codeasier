@@ -218,10 +218,14 @@ describe("prViewTarget", () => {
   it("reduces bare numbers and keeps URLs", () => {
     expect(prViewTarget("#69")).toBe("69");
     expect(prViewTarget("69")).toBe("69");
+    expect(prViewTarget("PR#69")).toBe("69");
+    expect(prViewTarget("pr #69")).toBe("69");
     expect(prViewTarget("https://github.com/org/repo/pull/69")).toBe(
       "https://github.com/org/repo/pull/69",
     );
     expect(prViewTarget("feature-branch")).toBe("feature-branch");
+    expect(prViewTarget("pr-123")).toBe("pr-123");
+    expect(prViewTarget("PR69")).toBe("PR69");
   });
 });
 
