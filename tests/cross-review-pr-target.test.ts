@@ -132,6 +132,18 @@ describe("classifyPrTarget", () => {
       kind: "pr",
       forge: "github",
     });
+    expect(classifyPrTarget("PR#116", GITHUB_REMOTES)).toEqual({
+      kind: "pr",
+      forge: "github",
+    });
+    expect(classifyPrTarget("pr #116", GITHUB_REMOTES)).toEqual({
+      kind: "pr",
+      forge: "github",
+    });
+    expect(classifyPrTarget("PR 116", GITCODE_REMOTES)).toEqual({
+      kind: "pr",
+      forge: "gitcode",
+    });
     expect(classifyPrTarget("42", GITCODE_REMOTES)).toEqual({
       kind: "pr",
       forge: "gitcode",
@@ -159,6 +171,10 @@ describe("classifyPrTarget", () => {
       kind: "error",
       message: expect.stringContaining("Cannot classify"),
     });
+    expect(classifyPrTarget("PR#116", [])).toEqual({
+      kind: "error",
+      message: expect.stringContaining("no git remotes were found"),
+    });
   });
 
   it("fails closed for bare numbers when a remote host is unresolvable", () => {
@@ -182,6 +198,15 @@ describe("classifyPrTarget", () => {
     expect(classifyPrTarget("0", GITHUB_REMOTES)).toEqual({ kind: "legacy" });
     expect(classifyPrTarget("#0", GITHUB_REMOTES)).toEqual({ kind: "legacy" });
     expect(classifyPrTarget("pr-123", GITHUB_REMOTES)).toEqual({
+      kind: "legacy",
+    });
+    expect(classifyPrTarget("PR116", GITHUB_REMOTES)).toEqual({
+      kind: "legacy",
+    });
+    expect(classifyPrTarget("pull#116", GITHUB_REMOTES)).toEqual({
+      kind: "legacy",
+    });
+    expect(classifyPrTarget("MR#116", GITHUB_REMOTES)).toEqual({
       kind: "legacy",
     });
   });
@@ -251,6 +276,14 @@ describe("classifyPrTargetInRepository", () => {
       kind: "pr",
       forge: "github",
     });
+    expect(await classifyPrTargetInRepository("PR#42", repo)).toEqual({
+      kind: "pr",
+      forge: "github",
+    });
+    expect(await classifyPrTargetInRepository("pr #42", repo)).toEqual({
+      kind: "pr",
+      forge: "github",
+    });
   });
 
   it("classifies bare numbers against real repository remotes (GitCode)", async () => {
@@ -287,6 +320,12 @@ describe("classifyPrTargetInRepository", () => {
       ),
     ).toEqual({ kind: "pr", forge: "github" });
     expect(await classifyPrTargetInRepository("main...HEAD", repo)).toEqual({
+      kind: "legacy",
+    });
+    expect(await classifyPrTargetInRepository("PR116", repo)).toEqual({
+      kind: "legacy",
+    });
+    expect(await classifyPrTargetInRepository("pr-123", repo)).toEqual({
       kind: "legacy",
     });
   });

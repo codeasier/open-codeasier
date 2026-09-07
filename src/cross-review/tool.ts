@@ -160,6 +160,17 @@ export function configWarning(
 export const MISSING_PARENT_CONTEXT_ERROR =
   "Missing shared evidence for non-PR target without judgeModel: pass parent-gathered `context` or `evidenceDir`, or set `judgeModel`";
 
+export const ACCEPTED_PR_TARGET_FORMS =
+  "a `/pull/<n>` URL, `#<n>`, `<n>`, `PR#<n>`, or `PR <n>`";
+
+export function missingSharedEvidenceMessage(target?: string): string {
+  const received =
+    target === undefined || target.trim() === ""
+      ? "The target was not recognized as a pull request"
+      : `Target "${target.trim()}" was not recognized as a pull request`;
+  return `${MISSING_PARENT_CONTEXT_ERROR}. ${received}; accepted PR forms are ${ACCEPTED_PR_TARGET_FORMS}`;
+}
+
 export const OMIT_ARRAY_OVERRIDE_DESCRIPTION =
   "Omit when using defaults; do not pass an empty array";
 export const OMIT_ZERO_OVERRIDE_DESCRIPTION =
@@ -197,12 +208,13 @@ export function requireSharedEvidence(input: {
   context?: string | undefined;
   isPrSnapshot: boolean;
   hasEvidencePack?: boolean;
+  target?: string;
 }): void {
   if (input.isPrSnapshot) return;
   if (input.hasEvidencePack === true) return;
   if (input.judgeModel !== undefined) return;
   if (normalizeProvidedContext(input.context) !== undefined) return;
-  throw new Error(MISSING_PARENT_CONTEXT_ERROR);
+  throw new Error(missingSharedEvidenceMessage(input.target));
 }
 
 /** Evidence retrieval limits for read-only reviewer, gatherer, and judge briefs. */
@@ -797,6 +809,7 @@ export function createCrossReviewTool(
           judgeModel,
           context: providedContext,
           isPrSnapshot: classification.kind === "pr",
+          target: args.target,
         });
         let prSnapshot:
           | {

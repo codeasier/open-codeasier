@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  ACCEPTED_PR_TARGET_FORMS,
   createCrossReviewTool,
   CHARS_PER_TOKEN_ESTIMATE,
   embedLimitForContextWindow,
@@ -242,6 +243,18 @@ describe("missing parent-context requirement", () => {
         hasEvidencePack: false,
       }),
     ).toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(() =>
+      requireSharedEvidence({
+        isPrSnapshot: false,
+        target: "HEAD",
+      }),
+    ).toThrow(`Target "HEAD" was not recognized as a pull request`);
+    expect(() =>
+      requireSharedEvidence({
+        isPrSnapshot: false,
+        target: "pr-123",
+      }),
+    ).toThrow(ACCEPTED_PR_TARGET_FORMS);
   });
 
   it("treats blank context as omitted", () => {

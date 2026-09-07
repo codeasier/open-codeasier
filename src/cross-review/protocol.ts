@@ -1981,6 +1981,7 @@ export function createCrossReviewProtocolTools(
           context: providedContext,
           isPrSnapshot: classification.kind === "pr",
           hasEvidencePack: pack !== undefined,
+          target: args.target,
         });
 
         let adapterGatherer: AdapterGathererRun | undefined;

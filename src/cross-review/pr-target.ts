@@ -22,7 +22,12 @@ const FORGE_HOSTS: Record<string, PrForge> = {
 const SCP_LIKE_REMOTE = /^[^@/\s]+@([^:\s]+):/;
 // absolute URLs: `scheme://[user@]host[:port]/...`
 const ABSOLUTE_REMOTE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/(?:[^@/\s]+@)?([^:/\s]+)/;
-const BARE_PR_NUMBER = /^#?([1-9][0-9]*)$/;
+// `#123`, `123`, `PR#123`, `pr #123`, `PR 123`. Not `PR123` or `pr-123`.
+const BARE_PR_NUMBER = /^(?:pr(?:\s*#|\s+)|#)?([1-9][0-9]*)$/i;
+
+export function barePrNumber(target: string): string | undefined {
+  return BARE_PR_NUMBER.exec(target.trim())?.[1];
+}
 
 export function hostFromRemoteUrl(url: string): string | undefined {
   const trimmed = url.trim();
@@ -105,8 +110,8 @@ export function classifyPrTarget(
   // Git ranges never use the snapshot path, regardless of remotes.
   if (trimmed.includes("..")) return { kind: "legacy" };
 
-  const bare = BARE_PR_NUMBER.exec(trimmed);
-  if (bare !== null) {
+  const bare = barePrNumber(trimmed);
+  if (bare !== undefined) {
     const forge = forgeFromRemoteUrls(remoteUrls);
     if (forge === undefined) {
       const hosts = Array.from(
@@ -154,7 +159,7 @@ export async function classifyPrTargetInRepository(
 ): Promise<PrTargetClassification> {
   // Only a bare PR number depends on the repository remotes; every other
   // target (URLs, git ranges, refs) classifies without inspecting them.
-  if (/^#?[0-9]+$/.test(target.trim()))
+  if (barePrNumber(target) !== undefined)
     return classifyPrTarget(target, await remoteUrlsInRepository(directory));
   return classifyPrTarget(target, []);
 }

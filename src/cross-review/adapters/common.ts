@@ -3,6 +3,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { barePrNumber } from "../pr-target.js";
+
 const execFileAsync = promisify(execFile);
 
 export const PR_VIEW_JSON_FIELDS =
@@ -138,14 +140,13 @@ export function parsePrViewJson(raw: string, source: string): PrViewFields {
 
 /**
  * Normalize the target for `pr view`: URLs pass through untouched (the CLI
- * resolves the repository itself); bare `#123` / `123` targets reduce to the
- * plain number resolved against `--repo`.
+ * resolves the repository itself); bare `#123` / `123` / `PR#123` /
+ * `PR 123` targets reduce to the plain number resolved against `--repo`.
  */
 export function prViewTarget(target: string): string {
   const trimmed = target.trim();
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed;
-  const bare = /^#?(\d+)$/.exec(trimmed);
-  return bare?.[1] ?? trimmed;
+  return barePrNumber(trimmed) ?? trimmed;
 }
 
 function errorMessage(error: unknown) {
