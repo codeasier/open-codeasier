@@ -220,6 +220,7 @@ describe("prViewTarget", () => {
     expect(prViewTarget("69")).toBe("69");
     expect(prViewTarget("PR#69")).toBe("69");
     expect(prViewTarget("pr #69")).toBe("69");
+    expect(prViewTarget("PR 69")).toBe("69");
     expect(prViewTarget("https://github.com/org/repo/pull/69")).toBe(
       "https://github.com/org/repo/pull/69",
     );

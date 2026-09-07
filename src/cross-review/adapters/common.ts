@@ -140,8 +140,8 @@ export function parsePrViewJson(raw: string, source: string): PrViewFields {
 
 /**
  * Normalize the target for `pr view`: URLs pass through untouched (the CLI
- * resolves the repository itself); bare `#123` / `123` / `PR#123` targets
- * reduce to the plain number resolved against `--repo`.
+ * resolves the repository itself); bare `#123` / `123` / `PR#123` /
+ * `PR 123` targets reduce to the plain number resolved against `--repo`.
  */
 export function prViewTarget(target: string): string {
   const trimmed = target.trim();

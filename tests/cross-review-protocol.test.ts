@@ -9,7 +9,10 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
+import { classifyPrTargetInRepository } from "../src/cross-review/pr-target.js";
 import {
   createCrossReviewProtocolTools as createProtocolTools,
   PR_MATERIALS_COLLISION_ERROR,
@@ -4007,6 +4010,53 @@ describe("cross-review PR snapshot protocol", () => {
     expect(started.phase).toBe("reviewing");
     expect(started).not.toHaveProperty("warning");
     expect(started.gatherer).toMatchObject({ kind: "adapter" });
+  });
+
+  it("classifies PR#<n> against repository remotes and runs the snapshot adapter", async () => {
+    const execFileAsync = promisify(execFile);
+    const repo = await mkdtemp(join(tmpdir(), "protocol-pr-alias-"));
+    try {
+      await execFileAsync("git", ["init", "-q", repo], { encoding: "utf8" });
+      await execFileAsync(
+        "git",
+        [
+          "-C",
+          repo,
+          "remote",
+          "add",
+          "origin",
+          "https://github.com/org/repo.git",
+        ],
+        { encoding: "utf8" },
+      );
+      const { client } = mockClient();
+      const { tools, runPrAdapter } = prProtocol(
+        client,
+        new MemoryRunStore(),
+        classifyPrTargetInRepository,
+      );
+      const started = output(
+        await tools.cross_review_start.execute(
+          { target: "PR#116", reviewModels: ["a/one"], agents: 1 },
+          { ...context(), directory: repo },
+        ),
+      );
+      expect(runPrAdapter).toHaveBeenCalledWith(
+        expect.objectContaining({
+          forge: "github",
+          target: "PR#116",
+          repo,
+        }),
+      );
+      expect(started.phase).toBe("reviewing");
+      expect(started.gatherer).toMatchObject({
+        kind: "adapter",
+        forge: "github",
+      });
+      expect(client.session.create).toHaveBeenCalledOnce();
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   it("routes gitcode PRs to the adapter with gitcodeCli (S3)", async () => {

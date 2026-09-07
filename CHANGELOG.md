@@ -13,9 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reviewer and judge briefs, and treat snapshot worktree language as a
   shared-context marker in `/cross-review-audit` without embedding caller
   notes.
-- Recognize `PR#<n>` / `pr #<n>` as the same remote-resolved pull-request
-  target as `#<n>`, and when a non-PR start lacks shared evidence say the
-  target was not classified as a PR and list the accepted PR forms.
+- Recognize `PR#<n>` / `pr #<n>` / `PR <n>` as the same remote-resolved
+  pull-request target as `#<n>`, and when a non-PR start lacks shared
+  evidence say the target was not classified as a PR and list the accepted
+  PR forms.
 
 ## [0.3.1] - 2026-09-07
 

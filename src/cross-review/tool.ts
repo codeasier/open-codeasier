@@ -161,7 +161,7 @@ export const MISSING_PARENT_CONTEXT_ERROR =
   "Missing shared evidence for non-PR target without judgeModel: pass parent-gathered `context` or `evidenceDir`, or set `judgeModel`";
 
 export const ACCEPTED_PR_TARGET_FORMS =
-  "a `/pull/<n>` URL, `#<n>`, `<n>`, or `PR#<n>`";
+  "a `/pull/<n>` URL, `#<n>`, `<n>`, `PR#<n>`, or `PR <n>`";
 
 export function missingSharedEvidenceMessage(target?: string): string {
   const received =
