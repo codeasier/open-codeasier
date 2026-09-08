@@ -228,6 +228,31 @@ describe("deterministic audit checks", () => {
     expect(
       checkEvidenceContract({ ...failed, reviewers: run().reviewers }).result,
     ).toBe("fail");
+    // Blocking `cross_review` persistFailedSnapshotRun omits adapterGatherer.
+    const legacyFailed = run({
+      phase: "failed",
+      reviewers: [],
+      snapshot: {
+        worktree: "/snapshot",
+        snapshotDir: "/snapshot/.cross-review",
+        forge: "github",
+      },
+    });
+    expect(checkEvidenceContract(legacyFailed)).toMatchObject({
+      result: "insufficient-evidence",
+      detail: expect.stringContaining("adapter.gather"),
+    });
+    expect(checkAdapterGather(legacyFailed)).toMatchObject({
+      id: "adapter.gather",
+      result: "insufficient-evidence",
+      detail: expect.stringContaining("adapterGatherer"),
+    });
+    expect(
+      checkEvidenceContract({
+        ...legacyFailed,
+        reviewers: run().reviewers,
+      }).result,
+    ).toBe("fail");
     expect(checkAdapterGather(run())).toMatchObject({ result: "pass" });
     expect(
       checkAdapterGather(

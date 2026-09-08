@@ -20,7 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Stop grading a failed PR adapter as a broken evidence contract: a new
   `adapter.gather` check reports the adapter error and
   `run.evidence_contract` is `insufficient-evidence` when no reviewer was
-  dispatched.
+  dispatched, including a legacy blocking persist that omitted
+  `adapterGatherer`.
 - Stop failing `role.prompt.tools_deny` for prompts dispatched before
   `cross_review_config` or `cross_review_audit` joined `READ_ONLY_TOOLS`. The
   check fails only when a write tool is absent or any deny key is enabled,

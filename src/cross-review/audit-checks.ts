@@ -138,26 +138,55 @@ type EvidenceRun = Pick<
 >;
 
 /**
- * A PR adapter that failed persists a `failed` run with no reviewers so the
- * retained snapshot stays discoverable. Nothing was reviewed, so evidence
- * checks have nothing to grade; `adapter.gather` reports the failure itself.
+ * Protocol failed-adapter manifests store `adapterGatherer.status ===
+ * "failed"`. The still-registered blocking `cross_review` tool
+ * (`persistFailedSnapshotRun`) writes the same empty-reviewer snapshot with
+ * `forge` and no `adapterGatherer`, including when the adapter succeeded and
+ * the run later failed. Both shapes have nothing to grade as shared evidence.
  */
 function adapterFailedBeforeReview(run: EvidenceRun): boolean {
-  return run.adapterGatherer?.status === "failed" && run.reviewers.length === 0;
+  if (run.reviewers.length !== 0) return false;
+  if (run.adapterGatherer?.status === "failed") return true;
+  return omittedLegacyAdapterGatherer(run);
+}
+
+function omittedLegacyAdapterGatherer(
+  run: Pick<EvidenceRun, "adapterGatherer" | "reviewers" | "snapshot">,
+): boolean {
+  return (
+    run.adapterGatherer === undefined &&
+    run.reviewers.length === 0 &&
+    run.snapshot?.forge !== undefined &&
+    run.snapshot.source !== "parent-pack"
+  );
 }
 
 export function checkAdapterGather(
-  run: Pick<CrossReviewRun, "adapterGatherer" | "runID">,
+  run: Pick<CrossReviewRun, "adapterGatherer" | "runID"> &
+    Partial<Pick<CrossReviewRun, "reviewers" | "snapshot">>,
 ): AuditCheck {
   const extra = { runID: run.runID };
   const adapter = run.adapterGatherer;
-  if (adapter === undefined)
+  if (adapter === undefined) {
+    if (
+      omittedLegacyAdapterGatherer({
+        reviewers: run.reviewers ?? [],
+        ...(run.snapshot === undefined ? {} : { snapshot: run.snapshot }),
+      })
+    )
+      return annotated(
+        "adapter.gather",
+        "insufficient-evidence",
+        "Legacy blocking persist omitted adapterGatherer for a PR snapshot; adapter outcome is only in the parent cross_review tool-part",
+        extra,
+      );
     return annotated(
       "adapter.gather",
       "pass",
       "Run did not use a PR snapshot adapter",
       extra,
     );
+  }
   if (adapter.status === "succeeded")
     return annotated(
       "adapter.gather",

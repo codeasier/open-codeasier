@@ -1272,6 +1272,54 @@ describe("cross_review_audit tool", () => {
     });
   });
 
+  it("does not grade a legacy blocking failed-adapter persist as a broken evidence contract", async () => {
+    const store = new MemoryRunStore();
+    const error = "gh not authenticated (snapshot retained at /snapshot)";
+    await store.create(
+      run({
+        context: undefined,
+        phase: "failed",
+        reviewers: [],
+        target: "#116",
+        brief: "PR snapshot run failed: gh not authenticated",
+        snapshot: {
+          worktree: "/snapshot",
+          snapshotDir: "/snapshot/.cross-review",
+          forge: "github",
+        },
+      }),
+    );
+    const { payload } = await execute(
+      store,
+      {
+        [PARENT]: {
+          session: { id: PARENT, directory: "/repo", title: "parent" },
+          messages: parentMessages([
+            toolPart("cross_review", { target: "#116" }, error, "error"),
+          ]),
+        },
+      },
+      { parentSessionID: PARENT },
+    );
+    const checks = payload.runs[0].checks;
+    expect(checks).toContainEqual(
+      expect.objectContaining({
+        id: "adapter.gather",
+        result: "insufficient-evidence",
+        detail: expect.stringContaining("adapterGatherer"),
+      }),
+    );
+    expect(checks).toContainEqual(
+      expect.objectContaining({
+        id: "run.evidence_contract",
+        result: "insufficient-evidence",
+      }),
+    );
+    expect(
+      payload.checks.find((item: any) => item.id === "run.legacy_tool.absent"),
+    ).toMatchObject({ result: "fail" });
+  });
+
   it("exposes role timing, timeout, and bounded error fields from the manifest", async () => {
     const store = new MemoryRunStore();
     const longError = "x".repeat(1_000);
