@@ -28,6 +28,12 @@ Mark only after verification on the implementation branch.
 - [x] Shared gatherer/judge behavior windows stay in original session order and do not bleed.
 - [x] Per-run `protocolTimeline` is attributed by `runID`; parent `run.legacy_tool.absent` stays unbounded.
 - [x] Parent fetch tries each distinct matching run directory after caller `SESSION_NOT_FOUND`.
+- [x] `cross_review_config` appears in the protocol timeline; start args keep `target`, `hasEvidenceDir`, `reviewModelCount`, `judgeModel`; results keep `readyToFinalize`, `actionRequired` roles, bounded `warning`; rejected calls keep bounded `error`.
+- [x] Runs expose `adapterGatherer`, `snapshot`, `finalStatus`, and role timing/timeout/retry fields with bounded `error`; role `output` is never emitted.
+- [x] `role.prompt.tools_deny` fails on an enabled deny key or an absent write tool, and passes with a named detail when only primary-session-gated keys are absent.
+- [x] `adapter.gather` reports a failed PR adapter; `run.evidence_contract` is `insufficient-evidence` for that run when no reviewer exists, including a legacy blocking persist that omitted `adapterGatherer`.
+- [x] `role.session.directory` compares the SDK session `directory` with `snapshot.worktree` for snapshot runs.
+- [x] Role fetches fall back from the snapshot worktree to the run and caller directories on `SESSION_NOT_FOUND` / `SDK_FAILURE`.
 
 ## Skill and docs
 

@@ -1,3 +1,5 @@
+import { realpath } from "node:fs/promises";
+import { resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 import { assertPrimarySession } from "../primary-session.js";
 import { SessionReviewError } from "../session-review/errors.js";
@@ -19,16 +21,20 @@ import {
   roleBehavior,
   sliceFromMessage,
 } from "./audit-project.js";
-import type {
-  AuditRunResult,
-  AuditSessionEvidence,
-  CrossReviewAuditPayload,
-  ProtocolCall,
-  RoleReport,
+import {
+  boundText,
+  type AuditAdapterGatherer,
+  type AuditRoleSummary,
+  type AuditRunResult,
+  type AuditSessionEvidence,
+  type CrossReviewAuditPayload,
+  type ProtocolCall,
+  type RoleReport,
 } from "./audit-types.js";
 import {
   FileCrossReviewRunStore,
   RUN_ID,
+  type AdapterGathererRun,
   type CrossReviewRun,
   type CrossReviewRunStore,
   type GathererRun,
@@ -111,13 +117,49 @@ export function resolveOwnerRuns(
   return matches;
 }
 
-function publicRole(role: ReviewerRun | GathererRun | JudgeRun) {
+function publicRole(
+  role: ReviewerRun | GathererRun | JudgeRun,
+): AuditRoleSummary {
   return {
     sessionID: role.sessionID,
     messageID: role.messageID,
     status: role.status,
     model: role.model,
+    ...(role.startedAt === undefined ? {} : { startedAt: role.startedAt }),
+    ...(role.completedAt === undefined
+      ? {}
+      : { completedAt: role.completedAt }),
+    ...(role.deadlineAt === undefined ? {} : { deadlineAt: role.deadlineAt }),
+    ...(role.timeoutDetectedAt === undefined
+      ? {}
+      : { timeoutDetectedAt: role.timeoutDetectedAt }),
+    ...(role.timeoutExtensions === undefined
+      ? {}
+      : { timeoutExtensions: role.timeoutExtensions }),
+    ...(role.retry === undefined ? {} : { retry: role.retry }),
+    ...(role.error === undefined ? {} : { error: boundText(role.error) }),
   };
+}
+
+function publicAdapterGatherer(
+  adapter: AdapterGathererRun,
+): AuditAdapterGatherer {
+  return {
+    forge: adapter.forge,
+    status: adapter.status,
+    ...(adapter.startedAt === undefined
+      ? {}
+      : { startedAt: adapter.startedAt }),
+    ...(adapter.completedAt === undefined
+      ? {}
+      : { completedAt: adapter.completedAt }),
+    ...(adapter.error === undefined ? {} : { error: boundText(adapter.error) }),
+  };
+}
+
+function finalStatus(run: CrossReviewRun): string | undefined {
+  const status = run.finalResult?.status;
+  return typeof status === "string" ? status : undefined;
 }
 
 function rolePins(run: CrossReviewRun): Map<string, string[]> {
@@ -135,6 +177,19 @@ function rolePins(run: CrossReviewRun): Map<string, string[]> {
   return pins;
 }
 
+/**
+ * Same canonical form the runtime uses for `assertSessionDirectoryBinding`,
+ * so a symlinked state root cannot fail `role.session.directory`. A removed
+ * worktree keeps its resolved manifest path.
+ */
+async function canonicalDirectory(directory: string): Promise<string> {
+  try {
+    return await realpath(directory);
+  } catch {
+    return resolve(directory);
+  }
+}
+
 async function loadAuditSession(
   client: SessionClient,
   sessionID: string,
@@ -147,7 +202,7 @@ async function loadAuditSession(
 ): Promise<AuditSessionEvidence> {
   const bundle = await fetchSessionBundle({ client, sessionID, directory });
   const children = await listSessionChildren({ client, sessionID, directory });
-  return projectAuditSession({
+  const evidence = projectAuditSession({
     bundle,
     ...(options.focus === undefined ? {} : { focus: options.focus }),
     ...(options.pinMessageIDs === undefined
@@ -159,27 +214,59 @@ async function loadAuditSession(
     childrenListed: children.listed,
     ...(children.listed ? { childCount: children.children.length } : {}),
   });
+  if (evidence.directory !== undefined)
+    evidence.directory = await canonicalDirectory(evidence.directory);
+  return evidence;
 }
 
-function sessionCacheKey(directory: string, sessionID: string): string {
-  return `${directory}\0${sessionID}`;
-}
-
-function uniqueDirectories(
-  callerDirectory: string,
-  runs: CrossReviewRun[],
-): string[] {
-  const directories: string[] = [];
+function uniqueDirectories(directories: string[]): string[] {
+  const unique: string[] = [];
   const seen = new Set<string>();
-  for (const directory of [
-    callerDirectory,
-    ...runs.map((run) => run.directory),
-  ]) {
+  for (const directory of directories) {
     if (seen.has(directory)) continue;
     seen.add(directory);
-    directories.push(directory);
+    unique.push(directory);
   }
-  return directories;
+  return unique;
+}
+
+/**
+ * Directories to try when reading a role session: the snapshot worktree the
+ * session was bound to, then the run's project directory, then the caller's.
+ * A finalized or cancelled run may already have removed its worktree, and the
+ * host does not specify how it answers for a directory that no longer exists.
+ */
+function roleDirectories(run: CrossReviewRun, callerDirectory: string) {
+  return uniqueDirectories([
+    ...(run.snapshot === undefined ? [] : [run.snapshot.worktree]),
+    run.directory,
+    callerDirectory,
+  ]);
+}
+
+function retryableFetch(error: unknown): boolean {
+  return (
+    error instanceof SessionReviewError &&
+    (error.code === "SESSION_NOT_FOUND" || error.code === "SDK_FAILURE")
+  );
+}
+
+async function loadRoleSession(
+  client: SessionClient,
+  sessionID: string,
+  directories: string[],
+  options: { pinMessageIDs: string[]; focus?: string },
+): Promise<AuditSessionEvidence> {
+  let lastError: unknown;
+  for (const directory of directories) {
+    try {
+      return await loadAuditSession(client, sessionID, directory, options);
+    } catch (error) {
+      if (!retryableFetch(error)) throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 async function fetchParentBundle(
@@ -189,7 +276,10 @@ async function fetchParentBundle(
   runs: CrossReviewRun[],
 ) {
   let lastNotFound: unknown;
-  for (const directory of uniqueDirectories(callerDirectory, runs)) {
+  for (const directory of uniqueDirectories([
+    callerDirectory,
+    ...runs.map((run) => run.directory),
+  ])) {
     try {
       return await fetchSessionBundle({
         client,
@@ -261,10 +351,16 @@ function buildRunResult(input: {
   parent: AuditSessionEvidence;
   sessions: Map<string, AuditSessionEvidence | undefined>;
   fetchErrors: Map<string, { code: string; detail: string }>;
+  snapshotWorktree?: string;
 }): AuditRunResult {
   const run = input.run;
-  const roleDirectory = run.snapshot?.worktree ?? run.directory;
-  const checks = evaluateRunChecks({ run, sessions: input.sessions });
+  const checks = evaluateRunChecks({
+    run,
+    sessions: input.sessions,
+    ...(input.snapshotWorktree === undefined
+      ? {}
+      : { snapshotWorktree: input.snapshotWorktree }),
+  });
   const gathererUntil =
     run.gatherer !== undefined &&
     run.judge !== undefined &&
@@ -279,9 +375,7 @@ function buildRunResult(input: {
   const gathererError =
     run.gatherer === undefined
       ? undefined
-      : input.fetchErrors.get(
-          sessionCacheKey(roleDirectory, run.gatherer.sessionID),
-        );
+      : input.fetchErrors.get(run.gatherer.sessionID);
   const gatherer =
     run.gatherer === undefined
       ? undefined
@@ -306,9 +400,7 @@ function buildRunResult(input: {
   const judgeError =
     run.judge === undefined
       ? undefined
-      : input.fetchErrors.get(
-          sessionCacheKey(roleDirectory, run.judge.sessionID),
-        );
+      : input.fetchErrors.get(run.judge.sessionID);
   const judge =
     run.judge === undefined
       ? undefined
@@ -323,9 +415,7 @@ function buildRunResult(input: {
   if (judge !== undefined) truncatedRoles.judge = judge.truncated;
   const reviewers = run.reviewers.map((reviewer) => {
     const reviewerEvidence = input.sessions.get(reviewer.sessionID);
-    const reviewerError = input.fetchErrors.get(
-      sessionCacheKey(roleDirectory, reviewer.sessionID),
-    );
+    const reviewerError = input.fetchErrors.get(reviewer.sessionID);
     const report = roleReport({
       role: `reviewer:${reviewer.reviewer}`,
       sessionID: reviewer.sessionID,
@@ -337,15 +427,21 @@ function buildRunResult(input: {
     truncatedRoles[report.role] = report.truncated;
     return report;
   });
+  const status = finalStatus(run);
   return {
     runID: run.runID,
     createdAt: run.createdAt,
     phase: run.phase,
+    ...(status === undefined ? {} : { finalStatus: status }),
     directory: run.directory,
     directoryMismatch: run.directory !== input.callerDirectory,
     target: run.target,
     hasContext: persistedContext(run) !== undefined,
     ...(run.judgeModel === undefined ? {} : { judgeModel: run.judgeModel }),
+    ...(run.adapterGatherer === undefined
+      ? {}
+      : { adapterGatherer: publicAdapterGatherer(run.adapterGatherer) }),
+    ...(run.snapshot === undefined ? {} : { snapshot: run.snapshot }),
     ...(run.gatherer === undefined
       ? {}
       : { gatherer: publicRole(run.gatherer) }),
@@ -398,18 +494,18 @@ export async function auditCrossReview(input: {
     childrenListed: false,
   });
 
+  // Role sessions belong to exactly one run, so the cache is keyed by session.
   const cache = new Map<string, Promise<AuditSessionEvidence>>();
   const fetchErrors = new Map<string, { code: string; detail: string }>();
-  const load = (sessionID: string, directory: string, pins: string[]) => {
-    const key = sessionCacheKey(directory, sessionID);
-    const pending = cache.get(key);
+  const load = (sessionID: string, directories: string[], pins: string[]) => {
+    const pending = cache.get(sessionID);
     if (pending !== undefined) return pending;
-    const request = loadAuditSession(input.client, sessionID, directory, {
+    const request = loadRoleSession(input.client, sessionID, directories, {
       pinMessageIDs: pins,
       ...(input.focus === undefined ? {} : { focus: input.focus }),
     }).catch((error: unknown) => {
       const mapped = asAuditError(error);
-      fetchErrors.set(key, {
+      fetchErrors.set(sessionID, {
         code: mapped?.code ?? "SDK_FAILURE",
         detail:
           mapped?.message ??
@@ -417,30 +513,31 @@ export async function auditCrossReview(input: {
       });
       throw error;
     });
-    cache.set(key, request);
+    cache.set(sessionID, request);
     return request;
   };
 
   const runs: AuditRunResult[] = [];
   for (const run of selected) {
     const pins = rolePins(run);
+    const directories = roleDirectories(run, input.directory);
     const sessions = new Map<string, AuditSessionEvidence | undefined>();
     await Promise.all(
       [...pins.entries()].map(async ([sessionID, messageIDs]) => {
         try {
           sessions.set(
             sessionID,
-            await load(
-              sessionID,
-              run.snapshot?.worktree ?? run.directory,
-              messageIDs,
-            ),
+            await load(sessionID, directories, messageIDs),
           );
         } catch {
           sessions.set(sessionID, undefined);
         }
       }),
     );
+    const snapshotWorktree =
+      run.snapshot === undefined
+        ? undefined
+        : await canonicalDirectory(run.snapshot.worktree);
     runs.push(
       buildRunResult({
         run,
@@ -448,6 +545,7 @@ export async function auditCrossReview(input: {
         parent,
         sessions,
         fetchErrors,
+        ...(snapshotWorktree === undefined ? {} : { snapshotWorktree }),
       }),
     );
   }

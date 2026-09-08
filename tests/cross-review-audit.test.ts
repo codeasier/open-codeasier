@@ -1,4 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewAuditTool,
@@ -215,12 +218,13 @@ function reviewerSession(
   messageID: string,
   text = "Shared target context (already gathered; verify findings against it):\nthe diff",
   extraParts: unknown[] = [],
+  directory = "/repo",
 ) {
   return {
     session: {
       id,
       projectID: "p",
-      directory: "/repo",
+      directory,
       parentID: PARENT,
       title: `Cross-review ${RUN_A.slice(0, 8)} reviewer 1: HEAD`,
       version: "1",
@@ -352,14 +356,16 @@ describe("cross_review_audit tool", () => {
             : {}),
         }),
       );
+      const snapshotReviewer = (id: string, messageID: string) =>
+        reviewerSession(id, messageID, undefined, [], "/snapshot");
       const sessions = {
         [PARENT]: {
           session: { id: PARENT, directory: "/repo", title: "parent" },
           messages: parentMessages([]),
         },
-        "rev-1": reviewerSession("rev-1", "msg-rev-1"),
-        "rev-2": reviewerSession("rev-2", "msg-rev-2"),
-        "rev-3": reviewerSession("rev-3", "msg-rev-3"),
+        "rev-1": snapshotReviewer("rev-1", "msg-rev-1"),
+        "rev-2": snapshotReviewer("rev-2", "msg-rev-2"),
+        "rev-3": snapshotReviewer("rev-3", "msg-rev-3"),
       };
       const { payload, client } = await execute(store, sessions, {
         parentSessionID: PARENT,
@@ -373,6 +379,23 @@ describe("cross_review_audit tool", () => {
           result: "pass",
         }),
       );
+      expect(payload.runs[0].checks).toContainEqual(
+        expect.objectContaining({
+          id: "role.session.directory",
+          role: "reviewer:1",
+          result: "pass",
+        }),
+      );
+      expect(payload.runs[0].snapshot).toMatchObject({
+        source,
+        worktree: "/snapshot",
+      });
+      if (source === "adapter")
+        expect(payload.runs[0].adapterGatherer).toEqual({
+          forge: "github",
+          status: "succeeded",
+        });
+      else expect(payload.runs[0]).not.toHaveProperty("adapterGatherer");
       for (const method of [
         client.session.get,
         client.session.messages,
@@ -464,9 +487,9 @@ describe("cross_review_audit tool", () => {
           }),
         ]),
       },
-      "rev-1": reviewerSession("rev-1", "msg-rev-1", brief),
-      "rev-2": reviewerSession("rev-2", "msg-rev-2", brief),
-      "rev-3": reviewerSession("rev-3", "msg-rev-3", brief),
+      "rev-1": reviewerSession("rev-1", "msg-rev-1", brief, [], "/snapshot"),
+      "rev-2": reviewerSession("rev-2", "msg-rev-2", brief, [], "/snapshot"),
+      "rev-3": reviewerSession("rev-3", "msg-rev-3", brief, [], "/repo"),
     };
     const { payload } = await execute(store, sessions, {
       parentSessionID: PARENT,
@@ -476,6 +499,20 @@ describe("cross_review_audit tool", () => {
         (role: any) => role.behavior.hasSharedContextMarker === true,
       ),
     ).toBe(true);
+    const directoryChecks = payload.runs[0].checks.filter(
+      (check: any) => check.id === "role.session.directory",
+    );
+    expect(directoryChecks).toEqual([
+      expect.objectContaining({ role: "reviewer:1", result: "pass" }),
+      expect.objectContaining({ role: "reviewer:2", result: "pass" }),
+      expect.objectContaining({
+        role: "reviewer:3",
+        result: "fail",
+        detail: expect.stringContaining(
+          "/repo instead of the snapshot worktree",
+        ),
+      }),
+    ]);
   });
 
   it("reads a snapshot judge and preserves snapshot-scoped child fetch errors", async () => {
@@ -1162,5 +1199,420 @@ describe("cross_review_audit tool", () => {
         (call: any) => call[0].query?.directory,
       ),
     ).toEqual(expect.arrayContaining(["/repo", "/wrong", "/other"]));
+  });
+
+  it("reports a failed PR adapter as adapter.gather without breaking the evidence contract", async () => {
+    const store = new MemoryRunStore();
+    const error = `gh pr view failed: not found (snapshot retained at /snapshot)`;
+    await store.create(
+      run({
+        context: undefined,
+        phase: "failed",
+        reviewers: [],
+        target: "#116",
+        snapshot: {
+          worktree: "/snapshot",
+          snapshotDir: "/snapshot/.cross-review",
+          forge: "github",
+          source: "adapter",
+        },
+        adapterGatherer: {
+          kind: "adapter",
+          forge: "github",
+          status: "failed",
+          startedAt: 5,
+          completedAt: 9,
+          error,
+        },
+        finalResult: { runID: RUN_A, phase: "failed", status: "gather-failed" },
+      }),
+    );
+    const { payload } = await execute(
+      store,
+      {
+        [PARENT]: {
+          session: { id: PARENT, directory: "/repo", title: "parent" },
+          messages: parentMessages([
+            toolPart("cross_review_start", { target: "#116" }, error, "error"),
+          ]),
+        },
+      },
+      { parentSessionID: PARENT },
+    );
+    const checks = payload.runs[0].checks;
+    expect(checks).toContainEqual(
+      expect.objectContaining({
+        id: "adapter.gather",
+        result: "fail",
+        detail: expect.stringContaining("gh pr view failed"),
+      }),
+    );
+    expect(checks).toContainEqual(
+      expect.objectContaining({
+        id: "run.evidence_contract",
+        result: "insufficient-evidence",
+      }),
+    );
+    expect(payload.runs[0]).toMatchObject({
+      phase: "failed",
+      finalStatus: "gather-failed",
+      adapterGatherer: {
+        forge: "github",
+        status: "failed",
+        startedAt: 5,
+        completedAt: 9,
+        error,
+      },
+    });
+    expect(payload.parent.protocolTimeline[0]).toMatchObject({
+      name: "cross_review_start",
+      status: "error",
+      error: expect.stringContaining("gh pr view failed"),
+      args: { target: "#116" },
+    });
+  });
+
+  it("does not grade a legacy blocking failed-adapter persist as a broken evidence contract", async () => {
+    const store = new MemoryRunStore();
+    const error = "gh not authenticated (snapshot retained at /snapshot)";
+    await store.create(
+      run({
+        context: undefined,
+        phase: "failed",
+        reviewers: [],
+        target: "#116",
+        brief: "PR snapshot run failed: gh not authenticated",
+        snapshot: {
+          worktree: "/snapshot",
+          snapshotDir: "/snapshot/.cross-review",
+          forge: "github",
+        },
+      }),
+    );
+    const { payload } = await execute(
+      store,
+      {
+        [PARENT]: {
+          session: { id: PARENT, directory: "/repo", title: "parent" },
+          messages: parentMessages([
+            toolPart("cross_review", { target: "#116" }, error, "error"),
+          ]),
+        },
+      },
+      { parentSessionID: PARENT },
+    );
+    const checks = payload.runs[0].checks;
+    expect(checks).toContainEqual(
+      expect.objectContaining({
+        id: "adapter.gather",
+        result: "insufficient-evidence",
+        detail: expect.stringContaining("adapterGatherer"),
+      }),
+    );
+    expect(checks).toContainEqual(
+      expect.objectContaining({
+        id: "run.evidence_contract",
+        result: "insufficient-evidence",
+      }),
+    );
+    expect(
+      payload.checks.find((item: any) => item.id === "run.legacy_tool.absent"),
+    ).toMatchObject({ result: "fail" });
+  });
+
+  it("exposes role timing, timeout, and bounded error fields from the manifest", async () => {
+    const store = new MemoryRunStore();
+    const longError = "x".repeat(1_000);
+    await store.create(
+      run({
+        reviewers: [
+          {
+            reviewer: 1,
+            model: "a/one",
+            sessionID: "rev-1",
+            messageID: "msg-rev-1",
+            status: "succeeded",
+            startedAt: 100,
+            deadlineAt: 5_100,
+            timeoutDetectedAt: 5_200,
+            timeoutExtensions: 1,
+            completedAt: 7_000,
+          },
+          {
+            reviewer: 2,
+            model: "a/one",
+            sessionID: "rev-2",
+            messageID: "msg-rev-2",
+            status: "failed",
+            startedAt: 100,
+            completedAt: 300,
+            error: longError,
+          },
+          {
+            reviewer: 3,
+            model: "a/one",
+            sessionID: "rev-3",
+            messageID: "msg-rev-3",
+            status: "retrying",
+            startedAt: 100,
+            retry: { attempt: 2, message: "rate limited", next: 400 },
+          },
+        ],
+      }),
+    );
+    const { payload } = await execute(
+      store,
+      {
+        [PARENT]: {
+          session: { id: PARENT, directory: "/repo", title: "parent" },
+          messages: parentMessages([]),
+        },
+        "rev-1": reviewerSession("rev-1", "msg-rev-1"),
+        "rev-2": reviewerSession("rev-2", "msg-rev-2"),
+        "rev-3": reviewerSession("rev-3", "msg-rev-3"),
+      },
+      { parentSessionID: PARENT },
+    );
+    const [first, second, third] = payload.runs[0].reviewers;
+    expect(first).toMatchObject({
+      reviewer: 1,
+      startedAt: 100,
+      deadlineAt: 5_100,
+      timeoutDetectedAt: 5_200,
+      timeoutExtensions: 1,
+      completedAt: 7_000,
+    });
+    expect(first).not.toHaveProperty("error");
+    expect(second.error.length).toBeLessThan(longError.length);
+    expect(second.error.endsWith("...")).toBe(true);
+    expect(third.retry).toEqual({
+      attempt: 2,
+      message: "rate limited",
+      next: 400,
+    });
+    expect(payload.runs[0].reviewers[0]).not.toHaveProperty("output");
+  });
+
+  it("keeps config previews, timeout decisions, and finalize rejections in the protocol timeline", async () => {
+    const store = new MemoryRunStore();
+    await store.create(run({ reviewers: [] }));
+    const { payload } = await execute(
+      store,
+      {
+        [PARENT]: {
+          session: { id: PARENT, directory: "/repo", title: "parent" },
+          messages: parentMessages([
+            toolPart(
+              "cross_review_config",
+              {},
+              JSON.stringify({ reviewers: [], quorum: 2 }),
+            ),
+            toolPart(
+              "cross_review_start",
+              {
+                target: "https://github.com/o/r/pull/1",
+                evidenceDir: ".tmp/evidence",
+                reviewModels: ["a/one", "b/two"],
+                judgeModel: "",
+                agents: 0,
+              },
+              JSON.stringify({ runID: RUN_A, phase: "reviewing" }),
+            ),
+            toolPart(
+              "cross_review_status",
+              { runID: RUN_A },
+              JSON.stringify({
+                runID: RUN_A,
+                phase: "reviewing",
+                readyToFinalize: false,
+                actionRequired: {
+                  type: "timeout",
+                  sessions: [
+                    { role: "reviewer", reviewer: 3, sessionID: "rev-3" },
+                    { role: "judge", sessionID: "judge" },
+                  ],
+                  options: ["preserve", "abort"],
+                },
+              }),
+            ),
+            toolPart(
+              "cross_review_status",
+              { runID: RUN_A, timeoutAction: "preserve" },
+              JSON.stringify({
+                runID: RUN_A,
+                phase: "reviewing",
+                readyToFinalize: false,
+                warning:
+                  "warning: timeoutAction ignored because no timeout is pending",
+              }),
+            ),
+            toolPart(
+              "cross_review_finalize",
+              { runID: RUN_A },
+              "Cannot finalize cross-review: reviewers are still active",
+              "error",
+            ),
+          ]),
+        },
+      },
+      { parentSessionID: PARENT },
+    );
+    const timeline = payload.runs[0].protocolTimeline;
+    expect(timeline.map((call: any) => call.name)).toEqual([
+      "cross_review_config",
+      "cross_review_start",
+      "cross_review_status",
+      "cross_review_status",
+      "cross_review_finalize",
+    ]);
+    expect(timeline[1].args).toEqual({
+      target: "https://github.com/o/r/pull/1",
+      hasEvidenceDir: true,
+      reviewModelCount: 2,
+      judgeModel: "",
+      agents: 0,
+    });
+    expect(timeline[2].result).toEqual({
+      runID: RUN_A,
+      phase: "reviewing",
+      readyToFinalize: false,
+      actionRequired: ["reviewer:3", "judge"],
+    });
+    expect(timeline[3].args).toMatchObject({ timeoutAction: "preserve" });
+    expect(timeline[3].result.warning).toContain("timeoutAction ignored");
+    expect(timeline[4]).toMatchObject({
+      status: "error",
+      error: expect.stringContaining("reviewers are still active"),
+    });
+    expect(payload.checks).toContainEqual(
+      expect.objectContaining({ id: "run.legacy_tool.absent", result: "pass" }),
+    );
+  });
+
+  it("falls back to the run and caller directories when the snapshot worktree no longer answers", async () => {
+    const store = new MemoryRunStore();
+    await store.create(
+      run({
+        context: undefined,
+        reviewers: [
+          {
+            reviewer: 1,
+            model: "a/one",
+            sessionID: "rev-1",
+            messageID: "msg-rev-1",
+            status: "succeeded",
+          },
+        ],
+        snapshot: {
+          worktree: "/gone-snapshot",
+          snapshotDir: "/gone-snapshot/.cross-review",
+          source: "parent-pack",
+        },
+      }),
+    );
+    const sessions: Record<string, any> = {
+      [PARENT]: {
+        session: { id: PARENT, directory: "/repo", title: "parent" },
+        messages: parentMessages([]),
+      },
+      "rev-1": reviewerSession(
+        "rev-1",
+        "msg-rev-1",
+        undefined,
+        [],
+        "/gone-snapshot",
+      ),
+    };
+    const client = mockClient(sessions);
+    const originalGet = client.session.get;
+    client.session.get = vi.fn(async (input: any) => {
+      if (input.query?.directory === "/gone-snapshot")
+        return {
+          error: { name: "Error", data: { message: "no such directory" } },
+          response: { status: 500 },
+        };
+      return originalGet(input);
+    }) as any;
+    const result = await createCrossReviewAuditTool(client as any, {
+      store,
+    }).execute({ parentSessionID: PARENT }, context());
+    const payload = JSON.parse((result as any).output);
+    expect(payload.runs[0].roles.reviewers[0]).not.toHaveProperty("fetchError");
+    expect(payload.runs[0].checks).toContainEqual(
+      expect.objectContaining({
+        id: "role.session.linked",
+        role: "reviewer:1",
+        result: "pass",
+      }),
+    );
+    expect(payload.runs[0].checks).toContainEqual(
+      expect.objectContaining({
+        id: "role.session.directory",
+        role: "reviewer:1",
+        result: "pass",
+      }),
+    );
+    const directoriesTried = client.session.get.mock.calls
+      .filter((call: any) => call[0].path.id === "rev-1")
+      .map((call: any) => call[0].query?.directory);
+    expect(directoriesTried).toEqual(["/gone-snapshot", "/repo"]);
+  });
+
+  it("accepts a symlinked snapshot worktree when the host reports its real path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "audit-worktree-"));
+    try {
+      const real = join(root, "real");
+      const link = join(root, "link");
+      await mkdir(real);
+      await symlink(real, link);
+      const reported = await realpath(real);
+      const store = new MemoryRunStore();
+      await store.create(
+        run({
+          context: undefined,
+          reviewers: [
+            {
+              reviewer: 1,
+              model: "a/one",
+              sessionID: "rev-1",
+              messageID: "msg-rev-1",
+              status: "succeeded",
+            },
+          ],
+          snapshot: {
+            worktree: link,
+            snapshotDir: join(link, ".cross-review"),
+            source: "parent-pack",
+          },
+        }),
+      );
+      const { payload } = await execute(
+        store,
+        {
+          [PARENT]: {
+            session: { id: PARENT, directory: "/repo", title: "parent" },
+            messages: parentMessages([]),
+          },
+          "rev-1": reviewerSession(
+            "rev-1",
+            "msg-rev-1",
+            undefined,
+            [],
+            reported,
+          ),
+        },
+        { parentSessionID: PARENT },
+      );
+      expect(payload.runs[0].checks).toContainEqual(
+        expect.objectContaining({
+          id: "role.session.directory",
+          role: "reviewer:1",
+          result: "pass",
+        }),
+      );
+      expect(payload.runs[0].snapshot.worktree).toBe(link);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
