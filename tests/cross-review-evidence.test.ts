@@ -23,6 +23,7 @@ import {
   defaultRemoveSnapshot,
   INVALID_REVIEW_REVISION_RANGE_ERROR,
   PARENT_SNAPSHOT_REQUIRES_GIT_ERROR,
+  snapshotPaths,
 } from "../src/cross-review/pr-gather.js";
 
 const exec = promisify(execFile);
@@ -211,7 +212,9 @@ describe("parent evidence packs", () => {
         context: "context",
       }),
     ).rejects.toThrow(PARENT_SNAPSHOT_REQUIRES_GIT_ERROR);
-    await expect(access(join(stateRoot, "nongit"))).rejects.toMatchObject({
+    await expect(
+      access(snapshotPaths(stateRoot, "nongit").worktree),
+    ).rejects.toMatchObject({
       code: "ENOENT",
     });
   });
@@ -231,9 +234,10 @@ describe("parent evidence packs", () => {
       "first",
     );
     const stateRoot = join(root, "state");
-    const runDir = join(stateRoot, "blocked");
+    const { worktree } = snapshotPaths(stateRoot, "blocked");
+    const runDir = join(stateRoot, ".worktrees", "blocked");
     await mkdir(runDir, { recursive: true });
-    await writeFile(join(runDir, "worktree"), "not a directory");
+    await writeFile(worktree, "not a directory");
     await expect(
       createParentSnapshot({
         repo: project,

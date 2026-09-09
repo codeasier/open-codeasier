@@ -256,6 +256,16 @@ describe("workflow generator", () => {
     expect(openCrossReview).toContain("~/.config/opencode/cross-review.json");
     expect(openCrossReview).toContain("does not use `~/.opencode`");
     expect(openCrossReview).not.toContain("~/.opencode/cross-review.json");
+    expect(openCrossReview).toContain("~/.open-codeasier/cross-review/**");
+    expect(openCrossReview).toContain("external_directory");
+    expect(openCrossReview).toContain(
+      "Do not widen that rule to `~/.config/opencode/**`",
+    );
+    expect(openCrossReview).toContain("OPEN_CODEASIER_STATE_HOME");
+    expect(openCrossReview).toContain(
+      "~/.open-codeasier/cross-review/.worktrees/<runID>/worktree",
+    );
+    expect(openCrossReview).toContain("git worktree prune");
     expect(openCrossReview).toContain("ask whether GitCode support is needed");
     expect(openCrossReview).toContain("npx open-codeasier detect-gitcode");
     expect(openCrossReview).toContain(

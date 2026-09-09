@@ -51,6 +51,21 @@ function request(
   };
 }
 
+describe("snapshotPaths", () => {
+  it("places worktrees under .worktrees/<runID>/worktree", () => {
+    expect(snapshotPaths("/state", "run-87")).toEqual({
+      worktree: join("/state", ".worktrees", "run-87", "worktree"),
+      snapshotDir: join(
+        "/state",
+        ".worktrees",
+        "run-87",
+        "worktree",
+        ".cross-review",
+      ),
+    });
+  });
+});
+
 describe("resolveAdapterRuntime", () => {
   it("reuses a Node host executable", async () => {
     const result = await resolveAdapterRuntime({

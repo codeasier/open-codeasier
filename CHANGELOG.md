@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Store cross-review run manifests at `~/.open-codeasier/cross-review` and
+  snapshot worktrees at
+  `~/.open-codeasier/cross-review/.worktrees/<runID>/worktree`. Override the
+  parent directory with `OPEN_CODEASIER_STATE_HOME`. The previous
+  `XDG_STATE_HOME` / macOS Application Support / `%LOCALAPPDATA%` /
+  `~/.local/state` write locations are no longer used; those roots are still
+  scanned so existing runs are not orphaned, and released manifests (no live
+  snapshot worktree) are moved to the new root. Parent-session judging needs
+  a one-time `external_directory` allow rule for
+  `~/.open-codeasier/cross-review/**`.
+
 ### Fixed
 
 - Catch `/cross-review-audit` up with the current cross-review protocol.
