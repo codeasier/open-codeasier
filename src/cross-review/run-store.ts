@@ -203,30 +203,79 @@ const LOCK_UPDATE_MS = 10_000;
 // concurrent poll after reload does not give up before the holder finishes.
 const LOCK_RETRIES = 4_800;
 export const EXPIRED_RUN_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+export const OPEN_CODEASIER_STATE_HOME = "OPEN_CODEASIER_STATE_HOME";
 const LOCAL_LOCKS = new Map<string, Promise<void>>();
 
+/**
+ * Cross-review state root. One home path so a single
+ * `~/.open-codeasier/cross-review/**` `external_directory` rule works on
+ * every platform. `OPEN_CODEASIER_STATE_HOME` replaces the home parent
+ * (`$OPEN_CODEASIER_STATE_HOME/cross-review`). Dropping `XDG_STATE_HOME`
+ * and the per-platform roots is a write-path break; those locations stay
+ * on the lookup list so existing runs are not orphaned.
+ */
 export function defaultCrossReviewStateDirectory(
   environment: NodeJS.ProcessEnv = process.env,
-  platform = process.platform,
   home = homedir(),
 ) {
-  if (environment.XDG_STATE_HOME)
-    return join(environment.XDG_STATE_HOME, "open-codeasier", "cross-review");
-  if (platform === "darwin")
-    return join(
-      home,
-      "Library",
-      "Application Support",
-      "open-codeasier",
-      "cross-review",
-    );
-  if (platform === "win32")
-    return join(
-      environment.LOCALAPPDATA ?? join(home, "AppData", "Local"),
-      "open-codeasier",
-      "cross-review",
-    );
-  return join(home, ".local", "state", "open-codeasier", "cross-review");
+  const override = environment[OPEN_CODEASIER_STATE_HOME];
+  if (override) return join(override, "cross-review");
+  return join(home, ".open-codeasier", "cross-review");
+}
+
+/** Historical write roots kept for list/read/GC/migration. */
+export function legacyCrossReviewStateDirectories(
+  environment: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+) {
+  return [
+    ...new Set(
+      [
+        environment.XDG_STATE_HOME
+          ? join(environment.XDG_STATE_HOME, "open-codeasier", "cross-review")
+          : undefined,
+        join(
+          home,
+          "Library",
+          "Application Support",
+          "open-codeasier",
+          "cross-review",
+        ),
+        join(
+          environment.LOCALAPPDATA ?? join(home, "AppData", "Local"),
+          "open-codeasier",
+          "cross-review",
+        ),
+        join(home, ".local", "state", "open-codeasier", "cross-review"),
+      ].filter((path): path is string => path !== undefined),
+    ),
+  ];
+}
+
+function defaultExtraRoots(root: string) {
+  return root === defaultCrossReviewStateDirectory()
+    ? legacyCrossReviewStateDirectories()
+    : [];
+}
+
+async function pathExists(path: string) {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function relocateFile(from: string, to: string) {
+  try {
+    await rename(from, to);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+    await writeFile(to, await readFile(from), { mode: 0o600 });
+    await unlink(from);
+  }
 }
 
 function assertRunID(runID: string) {
@@ -276,22 +325,29 @@ async function acquireLocalLock(key: string) {
 }
 
 export class FileCrossReviewRunStore implements CrossReviewRunStore {
+  private readonly lookupRoots: string[];
+
   constructor(
     private readonly root = defaultCrossReviewStateDirectory(),
     private readonly now: () => number = Date.now,
     private readonly removeSnapshot: (
       worktree: string,
     ) => Promise<void> = defaultRemoveSnapshot,
-  ) {}
-
-  private runPath(runID: string) {
-    assertRunID(runID);
-    return join(this.root, `${runID}.json`);
+    extraRoots?: readonly string[],
+  ) {
+    this.lookupRoots = [
+      ...new Set([root, ...(extraRoots ?? defaultExtraRoots(root))]),
+    ];
   }
 
-  private lockPath(runID: string) {
+  private runPath(runID: string, root = this.root) {
     assertRunID(runID);
-    return join(this.root, `${runID}.lock`);
+    return join(root, `${runID}.json`);
+  }
+
+  private lockPath(runID: string, root = this.root) {
+    assertRunID(runID);
+    return join(root, `${runID}.lock`);
   }
 
   private async ensureRoot() {
@@ -304,14 +360,29 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
     await rename(temporary, path);
   }
 
-  private async acquire(runID: string, retries = LOCK_RETRIES) {
-    await this.ensureRoot();
-    const target = join(this.root, runID);
+  private async locate(
+    runID: string,
+  ): Promise<{ root: string; path: string } | undefined> {
+    assertRunID(runID);
+    for (const root of this.lookupRoots) {
+      const path = this.runPath(runID, root);
+      if (await pathExists(path)) return { root, path };
+    }
+    return undefined;
+  }
+
+  private async acquire(
+    runID: string,
+    retries = LOCK_RETRIES,
+    root = this.root,
+  ) {
+    if (root === this.root) await this.ensureRoot();
+    const target = join(root, runID);
     const releaseLocal = await acquireLocalLock(target);
     try {
       const releaseFile = await lock(target, {
         realpath: false,
-        lockfilePath: this.lockPath(runID),
+        lockfilePath: this.lockPath(runID, root),
         stale: STALE_LOCK_MS,
         update: LOCK_UPDATE_MS,
         retries: {
@@ -357,55 +428,71 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
   async withRun<T>(
     runID: string,
     action: (run: CrossReviewRun, save: SaveRun) => Promise<T>,
-  ) {
-    const release = await this.acquire(runID);
+    attempt = 0,
+  ): Promise<T> {
+    const located = await this.locate(runID);
+    if (located === undefined)
+      throw new Error(`Cross-review run not found: ${runID}`);
+    const release = await this.acquire(runID, LOCK_RETRIES, located.root);
+    let released = false;
     try {
-      const path = this.runPath(runID);
       let run: CrossReviewRun;
       try {
-        run = parseRun(path, await readFile(path, "utf8"));
+        run = parseRun(located.path, await readFile(located.path, "utf8"));
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+          if (attempt === 0) {
+            await release();
+            released = true;
+            return this.withRun(runID, action, 1);
+          }
           throw new Error(`Cross-review run not found: ${runID}`);
+        }
         throw error;
       }
       const save = async () => {
         run.updatedAt = this.now();
-        await this.writeAtomic(path, run);
+        await this.writeAtomic(located.path, run);
       };
       const result = await action(run, save);
       await save();
       return result;
     } finally {
-      await release();
+      if (!released) await release();
     }
   }
 
   async listByOwner(ownerSessionID: string): Promise<ListByOwnerResult> {
-    let entries: string[];
-    try {
-      entries = await readdir(this.root);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        return { runs: [], errors: [] };
-      throw error;
-    }
     const runs: CrossReviewRun[] = [];
     const errors: RunStoreError[] = [];
-    for (const entry of entries) {
-      if (!entry.endsWith(".json")) continue;
-      const runID = entry.slice(0, -".json".length);
-      if (!RUN_ID.test(runID)) continue;
+    const seen = new Set<string>();
+    let sawRoot = false;
+    for (const root of this.lookupRoots) {
+      let entries: string[];
       try {
-        const run = parseRun(
-          join(this.root, entry),
-          await readFile(join(this.root, entry), "utf8"),
-        );
-        if (run.ownerSessionID === ownerSessionID) runs.push(run);
-      } catch {
-        errors.push(corruptManifestError(runID));
+        entries = await readdir(root);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      sawRoot = true;
+      for (const entry of entries) {
+        if (!entry.endsWith(".json")) continue;
+        const runID = entry.slice(0, -".json".length);
+        if (!RUN_ID.test(runID) || seen.has(runID)) continue;
+        seen.add(runID);
+        try {
+          const run = parseRun(
+            join(root, entry),
+            await readFile(join(root, entry), "utf8"),
+          );
+          if (run.ownerSessionID === ownerSessionID) runs.push(run);
+        } catch {
+          errors.push(corruptManifestError(runID));
+        }
       }
     }
+    if (!sawRoot) return { runs: [], errors: [] };
     runs.sort(
       (left, right) =>
         left.createdAt - right.createdAt ||
@@ -415,26 +502,33 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
   }
 
   async read(runID: string): Promise<ReadRunResult> {
-    const path = this.runPath(runID);
+    const located = await this.locate(runID);
+    if (located === undefined)
+      return {
+        error: {
+          code: "MANIFEST_NOT_FOUND",
+          runID,
+          detail: `Cross-review run not found: ${runID}`,
+        },
+      };
     try {
-      return { run: parseRun(path, await readFile(path, "utf8")) };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT")
-        return {
-          error: {
-            code: "MANIFEST_NOT_FOUND",
-            runID,
-            detail: `Cross-review run not found: ${runID}`,
-          },
-        };
+      return {
+        run: parseRun(located.path, await readFile(located.path, "utf8")),
+      };
+    } catch {
       return { error: corruptManifestError(runID) };
     }
   }
 
   async cleanupExpiredRuns() {
+    for (const root of this.lookupRoots) await this.cleanupExpiredIn(root);
+    await this.migrateReleasedRuns();
+  }
+
+  private async cleanupExpiredIn(root: string) {
     let entries: string[];
     try {
-      entries = await readdir(this.root);
+      entries = await readdir(root);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
       throw error;
@@ -444,12 +538,12 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
       if (!entry.endsWith(".json")) continue;
       const runID = entry.slice(0, -".json".length);
       if (!RUN_ID.test(runID)) continue;
-      const path = join(this.root, entry);
+      const path = join(root, entry);
       let release: (() => Promise<void>) | undefined;
       try {
         const candidate = parseRun(path, await readFile(path, "utf8"));
         if (candidate.updatedAt >= cutoff) continue;
-        release = await this.acquire(runID, 0);
+        release = await this.acquire(runID, 0, root);
         const run = parseRun(path, await readFile(path, "utf8"));
         if (run.updatedAt < cutoff) {
           // Terminal and abandoned non-terminal runs may still hold a
@@ -473,4 +567,55 @@ export class FileCrossReviewRunStore implements CrossReviewRunStore {
       }
     }
   }
+
+  /**
+   * Move released manifests (no live snapshot worktree) from legacy roots
+   * onto the current root. Live git worktrees stay put: a plain `mv`
+   * breaks `gitdir` / `.git` and `defaultRemoveSnapshot`.
+   */
+  private async migrateReleasedRuns() {
+    const extras = this.lookupRoots.filter((root) => root !== this.root);
+    if (extras.length === 0) return;
+    await this.ensureRoot();
+    for (const extra of extras) {
+      let entries: string[];
+      try {
+        entries = await readdir(extra);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        throw error;
+      }
+      for (const entry of entries) {
+        if (!entry.endsWith(".json")) continue;
+        const runID = entry.slice(0, -".json".length);
+        if (!RUN_ID.test(runID)) continue;
+        const extraPath = join(extra, entry);
+        const primaryPath = this.runPath(runID);
+        if (await pathExists(primaryPath)) continue;
+        let release: (() => Promise<void>) | undefined;
+        try {
+          const candidate = parseRun(
+            extraPath,
+            await readFile(extraPath, "utf8"),
+          );
+          if (await snapshotWorktreeExists(candidate)) continue;
+          release = await this.acquire(runID, 0, extra);
+          const run = parseRun(extraPath, await readFile(extraPath, "utf8"));
+          if (await snapshotWorktreeExists(run)) continue;
+          if (await pathExists(primaryPath)) continue;
+          await relocateFile(extraPath, primaryPath);
+        } catch {
+          // Leave a locked, corrupt, or concurrently replaced manifest.
+        } finally {
+          await release?.().catch(() => undefined);
+        }
+      }
+    }
+  }
+}
+
+async function snapshotWorktreeExists(run: CrossReviewRun) {
+  return (
+    run.snapshot !== undefined && (await pathExists(run.snapshot.worktree))
+  );
 }

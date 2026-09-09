@@ -296,6 +296,7 @@ export async function materializePrSnapshot(
       };
 
     try {
+      await mkdir(dirname(worktree), { recursive: true });
       await git(runCommand, repo, [
         "worktree",
         "add",

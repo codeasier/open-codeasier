@@ -166,7 +166,7 @@ export async function resolveAdapterRuntime(
 }
 
 export function snapshotPaths(stateRoot: string, runID: string) {
-  const worktree = join(stateRoot, runID, "worktree");
+  const worktree = join(stateRoot, ".worktrees", runID, "worktree");
   return { worktree, snapshotDir: join(worktree, ".cross-review") };
 }
 
@@ -363,7 +363,9 @@ export async function createParentSnapshot(input: {
 
 /**
  * Best-effort snapshot removal: `git worktree remove --force`, then delete
- * the `<state>/<runID>/` directory that contained it.
+ * the `<state>/.worktrees/<runID>/` directory that contained it
+ * (`dirname(worktree)`). Manual `rm -rf` of `.worktrees/` leaves stale
+ * `.git/worktrees/<id>` entries; follow with `git worktree prune`.
  */
 export const defaultRemoveSnapshot: SnapshotRemover = async (worktree) => {
   // Resolve first: with a relative worktree (e.g. a relative stateRoot from a

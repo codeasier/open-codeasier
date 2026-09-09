@@ -5,8 +5,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   EXPIRED_RUN_RETENTION_MS,
   FileCrossReviewRunStore,
+  OPEN_CODEASIER_STATE_HOME,
   RUN_SCHEMA_VERSION,
   defaultCrossReviewStateDirectory,
+  legacyCrossReviewStateDirectories,
   type CrossReviewRun,
 } from "../src/cross-review/run-store.js";
 
@@ -42,24 +44,41 @@ function run(): CrossReviewRun {
 }
 
 describe("cross-review run store", () => {
-  it("selects a state directory outside the repository on each platform", () => {
-    expect(
-      defaultCrossReviewStateDirectory(
-        { XDG_STATE_HOME: "/state" },
-        "linux",
-        "/home/me",
-      ),
-    ).toBe("/state/open-codeasier/cross-review");
-    expect(defaultCrossReviewStateDirectory({}, "darwin", "/home/me")).toBe(
-      "/home/me/Library/Application Support/open-codeasier/cross-review",
+  it("selects a stable home state directory on every platform", () => {
+    expect(defaultCrossReviewStateDirectory({}, "/home/me")).toBe(
+      "/home/me/.open-codeasier/cross-review",
     );
     expect(
       defaultCrossReviewStateDirectory(
-        { LOCALAPPDATA: "C:\\state" },
-        "win32",
-        "C:\\Users\\me",
+        { [OPEN_CODEASIER_STATE_HOME]: "/state" },
+        "/home/me",
       ),
-    ).toContain("open-codeasier");
+    ).toBe("/state/cross-review");
+    expect(
+      defaultCrossReviewStateDirectory(
+        { XDG_STATE_HOME: "/xdg", LOCALAPPDATA: "C:\\state" },
+        "/home/me",
+      ),
+    ).toBe("/home/me/.open-codeasier/cross-review");
+  });
+
+  it("lists every legacy platform state root for lookup", () => {
+    expect(
+      legacyCrossReviewStateDirectories(
+        { XDG_STATE_HOME: "/xdg", LOCALAPPDATA: "C:\\state" },
+        "/home/me",
+      ),
+    ).toEqual([
+      "/xdg/open-codeasier/cross-review",
+      "/home/me/Library/Application Support/open-codeasier/cross-review",
+      join("C:\\state", "open-codeasier", "cross-review"),
+      "/home/me/.local/state/open-codeasier/cross-review",
+    ]);
+    expect(legacyCrossReviewStateDirectories({}, "/home/me")).toEqual([
+      "/home/me/Library/Application Support/open-codeasier/cross-review",
+      join("/home/me", "AppData", "Local", "open-codeasier", "cross-review"),
+      "/home/me/.local/state/open-codeasier/cross-review",
+    ]);
   });
 
   it("persists updates across store instances", async () => {
@@ -412,5 +431,116 @@ describe("cross-review run store", () => {
       removeSnapshot,
     );
     await expect(missing.cleanupExpiredRuns()).resolves.toBeUndefined();
+  });
+
+  it("lists, reads, and updates runs that still live on a legacy root", async () => {
+    const primary = await mkdtemp(join(tmpdir(), "cross-review-primary-"));
+    const legacy = await mkdtemp(join(tmpdir(), "cross-review-legacy-"));
+    const worktree = join(legacy, RUN_ID, "worktree");
+    await mkdir(worktree, { recursive: true });
+    const stored: CrossReviewRun = {
+      ...run(),
+      snapshot: {
+        worktree,
+        snapshotDir: join(worktree, ".cross-review"),
+      },
+    };
+    await writeFile(join(legacy, `${RUN_ID}.json`), JSON.stringify(stored));
+    const store = new FileCrossReviewRunStore(primary, () => 10, undefined, [
+      legacy,
+    ]);
+
+    const listed = await store.listByOwner("parent");
+    expect(listed.runs.map((item) => item.runID)).toEqual([RUN_ID]);
+    expect(await store.read(RUN_ID)).toEqual({ run: stored });
+    await store.withRun(RUN_ID, async (current) => {
+      current.phase = "judging";
+    });
+    expect(
+      JSON.parse(await readFile(join(legacy, `${RUN_ID}.json`), "utf8")).phase,
+    ).toBe("judging");
+    await expect(
+      readFile(join(primary, `${RUN_ID}.json`), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reclaims expired runs from a legacy root", async () => {
+    const primary = await mkdtemp(join(tmpdir(), "cross-review-primary-"));
+    const legacy = await mkdtemp(join(tmpdir(), "cross-review-legacy-"));
+    const now = Date.now();
+    const removeSnapshot = vi.fn().mockResolvedValue(undefined);
+    const stale = now - EXPIRED_RUN_RETENTION_MS - 1;
+    const worktree = join(legacy, RUN_ID, "worktree");
+    await writeFile(
+      join(legacy, `${RUN_ID}.json`),
+      JSON.stringify({
+        ...run(),
+        createdAt: stale,
+        updatedAt: stale,
+        phase: "failed",
+        snapshot: {
+          worktree,
+          snapshotDir: join(worktree, ".cross-review"),
+        },
+      }),
+    );
+    const store = new FileCrossReviewRunStore(
+      primary,
+      () => now,
+      removeSnapshot,
+      [legacy],
+    );
+
+    await store.cleanupExpiredRuns();
+
+    expect(removeSnapshot).toHaveBeenCalledWith(worktree);
+    await expect(
+      readFile(join(legacy, `${RUN_ID}.json`), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("moves a released legacy manifest and leaves a live snapshot in place", async () => {
+    const primary = await mkdtemp(join(tmpdir(), "cross-review-primary-"));
+    const legacy = await mkdtemp(join(tmpdir(), "cross-review-legacy-"));
+    const releasedID = "00000000-0000-4000-8000-000000000002";
+    const liveWorktree = join(legacy, RUN_ID, "worktree");
+    await mkdir(liveWorktree, { recursive: true });
+    await writeFile(
+      join(legacy, `${RUN_ID}.json`),
+      JSON.stringify({
+        ...run(),
+        snapshot: {
+          worktree: liveWorktree,
+          snapshotDir: join(liveWorktree, ".cross-review"),
+        },
+      }),
+    );
+    await writeFile(
+      join(legacy, `${releasedID}.json`),
+      JSON.stringify({
+        ...run(),
+        runID: releasedID,
+        phase: "completed",
+      }),
+    );
+    const store = new FileCrossReviewRunStore(primary, () => 10, undefined, [
+      legacy,
+    ]);
+
+    await store.cleanupExpiredRuns();
+
+    expect(
+      JSON.parse(await readFile(join(legacy, `${RUN_ID}.json`), "utf8")).runID,
+    ).toBe(RUN_ID);
+    await expect(
+      readFile(join(legacy, `${releasedID}.json`), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      JSON.parse(await readFile(join(primary, `${releasedID}.json`), "utf8"))
+        .runID,
+    ).toBe(releasedID);
+    expect(await store.read(releasedID)).toMatchObject({
+      run: expect.objectContaining({ runID: releasedID, phase: "completed" }),
+    });
   });
 });

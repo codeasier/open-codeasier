@@ -142,7 +142,21 @@ For non-PR targets, parent-gathered `context` or `evidenceDir` skips the LLM gat
 
 `cross_review_status` reports visible progress through `counts`, a per-reviewer `summary`, and `pollAfterMs`, detects overdue work, and dispatches queued reviewers. An overdue session enters `timeout_pending` without being aborted and returns `actionRequired`; ask the user to preserve or abort it before sending `timeoutAction`. Polling omits completed review text by default; request `detail: true` or `includeOutputs: true` only when needed. `cross_review_cancel` stops unfinished sessions, and `cross_review_finalize` applies quorum and returns candidates for parent judging or starts and later collects an explicit judge. Finalize rejects while gathering, reviewers, or the judge are active, or a timeout decision is pending, so it cannot be used as a poll. Parent-session finalize returns `pending-parent-consolidation` and retains the snapshot for verification until explicit cancel or the 7-day expired-run cleanup. Successful explicit-judge finalization removes the snapshot; failed runs retain it until cancel or expired-run cleanup. Complete parent verification before cancelling for cleanup; after that judging, ask whether to clean up with `cross_review_cancel` or keep the snapshot. Do not offer reuse. Expired-run cleanup is best-effort: manifests whose `updatedAt` is older than 7 days, including abandoned non-terminal runs, are removed with their snapshot worktrees on plugin load, finalize, cancel, and when a new run is created.
 
-Run manifests are stored outside the repository in the platform state directory, scoped to the parent session and canonical project directory. This lets a restarted plugin inspect, cancel, or finalize existing runs without dirtying the worktree. Normal status polling omits completed review text to avoid repeatedly adding it to parent context; finalization returns the complete candidates once.
+Run manifests are stored outside the repository at `~/.open-codeasier/cross-review/<runID>.json`, scoped to the parent session and canonical project directory. Snapshot worktrees live beside them at `~/.open-codeasier/cross-review/.worktrees/<runID>/worktree`. Set `OPEN_CODEASIER_STATE_HOME` to replace the home parent (`$OPEN_CODEASIER_STATE_HOME/cross-review`). Previous platform roots (`$XDG_STATE_HOME/open-codeasier/cross-review`, `~/Library/Application Support/open-codeasier/cross-review`, `%LOCALAPPDATA%/open-codeasier/cross-review`, and `~/.local/state/open-codeasier/cross-review`) are still scanned for status, cancel, finalize, audit, and expired-run cleanup, so existing runs are not orphaned; released manifests (no live snapshot worktree) are moved to the new root. Live git worktrees are not moved. This lets a restarted plugin inspect, cancel, or finalize existing runs without dirtying the worktree.
+
+Parent-session judging reads the snapshot from the user's repository workspace. Home expansion does not make that path in-workspace, so add this one-time OpenCode permission (`~` expands on every platform, including to `%USERPROFILE%` on Windows). Do not widen it to `~/.config/opencode/**`. An explicit `judgeModel` binds the judge to the snapshot and does not need the rule.
+
+```json
+{
+  "permission": {
+    "external_directory": {
+      "~/.open-codeasier/cross-review/**": "allow"
+    }
+  }
+}
+```
+
+Manual `rm -rf ~/.open-codeasier/cross-review/.worktrees/` leaves stale `.git/worktrees/<id>` admin entries in the source repository — follow with `git worktree prune`. `cross_review_cancel` and the 7-day expired-run cleanup already remove those entries. Normal status polling omits completed review text to avoid repeatedly adding it to parent context; finalization returns the complete candidates once.
 
 Each reviewer uses the installed `cross-reviewer` agent, receives the same normalized target, and cannot access another reviewer's output. The agent denies edit, shell, and delegation permissions, while each SDK prompt also disables mutating and delegation tools. The original blocking `cross_review` tool remains available for one compatibility release, but the bundled skill does not call it.
 
