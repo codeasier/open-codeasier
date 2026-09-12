@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { readFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "../src/plugin.js";
 import { FileCrossReviewRunStore } from "../src/cross-review/run-store.js";
@@ -145,6 +146,106 @@ describe("plugin module", () => {
       "cross_review_finalize",
       "session_review",
       "cross_review_audit",
+    ]);
+  });
+
+  it.each([
+    [
+      undefined,
+      [
+        ["cross_review_start", "ask"],
+        ["cross_review", "ask"],
+      ],
+    ],
+    [
+      "allow",
+      [
+        ["cross_review_start", "ask"],
+        ["cross_review", "ask"],
+        ["*", "allow"],
+      ],
+    ],
+    [
+      "deny",
+      [
+        ["cross_review_start", "ask"],
+        ["cross_review", "ask"],
+        ["*", "deny"],
+      ],
+    ],
+    [
+      { "*": "allow" },
+      [
+        ["cross_review_start", "ask"],
+        ["cross_review", "ask"],
+        ["*", "allow"],
+      ],
+    ],
+    [
+      { "cross_review*": "deny" },
+      [
+        ["cross_review_start", "ask"],
+        ["cross_review", "ask"],
+        ["cross_review*", "deny"],
+      ],
+    ],
+    [
+      { "*": "allow", cross_review_start: "ask", cross_review: "deny" },
+      [
+        ["*", "allow"],
+        ["cross_review_start", "ask"],
+        ["cross_review", "deny"],
+      ],
+    ],
+    [
+      {
+        cross_review_start: "deny",
+        "*": "allow",
+        cross_review: { "*": "ask" },
+      },
+      [
+        ["cross_review_start", "deny"],
+        ["*", "allow"],
+        ["cross_review", { "*": "ask" }],
+      ],
+    ],
+  ])(
+    "adds ask defaults without reordering explicit permission policy %j",
+    async (permission, expected) => {
+      const hooks = await plugin.server({ client: {} } as any);
+      const config: any = {
+        permission,
+        agent: { build: { permission: { cross_review: "deny" } } },
+      };
+      await hooks.config?.(config);
+      expect(Object.entries(config.permission)).toEqual(expected);
+      expect(config.agent.build.permission).toEqual({ cross_review: "deny" });
+      // Repeated config hooks must not change last-match-wins semantics.
+      await hooks.config?.(config);
+      expect(Object.entries(config.permission)).toEqual(expected);
+    },
+  );
+
+  it("pins the same effect release as @opencode-ai/plugin", async () => {
+    const pkg = JSON.parse(await readFile("package.json", "utf8")) as {
+      dependencies: { effect: string };
+    };
+    const lock = JSON.parse(await readFile("package-lock.json", "utf8")) as {
+      packages: Record<
+        string,
+        { version?: string; dependencies?: { effect?: string } }
+      >;
+    };
+    const rootPin = pkg.dependencies.effect;
+    expect(
+      lock.packages["node_modules/@opencode-ai/plugin"]?.dependencies?.effect,
+    ).toBe(rootPin);
+    const effectCopies = Object.entries(lock.packages).filter(
+      ([path]) =>
+        path === "node_modules/effect" || path.endsWith("/node_modules/effect"),
+    );
+    expect(effectCopies).toEqual([
+      ["node_modules/effect", expect.objectContaining({ version: rootPin })],
     ]);
   });
 });

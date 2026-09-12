@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 import { readEvidencePack, writeEvidencePack } from "./evidence.js";
 import { assertPrimarySession } from "../primary-session.js";
+import { crossReviewAuthorization } from "./authorization.js";
 import {
   configWarning,
   embeddedContext,
@@ -1806,7 +1807,7 @@ export function createCrossReviewProtocolTools(
 
   const configPreview = tool({
     description:
-      "Preview the resolved cross-review configuration without creating sessions; invoke from primary sessions to confirm the effective config before starting",
+      "Preview the resolved cross-review configuration without creating sessions; invoke only with explicit user cross-review intent from primary sessions to confirm the effective config before starting",
     args: {
       reviewModels: tool.schema
         .array(tool.schema.string())
@@ -1885,7 +1886,7 @@ export function createCrossReviewProtocolTools(
 
   const start = tool({
     description:
-      "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user review intent from primary sessions. For a non-PR target without judgeModel, parent-gathered context or evidenceDir is required; omit optional overrides instead of passing an empty array or 0",
+      "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user cross-review intent (independent multi-model review), not ordinary review, from primary sessions. For a non-PR target without judgeModel, parent-gathered context or evidenceDir is required; omit optional overrides instead of passing an empty array or 0",
     args: {
       target: tool.schema.string().min(1).max(4_000),
       context: tool.schema.string().min(1).max(1_000_000).optional(),
@@ -1927,6 +1928,7 @@ export function createCrossReviewProtocolTools(
         .describe(OMIT_ZERO_OVERRIDE_DESCRIPTION),
     },
     async execute(args, context) {
+      const authorize = crossReviewAuthorization(context, "cross_review_start");
       if (context.abort.aborted) throw new Error("Cross-review cancelled");
       await assertPrimarySession(
         client,
@@ -1954,6 +1956,23 @@ export function createCrossReviewProtocolTools(
       // Empty or whitespace-only context is omitted for both reviewer
       // briefs and PR snapshot notes.md.
       const providedContext = normalizeProvidedContext(args.context);
+      // Classify and require shared evidence before the permission prompt:
+      // both checks are argument-local, and a request that cannot succeed
+      // must not consume an approval. Adapter I/O stays after authorize.
+      const classification = await classifyTarget(
+        args.target,
+        context.directory,
+      );
+      if (classification.kind === "error")
+        throw new Error(classification.message);
+      requireSharedEvidence({
+        judgeModel,
+        context: providedContext,
+        isPrSnapshot: classification.kind === "pr",
+        hasEvidencePack: args.evidenceDir !== undefined,
+        target: args.target,
+      });
+      await authorize({ target: args.target, reviewers, judgeModel });
       const pack =
         args.evidenceDir === undefined
           ? undefined
@@ -1964,26 +1983,6 @@ export function createCrossReviewProtocolTools(
       let prSnapshot: NonNullable<CrossReviewRun["snapshot"]> | undefined;
       let runPersisted = false;
       try {
-        // Classify the target first: a GitHub/GitCode pull request must be
-        // materialized as a pinned snapshot before any reviewer session
-        // exists (fail closed, no LLM gatherer, no reviewer concurrency).
-        const classification = await classifyTarget(
-          args.target,
-          context.directory,
-        );
-        if (classification.kind === "error")
-          throw new Error(classification.message);
-        // Fail closed before the adapter or any child session: parent-session
-        // judging cannot gather; a classified PR or validated pack supplies
-        // shared evidence independently of caller context.
-        requireSharedEvidence({
-          judgeModel,
-          context: providedContext,
-          isPrSnapshot: classification.kind === "pr",
-          hasEvidencePack: pack !== undefined,
-          target: args.target,
-        });
-
         let adapterGatherer: AdapterGathererRun | undefined;
         if (classification.kind === "pr") {
           const repo =
@@ -2306,7 +2305,7 @@ export function createCrossReviewProtocolTools(
 
   const status = tool({
     description:
-      "Poll and advance one asynchronous cross-review run, or resolve its pending timeout with an explicit preserve/abort action; invoke only with explicit user review intent from primary sessions. Do not pass timeoutAction on ordinary polls; the default result is compact",
+      "Poll and advance one asynchronous cross-review run, or resolve its pending timeout with an explicit preserve/abort action; invoke only for an authorized cross-review run from primary sessions. Do not pass timeoutAction on ordinary polls; the default result is compact",
     args: {
       runID: tool.schema.string().uuid(),
       detail: tool.schema
@@ -2413,7 +2412,7 @@ export function createCrossReviewProtocolTools(
 
   const cancel = tool({
     description:
-      "Cancel one asynchronous cross-review run; invoke only with explicit user review intent from primary sessions",
+      "Cancel one asynchronous cross-review run; invoke only for explicit cross-review cleanup or cancellation from primary sessions",
     args: { runID: tool.schema.string().uuid() },
     async execute(args, context) {
       return withExpiredRunReclaim(() =>

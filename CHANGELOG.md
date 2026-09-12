@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Gate asynchronous and legacy cross-review starts on OpenCode permissions
+  before creating snapshots, persisting runs, or starting child sessions.
+  Supply ask defaults and execute the host's permission Effect with its
+  captured context; requests identify the target, reviewer models/count,
+  judge, and additional token cost. Explicit user permission overrides apply.
+  Local target classification and shared-evidence checks run before the
+  prompt. Legacy starts publish "preparing" metadata only after approval.
+  A fiber-less host ask fails closed with an explicit runtime error.
+- Restrict the cross-review workflow to explicit cross-review or independent
+  multi-model review requests. Accidental skill loading in ordinary reviews
+  and child sessions now exits the workflow without blocking the original
+  task or incorrectly recommending plugin reinstallation.
+
 ## [0.3.3] - 2026-09-09
 
 ### Changed

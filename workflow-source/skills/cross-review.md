@@ -1,9 +1,15 @@
 ---
 name: cross-review
-description: Initialize or run configurable independent code reviewers and consolidate only verified findings.
+description: Use only when the user explicitly requests cross-review, independent multi-model review, or cross-review setup. Ordinary code or PR review does not trigger this workflow.
 ---
 
 # Cross Review
+
+## Invocation Boundary
+
+Require an explicit user request for `/cross-review`, cross-review, independent multi-model review, or cross-review setup before entering this workflow. Ordinary review intent is not cross-review intent. If this skill was loaded accidentally during an ordinary review, exit this workflow and continue the original task; do not preview cross-review configuration or solicit approval to escalate it.
+
+Cross-review orchestration belongs to the primary session only. In a child/subagent session, exit this workflow and continue the original ordinary-review task. If the parent explicitly delegated cross-review orchestration, return control to the parent with a short explanation that only the primary session can orchestrate it. Expected tool absence in a child is not a missing-plugin failure: do not stop the original task or recommend reinstallation.
 
 ## Setup Mode
 
@@ -31,7 +37,9 @@ Do not widen that rule to `~/.config/opencode/**`. An explicit `judgeModel` bind
 
 ## Review Mode
 
-Before parsing or reviewing the target, confirm that `cross_review_config`, `cross_review_start`, `cross_review_status`, `cross_review_cancel`, and `cross_review_finalize` are all available in the current session. If any are unavailable, stop immediately; do not use the legacy blocking `cross_review`, substitute task agents, run manual parallel reviews, or use another tool. Look first for a project `.opencode/.open-codeasier/installed-assets.json` that owns `skills/cross-review/SKILL.md`, then for the global `~/.config/opencode/.open-codeasier/installed-assets.json`. Read `packageVersion` from the first matching package-owned manifest and report the exact matching runtime command: `opencode plugin open-codeasier@<packageVersion> --force` for project assets or `opencode plugin open-codeasier@<packageVersion> --global --force` for global assets. Tell the user to restart OpenCode afterward. If neither manifest supplies a valid package version, tell the user to reinstall the runtime plugin and workflow assets at the same exact version and scope. Do not inspect OpenCode's private cache layout.
+After passing the invocation and primary-session boundaries, confirm that `cross_review_config`, `cross_review_start`, `cross_review_status`, `cross_review_cancel`, and `cross_review_finalize` are all available before parsing or reviewing the target. If tools are missing in this primary session, stop the cross-review workflow; do not use the legacy blocking `cross_review`, substitute task agents, run manual parallel reviews, or use another tool. Look first for a project `.opencode/.open-codeasier/installed-assets.json` that owns `skills/cross-review/SKILL.md`, then for the global `~/.config/opencode/.open-codeasier/installed-assets.json`. Read `packageVersion` from the first matching package-owned manifest and report the exact matching runtime command: `opencode plugin open-codeasier@<packageVersion> --force` for project assets or `opencode plugin open-codeasier@<packageVersion> --global --force` for global assets. Tell the user to restart OpenCode afterward. If neither manifest supplies a valid package version, tell the user to reinstall the runtime plugin and workflow assets at the same exact version and scope. Do not inspect OpenCode's private cache layout.
+
+When confirming the preview, explicitly name cross-review, the target, resolved reviewer models/count, judge, and additional token usage and cost. Configuration confirmation is not a substitute for the runtime permission gate: `cross_review_start` (and legacy `cross_review`) requests permission before creating snapshots, persisting runs, or starting children. The plugin supplies ask-default permissions; effective OpenCode user, agent, session, and remembered permission rules can override them. A denied request ends this workflow; do not retry via another entry point or change permissions to bypass denial.
 
 {{CROSS_REVIEW_CONFIG}} Accept one target plus optional `--review-models`, `--agents`, `--max-concurrency`, `--judge-model`, `--focus`, `--context`, `--evidence-dir`, and `--reviewer-timeout-ms` overrides. Map `--evidence-dir` to `cross_review_start.evidenceDir`, not to a config-preview argument or configuration key. Reject unknown flags, missing values, duplicate flags, or more than one target. `--agents` and `--max-concurrency` accept 1-8; `--reviewer-timeout-ms` accepts 5000-3600000. {{MODEL_NAMING}}
 

@@ -187,7 +187,29 @@ describe("workflow generator", () => {
       "recommend a reviewer set and an optional judge drawn only from that list",
     );
     expect(openCrossReview).toContain(
-      "If any are unavailable, stop immediately; do not use the legacy blocking",
+      "description: Use only when the user explicitly requests cross-review, independent multi-model review, or cross-review setup.",
+    );
+    expect(openCrossReview).toContain(
+      "Ordinary review intent is not cross-review intent",
+    );
+    expect(openCrossReview).toContain(
+      "exit this workflow and continue the original task",
+    );
+    expect(openCrossReview).toContain(
+      "In a child/subagent session, exit this workflow and continue the original ordinary-review task",
+    );
+    expect(openCrossReview).toContain("return control to the parent");
+    expect(openCrossReview).toContain(
+      "do not stop the original task or recommend reinstallation",
+    );
+    expect(openCrossReview).toContain(
+      "If tools are missing in this primary session, stop the cross-review workflow",
+    );
+    expect(openCrossReview).not.toContain(
+      "If any are unavailable, stop immediately",
+    );
+    expect(openCrossReview).toContain(
+      "Configuration confirmation is not a substitute for the runtime permission gate",
     );
     expect(openCrossReview).toContain("Call `cross_review_start` once");
     expect(openCrossReview).toContain("Poll with `cross_review_status`");

@@ -3,6 +3,9 @@ import { mkdtemp, mkdir, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { Effect } from "effect";
+import { pendingPermission } from "./helpers/permission.js";
+import { FileCrossReviewRunStore } from "../src/cross-review/run-store.js";
 import {
   ACCEPTED_PR_TARGET_FORMS,
   createCrossReviewTool,
@@ -57,7 +60,7 @@ function context(abort = new AbortController()) {
     worktree: "/repo",
     abort: abort.signal,
     metadata() {},
-    async ask() {},
+    ask: () => Effect.void,
   } as any;
 }
 
@@ -1482,11 +1485,63 @@ describe("cross_review tool", () => {
 
   it("rejects parent-session judging of a non-PR target without context", async () => {
     const mock = client();
+    const ask = vi.fn(() => Effect.void);
     await expect(
       createCrossReviewTool(mock, () =>
         wrapConfig({ reviewers: [{ model: "a/one" }] }),
-      ).execute({ target: "HEAD", agents: 1 }, context()),
+      ).execute({ target: "HEAD", agents: 1 }, { ...context(), ask }),
     ).rejects.toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(ask).not.toHaveBeenCalled();
+    expect(mock.session.create).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "denies legacy non-PR starts before gathering or reviewing (parent context: %s)",
+    async (hasContext) => {
+      const mock = client();
+      const ask = vi.fn(() => Effect.die(new Error("Permission denied")));
+      const tool = createCrossReviewTool(mock, () =>
+        wrapConfig({ reviewModels: ["a/one"], judgeModel: "b/judge" }),
+      );
+      await expect(
+        tool.execute(
+          {
+            target: "HEAD",
+            ...(hasContext
+              ? { context: "already gathered", judgeModel: "" }
+              : {}),
+          },
+          { ...context(), ask },
+        ),
+      ).rejects.toThrow("Permission denied");
+      expect(ask).toHaveBeenCalledOnce();
+      expect(mock.session.create).not.toHaveBeenCalled();
+      expect(mock.session.prompt).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects an unclassifiable target before the permission prompt", async () => {
+    const mock = client();
+    const ask = vi.fn(() => Effect.void);
+    const metadata = vi.fn();
+    await expect(
+      createCrossReviewTool(
+        mock,
+        () =>
+          wrapConfig({
+            reviewers: [{ model: "a/one" }],
+            judgeModel: "b/judge",
+          }),
+        {
+          classifyTarget: async () => ({
+            kind: "error",
+            message: "Cannot classify cross-review target",
+          }),
+        },
+      ).execute({ target: "42", agents: 1 }, { ...context(), ask, metadata }),
+    ).rejects.toThrow("Cannot classify cross-review target");
+    expect(ask).not.toHaveBeenCalled();
+    expect(metadata).not.toHaveBeenCalled();
     expect(mock.session.create).not.toHaveBeenCalled();
   });
 });
@@ -1538,6 +1593,103 @@ describe("cross_review tool PR snapshot path", () => {
     );
     return { tool, runPrAdapter, removeSnapshot };
   }
+
+  it.each(["approve", "deny", "cancel"])(
+    "waits for an executed host permission Effect before legacy PR side effects: %s",
+    async (action) => {
+      const mock = client();
+      const classify = vi
+        .fn()
+        .mockResolvedValue({ kind: "pr", forge: "github" });
+      const { tool, runPrAdapter, removeSnapshot } = legacyPrTool(mock, {
+        classify,
+        loadConfig: () =>
+          wrapConfig({
+            reviewers: [{ model: "a/one" }, { model: "a/two" }],
+            judgeModel: "b/judge",
+          }),
+      });
+      const persist = vi.spyOn(FileCrossReviewRunStore.prototype, "create");
+      const approval = pendingPermission();
+      const abort = new AbortController();
+      const target = "https://github.com/org/repo/pull/69";
+      try {
+        const started = approval.execute(() =>
+          tool.execute({ target }, { ...context(abort), ask: approval.ask }),
+        );
+        const request = await approval.requested.promise;
+        expect(request).toMatchObject({
+          permission: "cross_review",
+          always: [],
+          metadata: {
+            target,
+            reviewerCount: 2,
+            reviewModels: ["a/one", "a/two"],
+            judgeModel: "b/judge",
+          },
+        });
+        expect(request.patterns[0]).toContain("Start cross-review");
+        expect(request.patterns[0]).toContain(target);
+        expect(request.patterns[0]).toContain(
+          "2 independent reviewers (a/one, a/two)",
+        );
+        expect(request.patterns[0]).toContain("token usage and cost");
+        expect(approval.observedDirectories).toEqual(["/host-worktree"]);
+        expect(classify).toHaveBeenCalledOnce();
+        expect(runPrAdapter).not.toHaveBeenCalled();
+        expect(persist).not.toHaveBeenCalled();
+        expect(mock.session.create).not.toHaveBeenCalled();
+        expect(mock.session.prompt).not.toHaveBeenCalled();
+        expect(removeSnapshot).not.toHaveBeenCalled();
+        if (action === "approve") {
+          approval.decision.resolve(undefined);
+          const result = await started;
+          expect(JSON.parse((result as any).output).judge.status).toBe(
+            "succeeded",
+          );
+          expect(runPrAdapter).toHaveBeenCalledOnce();
+          expect(mock.session.create).toHaveBeenCalledTimes(3);
+        } else {
+          const rejected = expect(started).rejects.toThrow();
+          if (action === "deny")
+            approval.decision.reject(new Error("Permission denied"));
+          else abort.abort();
+          await rejected;
+          // A late approval after cancellation must not resume the tool.
+          approval.decision.resolve(undefined);
+          expect(runPrAdapter).not.toHaveBeenCalled();
+          expect(persist).not.toHaveBeenCalled();
+          expect(mock.session.create).not.toHaveBeenCalled();
+          expect(mock.session.prompt).not.toHaveBeenCalled();
+          expect(removeSnapshot).not.toHaveBeenCalled();
+        }
+      } finally {
+        persist.mockRestore();
+      }
+    },
+  );
+
+  it("does not publish preparing metadata before authorization", async () => {
+    const mock = client();
+    const metadata = vi.fn();
+    const ask = vi.fn(() => Effect.die(new Error("Permission denied")));
+    const { tool, runPrAdapter } = legacyPrTool(mock);
+    await expect(
+      tool.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        { ...context(), ask, metadata },
+      ),
+    ).rejects.toThrow("Permission denied");
+    expect(ask).toHaveBeenCalledOnce();
+    expect(metadata).not.toHaveBeenCalled();
+    expect(runPrAdapter).not.toHaveBeenCalled();
+    expect(mock.session.create).not.toHaveBeenCalled();
+  });
 
   it("runs the adapter, binds sessions to the snapshot, and cleans up on success", async () => {
     const mock = client();

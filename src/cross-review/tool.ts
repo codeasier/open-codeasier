@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 import { assertPrimarySession } from "../primary-session.js";
+import { crossReviewAuthorization } from "./authorization.js";
 import {
   findGitRoot,
   loadCrossReviewConfig,
@@ -628,7 +629,7 @@ export function createCrossReviewTool(
     prSnapshotOptions.removeSnapshot ?? defaultRemoveSnapshot;
   return tool({
     description:
-      "Legacy blocking cross-review entry point; invoke only with explicit user review intent from primary sessions and prefer cross_review_start/status/finalize",
+      "Legacy blocking cross-review entry point; invoke only with explicit user cross-review intent (independent multi-model review), not ordinary review, from primary sessions and prefer cross_review_start/status/finalize",
     args: {
       target: tool.schema.string().min(1).max(4_000),
       context: tool.schema.string().min(1).max(1_000_000).optional(),
@@ -656,6 +657,7 @@ export function createCrossReviewTool(
       focus: tool.schema.string().max(2_000).optional(),
     },
     async execute(args, context) {
+      const authorize = crossReviewAuthorization(context, "cross_review");
       if (context.abort.aborted) throw new Error("Cross-review cancelled");
       await assertPrimarySession(
         client,
@@ -691,10 +693,6 @@ export function createCrossReviewTool(
         // empty overrides are stripped and remaining values are revalidated
         // against the loader's bounds.
         const overrides = prepareCrossReviewOverrides(args);
-        context.metadata({
-          title: "Cross-review: preparing",
-          metadata: { target: args.target, stage: "preparing" },
-        });
         const loaded = await loadConfig(context.directory);
         throwIfCancelled();
         const config = loaded.config;
@@ -748,7 +746,6 @@ export function createCrossReviewTool(
             },
           });
         };
-        publishProgress("preparing");
 
         const requestedModels = [
           ...new Set([
@@ -780,6 +777,27 @@ export function createCrossReviewTool(
         }
         const embedLimit = resolveEmbedLimit(catalog, requestedModels);
 
+        // An empty or whitespace-only context is treated as "not provided":
+        // it must not disable gathering while embedding nothing into briefs.
+        const providedContext = normalizeProvidedContext(args.context);
+        // Classify and require shared evidence before the permission prompt
+        // so a request that cannot succeed does not consume an approval.
+        const classification = await classifyTarget(
+          args.target,
+          context.directory,
+        );
+        if (classification.kind === "error")
+          throw new Error(classification.message);
+        requireSharedEvidence({
+          judgeModel,
+          context: providedContext,
+          isPrSnapshot: classification.kind === "pr",
+          target: args.target,
+        });
+        await authorize({ target: args.target, reviewers, judgeModel });
+        throwIfCancelled();
+        publishProgress("preparing");
+
         let judgeSessionID: string | undefined;
         let gatheredContext: string | undefined;
         let gatherer:
@@ -790,27 +808,8 @@ export function createCrossReviewTool(
               error?: string;
             }
           | undefined;
-        // An empty or whitespace-only context is treated as "not provided":
-        // it must not disable gathering while embedding nothing into briefs.
-        const providedContext = normalizeProvidedContext(args.context);
-
         // Classified pull requests are materialized as a snapshot worktree
         // before any reviewer session exists (fail closed, no LLM gatherer).
-        const classification = await classifyTarget(
-          args.target,
-          context.directory,
-        );
-        if (classification.kind === "error")
-          throw new Error(classification.message);
-        // Fail closed before the adapter or any child session: parent-session
-        // judging cannot gather, and a classified PR already has snapshot
-        // evidence.
-        requireSharedEvidence({
-          judgeModel,
-          context: providedContext,
-          isPrSnapshot: classification.kind === "pr",
-          target: args.target,
-        });
         let prSnapshot:
           | {
               worktree: string;
