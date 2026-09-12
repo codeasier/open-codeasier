@@ -164,7 +164,7 @@ Each reviewer uses the installed `cross-reviewer` agent, receives the same norma
 
 Cross-review is an explicit opt-in workflow: request `/cross-review` or independent multi-model review. An ordinary code/PR review request should continue as ordinary review. The orchestration skill is primary-session only; accidentally loading it in a child session must not block that child's original task.
 
-Both `cross_review_start` and legacy `cross_review` execute an OpenCode permission request before creating snapshots, persisting runs, or starting children. The request names cross-review, the target, resolved reviewer models/count, judge, and additional token usage and cost. Denial or cancellation prevents the start; configuration-preview confirmation alone does not authorize it. The plugin inserts these defaults before existing user rules to override OpenCode's built-in wildcard allow:
+Both `cross_review_start` and legacy `cross_review` execute an OpenCode permission request before creating snapshots, persisting runs, or starting children. Local target classification and shared-evidence checks run first so a request that cannot succeed does not consume an approval. The request names cross-review, the target, resolved reviewer models/count, judge, and additional token usage and cost. Denial or cancellation prevents the start; configuration-preview confirmation alone does not authorize it. The permission Effect must run in the host tool fiber (OpenCode 1.14.49); a fiber-less invocation fails closed instead of showing a prompt. The plugin inserts these defaults before existing user rules to override OpenCode's built-in wildcard allow:
 
 ```json
 {

@@ -693,10 +693,6 @@ export function createCrossReviewTool(
         // empty overrides are stripped and remaining values are revalidated
         // against the loader's bounds.
         const overrides = prepareCrossReviewOverrides(args);
-        context.metadata({
-          title: "Cross-review: preparing",
-          metadata: { target: args.target, stage: "preparing" },
-        });
         const loaded = await loadConfig(context.directory);
         throwIfCancelled();
         const config = loaded.config;
@@ -750,7 +746,6 @@ export function createCrossReviewTool(
             },
           });
         };
-        publishProgress("preparing");
 
         const requestedModels = [
           ...new Set([
@@ -782,8 +777,26 @@ export function createCrossReviewTool(
         }
         const embedLimit = resolveEmbedLimit(catalog, requestedModels);
 
+        // An empty or whitespace-only context is treated as "not provided":
+        // it must not disable gathering while embedding nothing into briefs.
+        const providedContext = normalizeProvidedContext(args.context);
+        // Classify and require shared evidence before the permission prompt
+        // so a request that cannot succeed does not consume an approval.
+        const classification = await classifyTarget(
+          args.target,
+          context.directory,
+        );
+        if (classification.kind === "error")
+          throw new Error(classification.message);
+        requireSharedEvidence({
+          judgeModel,
+          context: providedContext,
+          isPrSnapshot: classification.kind === "pr",
+          target: args.target,
+        });
         await authorize({ target: args.target, reviewers, judgeModel });
         throwIfCancelled();
+        publishProgress("preparing");
 
         let judgeSessionID: string | undefined;
         let gatheredContext: string | undefined;
@@ -795,27 +808,8 @@ export function createCrossReviewTool(
               error?: string;
             }
           | undefined;
-        // An empty or whitespace-only context is treated as "not provided":
-        // it must not disable gathering while embedding nothing into briefs.
-        const providedContext = normalizeProvidedContext(args.context);
-
         // Classified pull requests are materialized as a snapshot worktree
         // before any reviewer session exists (fail closed, no LLM gatherer).
-        const classification = await classifyTarget(
-          args.target,
-          context.directory,
-        );
-        if (classification.kind === "error")
-          throw new Error(classification.message);
-        // Fail closed before the adapter or any child session: parent-session
-        // judging cannot gather, and a classified PR already has snapshot
-        // evidence.
-        requireSharedEvidence({
-          judgeModel,
-          context: providedContext,
-          isPrSnapshot: classification.kind === "pr",
-          target: args.target,
-        });
         let prSnapshot:
           | {
               worktree: string;

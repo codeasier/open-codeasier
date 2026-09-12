@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
+import { readFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import plugin from "../src/plugin.js";
 import { FileCrossReviewRunStore } from "../src/cross-review/run-store.js";
@@ -224,4 +225,27 @@ describe("plugin module", () => {
       expect(Object.entries(config.permission)).toEqual(expected);
     },
   );
+
+  it("pins the same effect release as @opencode-ai/plugin", async () => {
+    const pkg = JSON.parse(await readFile("package.json", "utf8")) as {
+      dependencies: { effect: string };
+    };
+    const lock = JSON.parse(await readFile("package-lock.json", "utf8")) as {
+      packages: Record<
+        string,
+        { version?: string; dependencies?: { effect?: string } }
+      >;
+    };
+    const rootPin = pkg.dependencies.effect;
+    expect(
+      lock.packages["node_modules/@opencode-ai/plugin"]?.dependencies?.effect,
+    ).toBe(rootPin);
+    const effectCopies = Object.entries(lock.packages).filter(
+      ([path]) =>
+        path === "node_modules/effect" || path.endsWith("/node_modules/effect"),
+    );
+    expect(effectCopies).toEqual([
+      ["node_modules/effect", expect.objectContaining({ version: rootPin })],
+    ]);
+  });
 });

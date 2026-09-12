@@ -1953,10 +1953,26 @@ export function createCrossReviewProtocolTools(
       const judgeModel = plan.judgeModel;
       const maxConcurrency = plan.maxConcurrency;
       const embedLimit = plan.embedLimit;
-      await authorize({ target: args.target, reviewers, judgeModel });
       // Empty or whitespace-only context is omitted for both reviewer
       // briefs and PR snapshot notes.md.
       const providedContext = normalizeProvidedContext(args.context);
+      // Classify and require shared evidence before the permission prompt:
+      // both checks are argument-local, and a request that cannot succeed
+      // must not consume an approval. Adapter I/O stays after authorize.
+      const classification = await classifyTarget(
+        args.target,
+        context.directory,
+      );
+      if (classification.kind === "error")
+        throw new Error(classification.message);
+      requireSharedEvidence({
+        judgeModel,
+        context: providedContext,
+        isPrSnapshot: classification.kind === "pr",
+        hasEvidencePack: args.evidenceDir !== undefined,
+        target: args.target,
+      });
+      await authorize({ target: args.target, reviewers, judgeModel });
       const pack =
         args.evidenceDir === undefined
           ? undefined
@@ -1967,26 +1983,6 @@ export function createCrossReviewProtocolTools(
       let prSnapshot: NonNullable<CrossReviewRun["snapshot"]> | undefined;
       let runPersisted = false;
       try {
-        // Classify the target first: a GitHub/GitCode pull request must be
-        // materialized as a pinned snapshot before any reviewer session
-        // exists (fail closed, no LLM gatherer, no reviewer concurrency).
-        const classification = await classifyTarget(
-          args.target,
-          context.directory,
-        );
-        if (classification.kind === "error")
-          throw new Error(classification.message);
-        // Fail closed before the adapter or any child session: parent-session
-        // judging cannot gather; a classified PR or validated pack supplies
-        // shared evidence independently of caller context.
-        requireSharedEvidence({
-          judgeModel,
-          context: providedContext,
-          isPrSnapshot: classification.kind === "pr",
-          hasEvidencePack: pack !== undefined,
-          target: args.target,
-        });
-
         let adapterGatherer: AdapterGathererRun | undefined;
         if (classification.kind === "pr") {
           const repo =

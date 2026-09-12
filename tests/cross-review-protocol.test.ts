@@ -3154,10 +3154,11 @@ describe("parent-session protocol defenses", () => {
   it("rejects a non-PR start that has no judgeModel and no context", async () => {
     const { client } = mockClient();
     const tools = protocol(client, new MemoryRunStore());
+    const ask = vi.fn(() => Effect.void);
     await expect(
       tools.cross_review_start.execute(
         { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
-        context(),
+        { ...context(), ask },
       ),
     ).rejects.toThrow(
       `${MISSING_PARENT_CONTEXT_ERROR}. Target "HEAD" was not recognized as a pull request`,
@@ -3165,14 +3166,16 @@ describe("parent-session protocol defenses", () => {
     await expect(
       tools.cross_review_start.execute(
         { target: "pr-123", reviewModels: ["a/one"], agents: 1 },
-        context(),
+        { ...context(), ask },
       ),
     ).rejects.toThrow("accepted PR forms are a `/pull/<n>` URL");
+    expect(ask).not.toHaveBeenCalled();
     expect(client.session.create).not.toHaveBeenCalled();
   });
 
   it("rejects a missing-context start before applying a config fallback warning", async () => {
     const { client } = mockClient();
+    const ask = vi.fn(() => Effect.void);
     await expect(
       protocol(
         client,
@@ -3181,9 +3184,39 @@ describe("parent-session protocol defenses", () => {
         globalFallbackConfig,
       ).cross_review_start.execute(
         { target: "HEAD", reviewModels: ["a/one"], agents: 1 },
-        context(),
+        { ...context(), ask },
       ),
     ).rejects.toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(ask).not.toHaveBeenCalled();
+    expect(client.session.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unclassifiable target before the permission prompt", async () => {
+    const { client } = mockClient();
+    const store = new MemoryRunStore();
+    const persist = vi.spyOn(store, "create");
+    const ask = vi.fn(() => Effect.void);
+    const tools = createCrossReviewProtocolTools(client, {
+      store,
+      loadConfig: loadedConfig,
+      classifyTarget: async () => ({
+        kind: "error",
+        message: "Cannot classify cross-review target",
+      }),
+    });
+    await expect(
+      tools.cross_review_start.execute(
+        {
+          target: "42",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        { ...context(), ask },
+      ),
+    ).rejects.toThrow("Cannot classify cross-review target");
+    expect(ask).not.toHaveBeenCalled();
+    expect(persist).not.toHaveBeenCalled();
     expect(client.session.create).not.toHaveBeenCalled();
   });
 
@@ -3550,6 +3583,7 @@ describe("parent-session protocol defenses", () => {
 
   it("rejects a non-PR start that has whitespace-only context and no judge", async () => {
     const { client } = mockClient();
+    const ask = vi.fn(() => Effect.void);
     await expect(
       protocol(client, new MemoryRunStore()).cross_review_start.execute(
         {
@@ -3558,9 +3592,10 @@ describe("parent-session protocol defenses", () => {
           reviewModels: ["a/one"],
           agents: 1,
         },
-        context(),
+        { ...context(), ask },
       ),
     ).rejects.toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(ask).not.toHaveBeenCalled();
     expect(client.session.create).not.toHaveBeenCalled();
   });
 });
@@ -3913,6 +3948,7 @@ describe("cross-review PR snapshot protocol", () => {
       );
       expect(request.patterns[0]).toContain("token usage and cost");
       expect(approval.observedDirectories).toEqual(["/host-worktree"]);
+      expect(classify).toHaveBeenCalledOnce();
       expect(runPrAdapter).not.toHaveBeenCalled();
       expect(persist).not.toHaveBeenCalled();
       expect(store.cleanupExpiredRuns).not.toHaveBeenCalled();

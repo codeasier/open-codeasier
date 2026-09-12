@@ -1485,11 +1485,13 @@ describe("cross_review tool", () => {
 
   it("rejects parent-session judging of a non-PR target without context", async () => {
     const mock = client();
+    const ask = vi.fn(() => Effect.void);
     await expect(
       createCrossReviewTool(mock, () =>
         wrapConfig({ reviewers: [{ model: "a/one" }] }),
-      ).execute({ target: "HEAD", agents: 1 }, context()),
+      ).execute({ target: "HEAD", agents: 1 }, { ...context(), ask }),
     ).rejects.toThrow(MISSING_PARENT_CONTEXT_ERROR);
+    expect(ask).not.toHaveBeenCalled();
     expect(mock.session.create).not.toHaveBeenCalled();
   });
 
@@ -1517,6 +1519,31 @@ describe("cross_review tool", () => {
       expect(mock.session.prompt).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects an unclassifiable target before the permission prompt", async () => {
+    const mock = client();
+    const ask = vi.fn(() => Effect.void);
+    const metadata = vi.fn();
+    await expect(
+      createCrossReviewTool(
+        mock,
+        () =>
+          wrapConfig({
+            reviewers: [{ model: "a/one" }],
+            judgeModel: "b/judge",
+          }),
+        {
+          classifyTarget: async () => ({
+            kind: "error",
+            message: "Cannot classify cross-review target",
+          }),
+        },
+      ).execute({ target: "42", agents: 1 }, { ...context(), ask, metadata }),
+    ).rejects.toThrow("Cannot classify cross-review target");
+    expect(ask).not.toHaveBeenCalled();
+    expect(metadata).not.toHaveBeenCalled();
+    expect(mock.session.create).not.toHaveBeenCalled();
+  });
 });
 
 describe("cross_review tool PR snapshot path", () => {
@@ -1571,7 +1598,11 @@ describe("cross_review tool PR snapshot path", () => {
     "waits for an executed host permission Effect before legacy PR side effects: %s",
     async (action) => {
       const mock = client();
+      const classify = vi
+        .fn()
+        .mockResolvedValue({ kind: "pr", forge: "github" });
       const { tool, runPrAdapter, removeSnapshot } = legacyPrTool(mock, {
+        classify,
         loadConfig: () =>
           wrapConfig({
             reviewers: [{ model: "a/one" }, { model: "a/two" }],
@@ -1604,6 +1635,7 @@ describe("cross_review tool PR snapshot path", () => {
         );
         expect(request.patterns[0]).toContain("token usage and cost");
         expect(approval.observedDirectories).toEqual(["/host-worktree"]);
+        expect(classify).toHaveBeenCalledOnce();
         expect(runPrAdapter).not.toHaveBeenCalled();
         expect(persist).not.toHaveBeenCalled();
         expect(mock.session.create).not.toHaveBeenCalled();
@@ -1636,6 +1668,28 @@ describe("cross_review tool PR snapshot path", () => {
       }
     },
   );
+
+  it("does not publish preparing metadata before authorization", async () => {
+    const mock = client();
+    const metadata = vi.fn();
+    const ask = vi.fn(() => Effect.die(new Error("Permission denied")));
+    const { tool, runPrAdapter } = legacyPrTool(mock);
+    await expect(
+      tool.execute(
+        {
+          target: "https://github.com/org/repo/pull/69",
+          reviewModels: ["a/one"],
+          agents: 1,
+          judgeModel: "b/judge",
+        },
+        { ...context(), ask, metadata },
+      ),
+    ).rejects.toThrow("Permission denied");
+    expect(ask).toHaveBeenCalledOnce();
+    expect(metadata).not.toHaveBeenCalled();
+    expect(runPrAdapter).not.toHaveBeenCalled();
+    expect(mock.session.create).not.toHaveBeenCalled();
+  });
 
   it("runs the adapter, binds sessions to the snapshot, and cleans up on success", async () => {
     const mock = client();
