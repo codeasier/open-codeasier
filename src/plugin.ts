@@ -12,6 +12,7 @@ import { FileCrossReviewRunStore } from "./cross-review/run-store.js";
 import { createCrossReviewAuditTool } from "./cross-review/audit.js";
 import type { SessionClient } from "./session-review/fetch.js";
 import { createSessionReviewTool } from "./session-review/tool.js";
+import { CROSS_REVIEW_START_PERMISSIONS } from "./cross-review/authorization.js";
 
 export const server: Plugin = async ({ client }) => {
   const store = new FileCrossReviewRunStore();
@@ -22,6 +23,18 @@ export const server: Plugin = async ({ client }) => {
   );
   return {
     config: async (config) => {
+      const permission =
+        typeof config.permission === "string"
+          ? { "*": config.permission }
+          : (config.permission ?? {});
+      // Override the host's built-in wildcard allow, but preserve user rules
+      // and their last-match-wins order (including explicit wildcard overrides).
+      config.permission = Object.fromEntries([
+        ...CROSS_REVIEW_START_PERMISSIONS.filter(
+          (name) => !Object.hasOwn(permission, name),
+        ).map((name) => [name, "ask"] as const),
+        ...Object.entries(permission),
+      ]);
       const existing = config.experimental?.primary_tools ?? [];
       const merged = Array.from(new Set([...existing, ...PRIMARY_TOOL_IDS]));
       config.experimental = {

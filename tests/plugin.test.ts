@@ -147,4 +147,81 @@ describe("plugin module", () => {
       "cross_review_audit",
     ]);
   });
+
+  it.each([
+    [
+      undefined,
+      [
+        ["cross_review_start", "ask"],
+        ["cross_review", "ask"],
+      ],
+    ],
+    [
+      "allow",
+      [
+        ["cross_review_start", "ask"],
+        ["cross_review", "ask"],
+        ["*", "allow"],
+      ],
+    ],
+    [
+      "deny",
+      [
+        ["cross_review_start", "ask"],
+        ["cross_review", "ask"],
+        ["*", "deny"],
+      ],
+    ],
+    [
+      { "*": "allow" },
+      [
+        ["cross_review_start", "ask"],
+        ["cross_review", "ask"],
+        ["*", "allow"],
+      ],
+    ],
+    [
+      { "cross_review*": "deny" },
+      [
+        ["cross_review_start", "ask"],
+        ["cross_review", "ask"],
+        ["cross_review*", "deny"],
+      ],
+    ],
+    [
+      { "*": "allow", cross_review_start: "ask", cross_review: "deny" },
+      [
+        ["*", "allow"],
+        ["cross_review_start", "ask"],
+        ["cross_review", "deny"],
+      ],
+    ],
+    [
+      {
+        cross_review_start: "deny",
+        "*": "allow",
+        cross_review: { "*": "ask" },
+      },
+      [
+        ["cross_review_start", "deny"],
+        ["*", "allow"],
+        ["cross_review", { "*": "ask" }],
+      ],
+    ],
+  ])(
+    "adds ask defaults without reordering explicit permission policy %j",
+    async (permission, expected) => {
+      const hooks = await plugin.server({ client: {} } as any);
+      const config: any = {
+        permission,
+        agent: { build: { permission: { cross_review: "deny" } } },
+      };
+      await hooks.config?.(config);
+      expect(Object.entries(config.permission)).toEqual(expected);
+      expect(config.agent.build.permission).toEqual({ cross_review: "deny" });
+      // Repeated config hooks must not change last-match-wins semantics.
+      await hooks.config?.(config);
+      expect(Object.entries(config.permission)).toEqual(expected);
+    },
+  );
 });

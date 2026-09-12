@@ -12,6 +12,8 @@ import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, expect, it, vi } from "vitest";
+import { Effect } from "effect";
+import { pendingPermission } from "./helpers/permission.js";
 import { classifyPrTargetInRepository } from "../src/cross-review/pr-target.js";
 import {
   createCrossReviewProtocolTools as createProtocolTools,
@@ -135,7 +137,7 @@ function context(sessionID = "parent", abort = new AbortController()) {
     worktree: "/repo",
     abort: abort.signal,
     metadata() {},
-    async ask() {},
+    ask: () => Effect.void,
   } as any;
 }
 
@@ -2747,6 +2749,45 @@ describe("asynchronous cross-review protocol", () => {
     );
   });
 
+  it.each([true, false])(
+    "denies non-PR starts before parent snapshots or gathering (parent context: %s)",
+    async (hasContext) => {
+      const { client } = mockClient();
+      const store = new MemoryRunStore();
+      const persist = vi.spyOn(store, "create");
+      const createParentSnapshot = vi.fn();
+      const createRunID = vi.fn();
+      const tools = createCrossReviewProtocolTools(client, {
+        store,
+        loadConfig: loadedConfig,
+        canonicalize: async (directory) => directory,
+        classifyTarget: async () => ({ kind: "legacy" }),
+        createParentSnapshot,
+        createRunID,
+      });
+      const ask = vi.fn(() => Effect.die(new Error("Permission denied")));
+      await expect(
+        tools.cross_review_start.execute(
+          {
+            target: "HEAD",
+            reviewModels: ["a/one"],
+            ...(hasContext
+              ? { context: "already gathered" }
+              : { judgeModel: "b/judge" }),
+          },
+          { ...context(), ask },
+        ),
+      ).rejects.toThrow("Permission denied");
+      expect(ask).toHaveBeenCalledOnce();
+      expect(createRunID).not.toHaveBeenCalled();
+      expect(createParentSnapshot).not.toHaveBeenCalled();
+      expect(persist).not.toHaveBeenCalled();
+      expect(store.cleanupExpiredRuns).not.toHaveBeenCalled();
+      expect(client.session.create).not.toHaveBeenCalled();
+      expect(client.session.promptAsync).not.toHaveBeenCalled();
+    },
+  );
+
   describe("waitMs long polling in cross_review_status", () => {
     it("returns immediately without waiting when waitMs is 0", async () => {
       const { client, statuses } = mockClient();
@@ -3825,6 +3866,80 @@ describe("cross-review PR snapshot protocol", () => {
     });
     return { tools, runPrAdapter, removeSnapshot };
   }
+
+  it.each(["approve", "deny", "cancel"])(
+    "waits for an executed host permission Effect before async PR side effects: %s",
+    async (action) => {
+      const { client } = mockClient();
+      const store = new MemoryRunStore();
+      const persist = vi.spyOn(store, "create");
+      const classify = vi
+        .fn()
+        .mockResolvedValue({ kind: "pr", forge: "github" });
+      const { tools, runPrAdapter, removeSnapshot } = prProtocol(
+        client,
+        store,
+        classify,
+      );
+      const approval = pendingPermission();
+      const abort = new AbortController();
+      const target = "https://github.com/org/repo/pull/69";
+      const started = approval.execute(() =>
+        tools.cross_review_start.execute(
+          {
+            target,
+            reviewModels: ["a/one", "a/two"],
+            agents: 2,
+            judgeModel: "b/judge",
+          },
+          { ...context("parent", abort), ask: approval.ask },
+        ),
+      );
+      const request = await approval.requested.promise;
+      expect(request).toMatchObject({
+        permission: "cross_review_start",
+        always: [],
+        metadata: {
+          target,
+          reviewerCount: 2,
+          reviewModels: ["a/one", "a/two"],
+          judgeModel: "b/judge",
+        },
+      });
+      expect(request.patterns[0]).toContain("Start cross-review");
+      expect(request.patterns[0]).toContain(target);
+      expect(request.patterns[0]).toContain(
+        "2 independent reviewers (a/one, a/two)",
+      );
+      expect(request.patterns[0]).toContain("token usage and cost");
+      expect(approval.observedDirectories).toEqual(["/host-worktree"]);
+      expect(runPrAdapter).not.toHaveBeenCalled();
+      expect(persist).not.toHaveBeenCalled();
+      expect(store.cleanupExpiredRuns).not.toHaveBeenCalled();
+      expect(client.session.create).not.toHaveBeenCalled();
+      expect(client.session.promptAsync).not.toHaveBeenCalled();
+      expect(removeSnapshot).not.toHaveBeenCalled();
+      if (action === "approve") {
+        approval.decision.resolve(undefined);
+        expect(output(await started).runID).toBe(RUN_ID);
+        expect(runPrAdapter).toHaveBeenCalledOnce();
+        expect(persist).toHaveBeenCalledOnce();
+        expect(client.session.create).toHaveBeenCalledTimes(3);
+      } else {
+        const rejected = expect(started).rejects.toThrow();
+        if (action === "deny")
+          approval.decision.reject(new Error("Permission denied"));
+        else abort.abort();
+        await rejected;
+        approval.decision.resolve(undefined);
+        expect(runPrAdapter).not.toHaveBeenCalled();
+        expect(persist).not.toHaveBeenCalled();
+        expect(client.session.create).not.toHaveBeenCalled();
+        expect(client.session.promptAsync).not.toHaveBeenCalled();
+        expect(removeSnapshot).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it("runs the adapter and binds reviewer sessions to the snapshot worktree (S1)", async () => {
     const { client, messages } = mockClient();

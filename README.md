@@ -160,6 +160,25 @@ Manual `rm -rf ~/.open-codeasier/cross-review/.worktrees/` leaves stale `.git/wo
 
 Each reviewer uses the installed `cross-reviewer` agent, receives the same normalized target, and cannot access another reviewer's output. The agent denies edit, shell, and delegation permissions, while each SDK prompt also disables mutating and delegation tools. The original blocking `cross_review` tool remains available for one compatibility release, but the bundled skill does not call it.
 
+### Cross-review authorization
+
+Cross-review is an explicit opt-in workflow: request `/cross-review` or independent multi-model review. An ordinary code/PR review request should continue as ordinary review. The orchestration skill is primary-session only; accidentally loading it in a child session must not block that child's original task.
+
+Both `cross_review_start` and legacy `cross_review` execute an OpenCode permission request before creating snapshots, persisting runs, or starting children. The request names cross-review, the target, resolved reviewer models/count, judge, and additional token usage and cost. Denial or cancellation prevents the start; configuration-preview confirmation alone does not authorize it. The plugin inserts these defaults before existing user rules to override OpenCode's built-in wildcard allow:
+
+```json
+{
+  "permission": {
+    "cross_review_start": "ask",
+    "cross_review": "ask"
+  }
+}
+```
+
+OpenCode's effective permission policy remains authoritative. Existing user rules keep their order (last match wins), including explicit `permission: "allow"`, `"*": "allow"`, or `"cross_review*": "allow"`; agent/session rules and remembered approvals can also override these defaults. To require prompts despite a broad user allow, place the two specific ask rules after it and remove conflicting agent/session or remembered approvals. Set both keys to `"deny"` to disable starts or `"allow"` to deliberately authorize them without a prompt. This enforces permission policy, not a semantic check of the original user prompt. Requests use an empty `always` list so approving one start does not grant future starts. Quit and restart OpenCode after changing permissions or installing updated runtime/workflow assets.
+
+### Run limits and failures
+
 - `--agents` and `--max-concurrency` accept 1-8 and default to 3.
 - `--reviewer-timeout-ms` accepts 5000-3600000 and defaults to 600000; the config `reviewerTimeoutMs` key accepts the same range and covers reviewer, gatherer, and explicit judge sessions. The next status or finalize reconciliation detects an overdue child session but does not abort it: the session enters `timeout_pending` until the user chooses `preserve` or `abort`. Preserve extends the same session's deadline by one configured timeout period so its eventual output can still count; abort marks it `timed_out` and allows queued work and quorum evaluation to proceed. Abort also terminates previously preserved sessions still running inside their extension, and an ambiguous preserved dispatch with no visible message is redispatched instead of idling. The decision applies to timeouts that arise during a `waitMs` long-poll window as well. This applies to the asynchronous `cross_review_*` tools only; the legacy blocking `cross_review` tool does not enforce a deadline.
 - `cross_review_status` is compact by default to keep the polling loop cheap: it returns `runID`, `phase`, `quorum`, `counts`, `readyToFinalize` (true when reviewers are terminal, the explicit judge is terminal, or the run is already in a terminal phase), `pollAfterMs`, a per-reviewer text `summary`, and `actionRequired` when a timeout decision is pending, and omits the full `target` (truncated to 80 characters), per-reviewer objects, and the `config` resolution block. Pass `timeoutAction: "preserve"` or `timeoutAction: "abort"` only after `actionRequired` (or to abort a previously preserved session); a stray value is ignored with a warning. Pass `detail: true` for the full per-reviewer state and config paths or `includeOutputs: true` to also read review text; `includeOutputs` implies `detail`. It accepts an optional `waitMs` (0-60000, default 30000) for server-side long polling: when work is active, the tool holds the call and polls in a lightweight loop, returning as soon as any reviewer state changes, the run reaches a final phase, a timeout requires a decision, or the wait expires. The returned `pollAfterMs` is omitted while a timeout decision is pending, 3s while the gatherer or any session is still starting, 10s in the steady state, and shortens near a session deadline.
