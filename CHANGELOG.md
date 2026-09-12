@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-09-12
+
 ### Fixed
 
 - Gate asynchronous and legacy cross-review starts on OpenCode permissions
@@ -384,7 +386,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/codeasier/open-codeasier/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/codeasier/open-codeasier/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/codeasier/open-codeasier/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/codeasier/open-codeasier/compare/v0.3.0...v0.3.1
