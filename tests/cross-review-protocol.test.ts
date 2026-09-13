@@ -3902,9 +3902,16 @@ describe("cross-review PR snapshot protocol", () => {
     return { tools, runPrAdapter, removeSnapshot };
   }
 
-  it.each(["approve", "deny", "cancel"])(
-    "waits for an executed host permission Effect before async PR side effects: %s",
-    async (action) => {
+  it.each([
+    ["effect", "approve"],
+    ["effect", "deny"],
+    ["effect", "cancel"],
+    ["promise", "approve"],
+    ["promise", "deny"],
+    ["promise", "cancel"],
+  ] as const)(
+    "waits for an executed host permission %s before async PR side effects: %s",
+    async (shape, action) => {
       const { client } = mockClient();
       const store = new MemoryRunStore();
       const persist = vi.spyOn(store, "create");
@@ -3916,7 +3923,7 @@ describe("cross-review PR snapshot protocol", () => {
         store,
         classify,
       );
-      const approval = pendingPermission();
+      const approval = pendingPermission({ ask: shape });
       const abort = new AbortController();
       const target = "https://github.com/org/repo/pull/69";
       const started = approval.execute(() =>
@@ -3947,7 +3954,9 @@ describe("cross-review PR snapshot protocol", () => {
         "2 independent reviewers (a/one, a/two)",
       );
       expect(request.patterns[0]).toContain("token usage and cost");
-      expect(approval.observedDirectories).toEqual(["/host-worktree"]);
+      expect(approval.observedDirectories).toEqual(
+        shape === "effect" ? ["/host-worktree"] : [],
+      );
       expect(classify).toHaveBeenCalledOnce();
       expect(runPrAdapter).not.toHaveBeenCalled();
       expect(persist).not.toHaveBeenCalled();
