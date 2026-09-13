@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Accept both Effect- and Promise-shaped `ToolContext.ask` results in the
+  cross-review consent gate so OpenCode 1.18+ hosts no longer fail with
+  `Fiber.runLoop: Not a valid effect`. Promise decisions observe
+  `context.abort`, so a pending approval cannot outrun cancellation. Leave
+  the `@opencode-ai/plugin` pin on 1.14.49; the runtime branch, not the
+  compile-time types, selects the host path.
+
 ## [0.3.4] - 2026-09-12
 
 ### Fixed

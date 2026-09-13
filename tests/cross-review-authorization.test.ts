@@ -70,4 +70,48 @@ describe("crossReviewAuthorization", () => {
       crossReviewAuthorization(toolContext(ask), "cross_review_start")(plan),
     ).rejects.toThrow(MISSING_HOST_FIBER_ERROR);
   });
+
+  it("awaits a Promise-shaped host ask without running it as an Effect", async () => {
+    const ask = vi.fn(() => Promise.resolve());
+    await crossReviewAuthorization(
+      toolContext(ask),
+      "cross_review_start",
+    )(plan);
+    expect(ask).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a Promise-shaped ask pending until the host resolves it", async () => {
+    const approval = pendingPermission({ ask: "promise" });
+    const started = crossReviewAuthorization(
+      toolContext(approval.ask),
+      "cross_review",
+    )(plan);
+    await approval.requested.promise;
+    approval.decision.resolve(undefined);
+    await started;
+    expect(approval.ask).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces permission denial from a Promise-shaped ask", async () => {
+    const ask = vi.fn(() => Promise.reject(new Error("Permission denied")));
+    await expect(
+      crossReviewAuthorization(toolContext(ask), "cross_review_start")(plan),
+    ).rejects.toThrow("Permission denied");
+  });
+
+  it.each(["cross_review_start", "cross_review"] as const)(
+    "cancels a pending Promise-shaped %s ask without waiting for a late approval",
+    async (permission) => {
+      const approval = pendingPermission({ ask: "promise" });
+      const abort = new AbortController();
+      const started = crossReviewAuthorization(
+        toolContext(approval.ask, abort),
+        permission,
+      )(plan);
+      await approval.requested.promise;
+      abort.abort();
+      await expect(started).rejects.toThrow("Cross-review cancelled");
+      approval.decision.resolve(undefined);
+    },
+  );
 });

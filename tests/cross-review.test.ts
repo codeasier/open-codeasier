@@ -1594,9 +1594,16 @@ describe("cross_review tool PR snapshot path", () => {
     return { tool, runPrAdapter, removeSnapshot };
   }
 
-  it.each(["approve", "deny", "cancel"])(
-    "waits for an executed host permission Effect before legacy PR side effects: %s",
-    async (action) => {
+  it.each([
+    ["effect", "approve"],
+    ["effect", "deny"],
+    ["effect", "cancel"],
+    ["promise", "approve"],
+    ["promise", "deny"],
+    ["promise", "cancel"],
+  ] as const)(
+    "waits for an executed host permission %s before legacy PR side effects: %s",
+    async (shape, action) => {
       const mock = client();
       const classify = vi
         .fn()
@@ -1610,7 +1617,7 @@ describe("cross_review tool PR snapshot path", () => {
           }),
       });
       const persist = vi.spyOn(FileCrossReviewRunStore.prototype, "create");
-      const approval = pendingPermission();
+      const approval = pendingPermission({ ask: shape });
       const abort = new AbortController();
       const target = "https://github.com/org/repo/pull/69";
       try {
@@ -1634,7 +1641,9 @@ describe("cross_review tool PR snapshot path", () => {
           "2 independent reviewers (a/one, a/two)",
         );
         expect(request.patterns[0]).toContain("token usage and cost");
-        expect(approval.observedDirectories).toEqual(["/host-worktree"]);
+        expect(approval.observedDirectories).toEqual(
+          shape === "effect" ? ["/host-worktree"] : [],
+        );
         expect(classify).toHaveBeenCalledOnce();
         expect(runPrAdapter).not.toHaveBeenCalled();
         expect(persist).not.toHaveBeenCalled();
