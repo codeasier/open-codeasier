@@ -199,6 +199,8 @@ The `cross_review_audit` check `run.evidence_contract` recognizes persisted nonb
 
 `session_review` calls only the OpenCode SDK session get and messages APIs for the exact supplied session ID. It returns bounded normalized evidence and does not inspect internal storage. `cross_review_audit` reads the local cross-review run-store plus OpenCode SDK sessions named by the parent session ID. It does not inspect OpenCode internal storage and does not archive or delete sessions. Corrupt manifests from the whole run-store directory appear in `errors[]` even when they belong to another owner. This package has no session archive, delete, trash, purge, restore, or automatic session-selection capability.
 
+Session reads request at most 10,001 messages and reject responses above the 10,000-message input ceiling with `RESPONSE_TOO_LARGE`. The pinned SDK exposes a count limit but no pagination cursor or total count, so a sentinel-sized response is rejected instead of presenting that fetched tail as complete evidence. The request limit depends on the server honoring the SDK contract; upstream completeness cannot be verified if the server silently returns fewer messages. This is not a raw-response byte limit: an individual message can still be large, and the SDK materializes responses before normalization. Normalization bounds UTF-8 text without splitting characters, and `truncated` includes clipped text/tool inputs as well as omitted messages. Tool cancellation is forwarded to the session metadata and message requests.
+
 ## Development
 
 ```bash

@@ -88,6 +88,7 @@ describe("plugin module", () => {
     expect(client.session.get).toHaveBeenCalledWith({
       path: { id: "ses_123" },
       query: { directory: "/repo" },
+      signal: expect.any(AbortSignal),
     });
     expect(output).toMatchObject({
       title: "Session review input: ses_123",

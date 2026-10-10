@@ -25,6 +25,7 @@ export function createSessionReviewTool(client: SessionClient) {
           directory: context.directory,
           sessionID: args.sessionID,
           mode: args.mode,
+          signal: context.abort,
           ...(args.focus === undefined ? {} : { focus: args.focus }),
         });
         return {
