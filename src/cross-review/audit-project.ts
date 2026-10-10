@@ -304,11 +304,14 @@ export function projectAuditSession(input: {
       raw === undefined ? { ...message } : overlayAuditFields(message, raw),
     );
   }
+  let pinnedContentTruncated = false;
   for (const pinID of input.pinMessageIDs ?? []) {
     if (projected.has(pinID)) continue;
     const raw = rawByID.get(pinID);
     if (raw === undefined) continue;
-    const review = toReviewMessage(raw, limits.maxPartBytes);
+    const review = toReviewMessage(raw, limits.maxPartBytes, () => {
+      pinnedContentTruncated = true;
+    });
     if (review === undefined) continue;
     projected.set(pinID, overlayAuditFields(review, raw));
   }
@@ -349,7 +352,8 @@ export function projectAuditSession(input: {
     includedMessages,
     omittedMessages,
     retainedMessageIDs,
-    truncated: omittedMessages > 0,
+    truncated:
+      normalized.truncated || pinnedContentTruncated || omittedMessages > 0,
     protocolCalls:
       input.includeProtocolCalls === true
         ? extractProtocolCalls(input.bundle.messages)

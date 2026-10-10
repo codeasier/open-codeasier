@@ -103,7 +103,7 @@ describe("session normalization", () => {
     const input = message("m1", "hello") as any;
     const circular: any = {
       z: "x".repeat(5_000),
-      a: { b: { c: { d: { e: { f: 1 } } } } },
+      a: { b: { c: { d: { e: { f: { g: 1 } } } } } },
     };
     circular.self = circular;
     input.parts = [
@@ -165,4 +165,189 @@ describe("session normalization", () => {
       }),
     ).toThrow(expect.objectContaining({ code: "RESPONSE_TOO_LARGE" }));
   });
+});
+
+describe("UTF-8 truncation and truthful metadata", () => {
+  const normalize = (text: string, maxPartBytes: number) =>
+    normalizeSession({
+      session: session as any,
+      messages: [message("m1", text)] as any,
+      mode: "summary",
+      limits: { maxPartBytes },
+    });
+  it.each([0, 1, 5, 13, 14, 15, 17, 18, 19, 20, 25, 64])(
+    "respects a %i-byte budget without splitting multibyte characters",
+    (budget) => {
+      const result = normalize("😀中文é".repeat(100), budget);
+      const text = (result.messages[0]?.parts[0] as any).text;
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(budget);
+      expect(Buffer.from(text).toString("utf8")).toBe(text);
+      expect(result).toMatchObject({
+        truncated: true,
+        includedMessages: 1,
+        omittedMessages: 0,
+      });
+    },
+  );
+  it("leaves an exact UTF-8 fit intact and does not interpret literal markers as truncation", () => {
+    for (const text of ["😀中文é", "\n...[truncated]"]) {
+      const result = normalize(text, Buffer.byteLength(text));
+      expect((result.messages[0]?.parts[0] as any).text).toBe(text);
+      expect(result.truncated).toBe(false);
+    }
+  });
+  it("clips a very long message within the test timeout", () => {
+    const result = normalize("😀".repeat(1_000_000), 100);
+    expect(
+      Buffer.byteLength((result.messages[0]?.parts[0] as any).text),
+    ).toBeLessThanOrEqual(100);
+    expect(result.truncated).toBe(true);
+  });
+  it.each(["reasoning", "output", "error"])(
+    "reports clipping of %s without message omission",
+    (field) => {
+      const input = message("m1", "hi") as any;
+      input.parts =
+        field === "reasoning"
+          ? [{ type: "reasoning", text: "x".repeat(100) }]
+          : [
+              {
+                type: "tool",
+                tool: "test",
+                state: {
+                  status: field === "output" ? "completed" : "error",
+                  input: {},
+                  [field]: "x".repeat(100),
+                },
+              },
+            ];
+      const result = normalizeSession({
+        session: session as any,
+        messages: [input],
+        mode: "summary",
+        limits: { maxPartBytes: 20 },
+      });
+      expect(result).toMatchObject({ truncated: true, omittedMessages: 0 });
+    },
+  );
+  it.each([
+    "x".repeat(5_000),
+    Array.from({ length: 101 }, (_, i) => i),
+    { a: { b: { c: { d: { e: { f: { g: 1 } } } } } } },
+    Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`k${i}`, i])),
+    { ["x".repeat(201)]: "short" },
+    Array.from({ length: 10 }, () => '\\"'.repeat(3_000)),
+  ])("reports sanitized input loss without message omission", (toolInput) => {
+    const input = message("m1", "hi") as any;
+    input.parts = [
+      {
+        type: "tool",
+        tool: "test",
+        state: { status: "running", input: toolInput },
+      },
+    ];
+    const result = normalizeSession({
+      session: session as any,
+      messages: [input],
+      mode: "summary",
+    });
+    expect(result).toMatchObject({ truncated: true, omittedMessages: 0 });
+  });
+  it("bounds traversal across nested arrays with a shared node budget", () => {
+    let reads = 0;
+    const leaf = () =>
+      Object.defineProperty({}, "text", {
+        enumerable: true,
+        get() {
+          reads++;
+          return "x";
+        },
+      });
+    const toolInput = Array.from({ length: 100 }, () =>
+      Array.from({ length: 100 }, leaf),
+    );
+    const input = message("m1", "hi") as any;
+    input.parts = [
+      {
+        type: "tool",
+        tool: "test",
+        state: { status: "running", input: toolInput },
+      },
+    ];
+    const result = normalizeSession({
+      session: session as any,
+      messages: [input],
+      mode: "summary",
+    });
+    expect(reads).toBeLessThanOrEqual(100);
+    expect(result.truncated).toBe(true);
+    expect(JSON.stringify(result)).toContain("[node-limit]");
+  });
+  it("does not normalize messages beyond the retained count", () => {
+    const ignored = message("m2", "ignored");
+    Object.defineProperty(ignored, "parts", {
+      get() {
+        throw new Error("unused message normalized");
+      },
+    });
+    const result = normalizeSession({
+      session: session as any,
+      messages: [message("m1", "hi"), ignored],
+      mode: "summary",
+      limits: { maxMessages: 1 },
+    });
+    expect(result.retainedMessageIDs).toEqual(["m1"]);
+  });
+  it.each([NaN, Infinity, -1, 1.5])(
+    "rejects invalid limits (%s)",
+    (maxPartBytes) => {
+      expect(() => normalize("x", maxPartBytes)).toThrow(RangeError);
+    },
+  );
+});
+
+describe("tool input truncation semantics", () => {
+  it.each(["pending", "running", "completed", "error"])(
+    "does not mark missing %s tool input truncated",
+    (status) => {
+      const raw = message("m1", "hello") as any;
+      raw.parts = [
+        {
+          type: "tool",
+          tool: "read",
+          state: { status, output: "ok", error: "bad" },
+        },
+      ];
+      const result = normalizeSession({
+        session: session as any,
+        messages: [raw],
+        mode: "summary",
+      });
+      expect(result.truncated).toBe(false);
+      expect(result.messages[0]?.parts[0]).toHaveProperty(
+        "input",
+        "[undefined]",
+      );
+    },
+  );
+
+  it.each([1n, () => 1, Symbol("input")])(
+    "marks unsupported input replacement as content loss",
+    (input) => {
+      const raw = message("m1", "hello") as any;
+      raw.parts = [
+        { type: "tool", tool: "read", state: { status: "pending", input } },
+      ];
+      const result = normalizeSession({
+        session: session as any,
+        messages: [raw],
+        mode: "summary",
+      });
+      expect(result.truncated).toBe(true);
+      expect(result.messages[0]?.parts[0]).toHaveProperty(
+        "input",
+        `[${typeof input}]`,
+      );
+    },
+  );
 });

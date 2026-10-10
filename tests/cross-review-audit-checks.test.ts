@@ -1103,3 +1103,29 @@ describe("roleBehavior shared-context markers", () => {
     );
   });
 });
+
+describe("audit projection truncation metadata", () => {
+  it.each([false, true])(
+    "retains part clipping when pinned-only=%s and no messages are omitted",
+    (pinnedOnly) => {
+      const projected = projectAuditSession({
+        bundle: {
+          session: { id: "child" },
+          messages: [
+            {
+              info: { id: "m", role: "user" },
+              parts: [{ type: "text", text: "x".repeat(100) }],
+            },
+          ],
+        } as Parameters<typeof projectAuditSession>[0]["bundle"],
+        limits: { maxMessages: pinnedOnly ? 0 : 1, maxPartBytes: 20 },
+        ...(pinnedOnly ? { pinMessageIDs: ["m"] } : {}),
+      });
+      expect(projected.omittedMessages).toBe(0);
+      expect(projected.truncated).toBe(true);
+      expect(projected.messages[0]?.parts[0]).toMatchObject({
+        text: expect.stringContaining("...[truncated]"),
+      });
+    },
+  );
+});

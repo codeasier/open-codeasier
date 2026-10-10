@@ -9,36 +9,81 @@ import type {
 import { SessionReviewError } from "./errors.js";
 
 const MARKER = "\n...[truncated]";
-function truncate(value: string, maxBytes: number) {
-  if (Buffer.byteLength(value) <= maxBytes) return value;
-  let result = value;
-  while (Buffer.byteLength(result + MARKER) > maxBytes && result.length)
-    result = result.slice(0, -1);
-  return result + MARKER;
+type OnTruncate = () => void;
+const ignoreTruncation = () => {};
+
+// Inspect at most maxBytes UTF-8 bytes, without splitting a surrogate pair or
+// repeatedly encoding the entire (potentially very large) remaining string.
+function prefixEnd(value: string, maxBytes: number): number {
+  let bytes = 0;
+  let end = 0;
+  for (const character of value) {
+    const size = Buffer.byteLength(character);
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    end += character.length;
+  }
+  return end;
+}
+
+function truncate(
+  value: string,
+  maxBytes: number,
+  onTruncate: OnTruncate = ignoreTruncation,
+) {
+  const end = prefixEnd(value, maxBytes);
+  if (end === value.length) return value;
+  onTruncate();
+  // Tiny budgets must still be respected, even if the full marker cannot fit.
+  const marker = MARKER.slice(0, maxBytes);
+  return value.slice(0, prefixEnd(value, maxBytes - marker.length)) + marker;
 }
 
 const INPUT_LIMITS = { depth: 6, keys: 100, stringBytes: 4_000, bytes: 20_000 };
-function sanitizeInput(value: unknown): unknown {
-  let keys = 0;
+function sanitizeInput(value: unknown, onTruncate: OnTruncate): unknown {
+  let nodes = 0;
+  const omitted = (reason: string) => {
+    onTruncate();
+    return reason;
+  };
   const seen = new Set<object>();
   const visit = (item: unknown, depth: number): unknown => {
+    if (++nodes > INPUT_LIMITS.keys) return omitted("[node-limit]");
     if (typeof item === "string")
-      return truncate(item, INPUT_LIMITS.stringBytes);
+      return truncate(item, INPUT_LIMITS.stringBytes, onTruncate);
     if (item === null || typeof item === "boolean" || typeof item === "number")
       return item;
-    if (depth >= INPUT_LIMITS.depth) return "[depth-limit]";
-    if (typeof item !== "object") return `[${typeof item}]`;
-    if (seen.has(item)) return "[circular]";
+    if (item === undefined) return "[undefined]";
+    if (depth >= INPUT_LIMITS.depth) return omitted("[depth-limit]");
+    if (typeof item !== "object") return omitted(`[${typeof item}]`);
+    if (seen.has(item)) return omitted("[circular]");
     seen.add(item);
-    if (Array.isArray(item))
-      return item.slice(0, INPUT_LIMITS.keys).map((x) => visit(x, depth + 1));
-    const result: Record<string, unknown> = {};
-    for (const key of Object.keys(item).sort()) {
-      if (++keys > INPUT_LIMITS.keys) {
-        result["[omitted]"] = "key-limit";
+    if (Array.isArray(item)) {
+      const result: unknown[] = [];
+      for (const child of item) {
+        if (nodes >= INPUT_LIMITS.keys) {
+          result.push(omitted("[node-limit]"));
+          break;
+        }
+        result.push(visit(child, depth + 1));
+      }
+      return result;
+    }
+    const result: Record<string, unknown> = Object.create(null);
+    // Retain only a bounded set of keys for sorting and traversal. The SDK
+    // has already materialized the raw object before normalization.
+    const keys: string[] = [];
+    for (const key in item) {
+      if (!Object.prototype.hasOwnProperty.call(item, key)) continue;
+      keys.push(key);
+      if (keys.length > INPUT_LIMITS.keys) break;
+    }
+    for (const key of keys.sort()) {
+      if (nodes >= INPUT_LIMITS.keys) {
+        result["[omitted]"] = omitted("node-limit");
         break;
       }
-      result[truncate(key, 200)] = visit(
+      result[truncate(key, 200, onTruncate)] = visit(
         (item as Record<string, unknown>)[key],
         depth + 1,
       );
@@ -47,14 +92,21 @@ function sanitizeInput(value: unknown): unknown {
   };
   const result = visit(value, 0);
   const json = JSON.stringify(result) ?? `[${typeof value}]`;
-  return Buffer.byteLength(json) <= INPUT_LIMITS.bytes
-    ? result
-    : { truncated: true, preview: truncate(json, INPUT_LIMITS.bytes - 40) };
+  if (Buffer.byteLength(json) <= INPUT_LIMITS.bytes) return result;
+  onTruncate();
+  return { truncated: true, preview: truncate(json, INPUT_LIMITS.bytes - 40) };
 }
 
-function normalizePart(part: Part, maxPartBytes: number): ReviewPart {
+function normalizePart(
+  part: Part,
+  maxPartBytes: number,
+  onTruncate: OnTruncate,
+): ReviewPart {
   if (part.type === "text" || part.type === "reasoning")
-    return { type: part.type, text: truncate(part.text, maxPartBytes) };
+    return {
+      type: part.type,
+      text: truncate(part.text, maxPartBytes, onTruncate),
+    };
   if (part.type === "file") {
     const filename =
       "filename" in part && typeof part.filename === "string"
@@ -72,17 +124,17 @@ function normalizePart(part: Part, maxPartBytes: number): ReviewPart {
       status: state.status,
     };
     if (state.status === "pending" || state.status === "running")
-      return { ...base, input: sanitizeInput(state.input) };
+      return { ...base, input: sanitizeInput(state.input, onTruncate) };
     if (state.status === "completed")
       return {
         ...base,
-        input: sanitizeInput(state.input),
-        output: truncate(state.output, maxPartBytes),
+        input: sanitizeInput(state.input, onTruncate),
+        output: truncate(state.output, maxPartBytes, onTruncate),
       };
     return {
       ...base,
-      input: sanitizeInput(state.input),
-      error: truncate(state.error, maxPartBytes),
+      input: sanitizeInput(state.input, onTruncate),
+      error: truncate(state.error, maxPartBytes, onTruncate),
     };
   }
   return {
@@ -94,6 +146,7 @@ function normalizePart(part: Part, maxPartBytes: number): ReviewPart {
 export function toReviewMessage(
   message: NormalizeInput["messages"][number],
   maxPartBytes: number,
+  onTruncate: OnTruncate = ignoreTruncation,
 ): ReviewMessage | undefined {
   if (message.info.role !== "user" && message.info.role !== "assistant")
     return undefined;
@@ -101,16 +154,25 @@ export function toReviewMessage(
   const result: ReviewMessage = {
     id: message.info.id,
     role: message.info.role,
-    parts: message.parts.map((part) => normalizePart(part, maxPartBytes)),
+    parts: message.parts.map((part) =>
+      normalizePart(part, maxPartBytes, onTruncate),
+    ),
   };
   return createdAt === undefined ? result : { ...result, createdAt };
 }
 
 export function normalizeSession(input: NormalizeInput): NormalizedSession {
   const limits = { ...DEFAULT_LIMITS, ...input.limits };
-  const all = input.messages
-    .map((message) => toReviewMessage(message, limits.maxPartBytes))
-    .filter((message): message is ReviewMessage => message !== undefined);
+  for (const value of Object.values(limits)) {
+    if (!Number.isSafeInteger(value) || value < 0)
+      throw new RangeError("Review limits must be non-negative safe integers");
+  }
+  const all = input.messages.filter(
+    (message) =>
+      message.info.role === "user" || message.info.role === "assistant",
+  );
+  const retained = new Map<number, ReviewMessage>();
+  const clipped = new Set<number>();
   const order =
     input.mode === "troubleshoot"
       ? all.map((_, index) => index).reverse()
@@ -120,10 +182,20 @@ export function normalizeSession(input: NormalizeInput): NormalizedSession {
   const selected = new Set<number>();
   for (const index of order) {
     if (selected.size >= limits.maxMessages) break;
+    const raw = all[index];
+    if (raw === undefined) continue;
+    const message = toReviewMessage(raw, limits.maxPartBytes, () =>
+      clipped.add(index),
+    );
+    if (message === undefined) continue;
+    retained.set(index, message);
     selected.add(index);
     const candidate = build(selected);
-    if (Buffer.byteLength(JSON.stringify(candidate)) > limits.maxBytes)
+    if (Buffer.byteLength(JSON.stringify(candidate)) > limits.maxBytes) {
       selected.delete(index);
+      retained.delete(index);
+      clipped.delete(index);
+    }
   }
   const result = build(selected);
   if (Buffer.byteLength(JSON.stringify(result)) > limits.maxBytes)
@@ -134,7 +206,10 @@ export function normalizeSession(input: NormalizeInput): NormalizedSession {
   return result;
 
   function build(indices: Set<number>): NormalizedSession {
-    const messages = all.filter((_, index) => indices.has(index));
+    const ordered = [...indices].sort((a, b) => a - b);
+    const messages = ordered
+      .map((index) => retained.get(index))
+      .filter((message): message is ReviewMessage => message !== undefined);
     const base = {
       sessionID: input.session.id,
       mode: input.mode,
@@ -143,7 +218,9 @@ export function normalizeSession(input: NormalizeInput): NormalizedSession {
       includedMessages: messages.length,
       omittedMessages: all.length - messages.length,
       retainedMessageIDs: messages.map((message) => message.id),
-      truncated: messages.length < all.length,
+      truncated:
+        messages.length < all.length ||
+        ordered.some((index) => clipped.has(index)),
     };
     return {
       ...base,

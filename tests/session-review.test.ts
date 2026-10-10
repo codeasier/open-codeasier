@@ -1,7 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, expect, it, vi } from "vitest";
 import { SessionReviewError } from "../src/session-review/errors.js";
-import { fetchSessionReviewInput } from "../src/session-review/fetch.js";
+import {
+  fetchSessionReviewInput,
+  fetchSessionBundle,
+  listSessionChildren,
+  MAX_FETCH_MESSAGES,
+} from "../src/session-review/fetch.js";
 import { createSessionReviewTool } from "../src/session-review/tool.js";
 
 const session = { id: "ses_1", title: "x", time: { created: 1, updated: 2 } };
@@ -37,7 +42,7 @@ describe("session SDK boundary", () => {
     });
     expect(client.session.messages).toHaveBeenCalledWith({
       path: { id: "ses_1" },
-      query: { directory: "/repo" },
+      query: { directory: "/repo", limit: MAX_FETCH_MESSAGES + 1 },
     });
     expect(review.sessionID).toBe("ses_1");
   });
@@ -170,6 +175,147 @@ describe("session_review tool", () => {
     expect(client.session.get).toHaveBeenCalledWith({
       path: { id: "ses_1" },
       query: { directory: "/repo" },
+      signal: expect.any(AbortSignal),
     });
+  });
+});
+
+describe("bounded and cancellable session reads", () => {
+  const request = {
+    sessionID: "ses_1",
+    directory: "/repo",
+    mode: "summary" as const,
+  };
+  it("rejects the sentinel instead of reporting a partial history as complete", async () => {
+    const client = {
+      session: {
+        get: vi.fn().mockResolvedValue(result(session)),
+        messages: vi
+          .fn()
+          .mockResolvedValue(
+            result(Array(MAX_FETCH_MESSAGES + 1).fill(messages[0])),
+          ),
+      },
+    };
+    await expect(
+      fetchSessionReviewInput({ ...request, client: client as any }),
+    ).rejects.toMatchObject({ code: "RESPONSE_TOO_LARGE" });
+    expect(client.session.messages).toHaveBeenCalledWith({
+      path: { id: "ses_1" },
+      query: { directory: "/repo", limit: MAX_FETCH_MESSAGES + 1 },
+    });
+  });
+  it("accepts the exact message-count ceiling", async () => {
+    const client = {
+      session: {
+        get: vi.fn().mockResolvedValue(result(session)),
+        messages: vi
+          .fn()
+          .mockResolvedValue(
+            result(Array(MAX_FETCH_MESSAGES).fill(messages[0])),
+          ),
+      },
+    };
+    const bundle = await fetchSessionBundle({
+      ...request,
+      client: client as any,
+    });
+    expect(bundle.messages).toHaveLength(MAX_FETCH_MESSAGES);
+  });
+  it("does not start an already aborted request", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const client = { session: { get: vi.fn(), messages: vi.fn() } };
+    await expect(
+      fetchSessionReviewInput({
+        ...request,
+        client: client as any,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(client.session.get).not.toHaveBeenCalled();
+  });
+  it("does not fetch messages after cancellation during metadata fetch", async () => {
+    const controller = new AbortController();
+    const client = {
+      session: {
+        get: vi.fn().mockImplementation(async () => {
+          controller.abort();
+          return result(session);
+        }),
+        messages: vi.fn(),
+      },
+    };
+    await expect(
+      fetchSessionReviewInput({
+        ...request,
+        client: client as any,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(client.session.messages).not.toHaveBeenCalled();
+    expect(client.session.get).toHaveBeenCalledWith({
+      path: { id: "ses_1" },
+      query: { directory: "/repo" },
+      signal: controller.signal,
+    });
+  });
+  it("passes cancellation to in-flight messages and preserves AbortError", async () => {
+    const controller = new AbortController();
+    const client = {
+      session: {
+        get: vi.fn().mockResolvedValue(result(session)),
+        messages: vi.fn().mockImplementation(async ({ signal }) => {
+          expect(signal).toBe(controller.signal);
+          controller.abort();
+          signal.throwIfAborted();
+        }),
+      },
+    };
+    await expect(
+      fetchSessionReviewInput({
+        ...request,
+        client: client as any,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+  it("does not normalize a resolved response after cancellation", async () => {
+    const controller = new AbortController();
+    const client = {
+      session: {
+        get: vi.fn().mockResolvedValue(result(session)),
+        messages: vi.fn().mockImplementation(async () => {
+          controller.abort();
+          return result(messages);
+        }),
+      },
+    };
+    await expect(
+      fetchSessionReviewInput({
+        ...request,
+        client: client as any,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+  it("does not swallow cancellation when listing children", async () => {
+    const controller = new AbortController();
+    const client = {
+      session: {
+        children: vi.fn().mockImplementation(async ({ signal }) => {
+          expect(signal).toBe(controller.signal);
+          controller.abort();
+          signal.throwIfAborted();
+        }),
+      },
+    };
+    await expect(
+      listSessionChildren({
+        ...request,
+        client: client as any,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
   });
 });
