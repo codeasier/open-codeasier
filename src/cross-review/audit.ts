@@ -195,13 +195,20 @@ async function loadAuditSession(
   sessionID: string,
   directory: string,
   options: {
+    signal?: AbortSignal;
     pinMessageIDs?: string[];
     includeProtocolCalls?: boolean;
     focus?: string;
   },
 ): Promise<AuditSessionEvidence> {
-  const bundle = await fetchSessionBundle({ client, sessionID, directory });
-  const children = await listSessionChildren({ client, sessionID, directory });
+  const request = {
+    client,
+    sessionID,
+    directory,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
+  const bundle = await fetchSessionBundle(request);
+  const children = await listSessionChildren(request);
   const evidence = projectAuditSession({
     bundle,
     ...(options.focus === undefined ? {} : { focus: options.focus }),
@@ -255,7 +262,7 @@ async function loadRoleSession(
   client: SessionClient,
   sessionID: string,
   directories: string[],
-  options: { pinMessageIDs: string[]; focus?: string },
+  options: { pinMessageIDs: string[]; focus?: string; signal?: AbortSignal },
 ): Promise<AuditSessionEvidence> {
   let lastError: unknown;
   for (const directory of directories) {
@@ -274,6 +281,7 @@ async function fetchParentBundle(
   parentSessionID: string,
   callerDirectory: string,
   runs: CrossReviewRun[],
+  signal?: AbortSignal,
 ) {
   let lastNotFound: unknown;
   for (const directory of uniqueDirectories([
@@ -285,6 +293,7 @@ async function fetchParentBundle(
         client,
         sessionID: parentSessionID,
         directory,
+        ...(signal === undefined ? {} : { signal }),
       });
     } catch (error) {
       if (
@@ -473,7 +482,9 @@ export async function auditCrossReview(input: {
   directory: string;
   runID?: string;
   focus?: string;
+  signal?: AbortSignal;
 }): Promise<CrossReviewAuditPayload> {
+  input.signal?.throwIfAborted();
   const listed = await input.store.listByOwner(input.parentSessionID);
   const selected = resolveOwnerRuns(listed.runs, input.runID);
   const parentBundle = await fetchParentBundle(
@@ -481,6 +492,7 @@ export async function auditCrossReview(input: {
     input.parentSessionID,
     input.directory,
     selected,
+    input.signal,
   );
   if (parentBundle.messages.length === 0)
     throw new AuditError(
@@ -502,8 +514,10 @@ export async function auditCrossReview(input: {
     if (pending !== undefined) return pending;
     const request = loadRoleSession(input.client, sessionID, directories, {
       pinMessageIDs: pins,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
       ...(input.focus === undefined ? {} : { focus: input.focus }),
     }).catch((error: unknown) => {
+      input.signal?.throwIfAborted();
       const mapped = asAuditError(error);
       fetchErrors.set(sessionID, {
         code: mapped?.code ?? "SDK_FAILURE",
@@ -530,6 +544,7 @@ export async function auditCrossReview(input: {
             await load(sessionID, directories, messageIDs),
           );
         } catch {
+          input.signal?.throwIfAborted();
           sessions.set(sessionID, undefined);
         }
       }),
@@ -550,6 +565,7 @@ export async function auditCrossReview(input: {
     );
   }
 
+  input.signal?.throwIfAborted();
   return {
     parentSessionID: input.parentSessionID,
     ...(input.focus === undefined ? {} : { focus: input.focus }),
@@ -600,6 +616,7 @@ export function createCrossReviewAuditTool(
           store,
           parentSessionID: args.parentSessionID,
           directory: context.directory,
+          signal: context.abort,
           ...(args.runID === undefined ? {} : { runID: args.runID }),
           ...(args.focus === undefined ? {} : { focus: args.focus }),
         });
@@ -613,6 +630,7 @@ export function createCrossReviewAuditTool(
           },
         };
       } catch (error) {
+        context.abort.throwIfAborted();
         const mapped = asAuditError(error);
         if (mapped !== undefined)
           return {

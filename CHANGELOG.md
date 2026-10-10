@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Reject session reads above 10,000 messages with `RESPONSE_TOO_LARGE` rather
+  than report an incomplete fetched tail as complete evidence. Oversized audit
+  parent sessions fail the tool; oversized role sessions report a fetch error.
+- Include clipped text and tool inputs in normalized and audit `truncated`
+  evidence flags. Missing tool inputs do not imply truncation.
+
+### Fixed
+
+- Bound UTF-8 normalization work and nested tool-input traversal.
+- Forward cancellation through session review and audit SDK reads, preserving
+  aborts instead of treating cancelled role reads as missing evidence.
+
 ## [0.3.5] - 2026-09-14
 
 ### Fixed

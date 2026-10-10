@@ -305,3 +305,49 @@ describe("UTF-8 truncation and truthful metadata", () => {
     },
   );
 });
+
+describe("tool input truncation semantics", () => {
+  it.each(["pending", "running", "completed", "error"])(
+    "does not mark missing %s tool input truncated",
+    (status) => {
+      const raw = message("m1", "hello") as any;
+      raw.parts = [
+        {
+          type: "tool",
+          tool: "read",
+          state: { status, output: "ok", error: "bad" },
+        },
+      ];
+      const result = normalizeSession({
+        session: session as any,
+        messages: [raw],
+        mode: "summary",
+      });
+      expect(result.truncated).toBe(false);
+      expect(result.messages[0]?.parts[0]).toHaveProperty(
+        "input",
+        "[undefined]",
+      );
+    },
+  );
+
+  it.each([1n, () => 1, Symbol("input")])(
+    "marks unsupported input replacement as content loss",
+    (input) => {
+      const raw = message("m1", "hello") as any;
+      raw.parts = [
+        { type: "tool", tool: "read", state: { status: "pending", input } },
+      ];
+      const result = normalizeSession({
+        session: session as any,
+        messages: [raw],
+        mode: "summary",
+      });
+      expect(result.truncated).toBe(true);
+      expect(result.messages[0]?.parts[0]).toHaveProperty(
+        "input",
+        `[${typeof input}]`,
+      );
+    },
+  );
+});

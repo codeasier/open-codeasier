@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   createCrossReviewAuditTool,
+  auditCrossReview,
   resolveOwnerRuns,
 } from "../src/cross-review/audit.js";
 import {
@@ -1614,5 +1615,145 @@ describe("cross_review_audit tool", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("audit session read boundaries", () => {
+  const parent = () => ({
+    session: { id: PARENT, directory: "/repo" },
+    messages: parentMessages([]),
+  });
+
+  it("reports RESPONSE_TOO_LARGE at tool level for an oversized parent", async () => {
+    const bundle = parent();
+    bundle.messages = Array.from(
+      { length: 10_001 },
+      () => parentMessages([])[0] as (typeof bundle.messages)[number],
+    );
+    const { result, client } = await execute(
+      new MemoryRunStore(),
+      { [PARENT]: bundle },
+      { parentSessionID: PARENT },
+    );
+    expect(result).toMatchObject({
+      metadata: { error: "RESPONSE_TOO_LARGE" },
+      output: expect.stringContaining("RESPONSE_TOO_LARGE"),
+    });
+    expect(client.session.messages).toHaveBeenCalledWith(
+      expect.objectContaining({ query: { directory: "/repo", limit: 10_001 } }),
+    );
+  });
+
+  it("degrades an oversized role into a bounded fetch error", async () => {
+    const store = new MemoryRunStore();
+    await store.create(run());
+    const role = reviewerSession("rev-1", "msg-rev-1");
+    role.messages = Array.from(
+      { length: 10_001 },
+      () => userMessage("oversized", "x") as (typeof role.messages)[number],
+    );
+    const { payload, client } = await execute(
+      store,
+      { [PARENT]: parent(), "rev-1": role },
+      { parentSessionID: PARENT },
+    );
+    expect(payload.runs[0].roles.reviewers[0].fetchError).toMatchObject({
+      code: "RESPONSE_TOO_LARGE",
+    });
+    expect(
+      client.session.messages.mock.calls.filter(
+        ([request]) => request.path.id === "rev-1",
+      ),
+    ).toHaveLength(1);
+    expect(
+      client.session.children.mock.calls.some(
+        ([request]) => request.path.id === "rev-1",
+      ),
+    ).toBe(false);
+  });
+
+  it("forwards the tool abort signal to parent and role reads and child lists", async () => {
+    const store = new MemoryRunStore();
+    await store.create(run());
+    const client = mockClient({
+      [PARENT]: parent(),
+      "rev-1": reviewerSession("rev-1", "msg-rev-1"),
+    });
+    const ctx = context();
+    await createCrossReviewAuditTool(client as any, { store }).execute(
+      { parentSessionID: PARENT },
+      ctx,
+    );
+    for (const method of [
+      client.session.get,
+      client.session.messages,
+      client.session.children,
+    ]) {
+      expect(method).toHaveBeenCalled();
+      for (const [request] of method.mock.calls)
+        expect(request).toHaveProperty("signal", ctx.abort);
+    }
+  });
+
+  it.each([
+    ["get", PARENT],
+    ["messages", PARENT],
+    ["get", "rev-1"],
+    ["messages", "rev-1"],
+    ["children", "rev-1"],
+  ] as const)(
+    "preserves cancellation during %s of %s without role degradation",
+    async (method, sessionID) => {
+      const store = new MemoryRunStore();
+      await store.create(run());
+      const controller = new AbortController();
+      const reason = new Error("audit cancelled");
+      const client = mockClient({
+        [PARENT]: parent(),
+        "rev-1": reviewerSession("rev-1", "msg-rev-1"),
+      });
+      const original = client.session[method].getMockImplementation();
+      if (original === undefined)
+        throw new Error("Missing mock implementation");
+      client.session[method].mockImplementation((async (request: any) => {
+        if (request.path.id === sessionID) {
+          expect(request.signal).toBe(controller.signal);
+          controller.abort(reason);
+          throw reason;
+        }
+        return original(request);
+      }) as any);
+      const ctx = { ...context(), abort: controller.signal };
+      await expect(
+        createCrossReviewAuditTool(client as any, { store }).execute(
+          { parentSessionID: PARENT },
+          ctx,
+        ),
+      ).rejects.toBe(reason);
+      expect(
+        client.session[method].mock.calls.filter(
+          ([request]) => request.path.id === sessionID,
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("does not read the run store or SDK for an already cancelled audit", async () => {
+    const store = new MemoryRunStore();
+    const client = mockClient({});
+    const controller = new AbortController();
+    const reason = new Error("already cancelled");
+    controller.abort(reason);
+    await expect(
+      auditCrossReview({
+        store,
+        client: client as any,
+        parentSessionID: PARENT,
+        directory: "/repo",
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason);
+    expect(store.listCalls).toBe(0);
+    expect(client.session.get).not.toHaveBeenCalled();
   });
 });

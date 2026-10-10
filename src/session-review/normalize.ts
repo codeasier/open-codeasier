@@ -53,6 +53,7 @@ function sanitizeInput(value: unknown, onTruncate: OnTruncate): unknown {
       return truncate(item, INPUT_LIMITS.stringBytes, onTruncate);
     if (item === null || typeof item === "boolean" || typeof item === "number")
       return item;
+    if (item === undefined) return "[undefined]";
     if (depth >= INPUT_LIMITS.depth) return omitted("[depth-limit]");
     if (typeof item !== "object") return omitted(`[${typeof item}]`);
     if (seen.has(item)) return omitted("[circular]");
