@@ -1,5 +1,14 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
@@ -15,6 +24,7 @@ import {
   runGitcodePrSnapshot,
 } from "../src/cross-review/adapters/gitcode-pr-snapshot.js";
 import { defaultRemoveSnapshot } from "../src/cross-review/pr-gather.js";
+import { clearSnapshotDirectory } from "../src/cross-review/snapshot-directory.js";
 
 const execFileAsync = promisify(execFile);
 const tracked = [] as string[];
@@ -49,7 +59,10 @@ function prViewJson(overrides: Record<string, unknown> = {}) {
  * merge base, then return command runners that route `gh` to a fake and `git`
  * to the real binary.
  */
-async function fakeForgeRepo(forge: "github" | "gitcode") {
+async function fakeForgeRepo(
+  forge: "github" | "gitcode",
+  prepareHead?: (repo: string) => Promise<void>,
+) {
   const repo = await mkdtemp(join(tmpdir(), "pr-adapter-repo-"));
   tracked.push(repo);
   const git = (args: string[], cwd = repo) =>
@@ -65,6 +78,7 @@ async function fakeForgeRepo(forge: "github" | "gitcode") {
   // PR head: distinct tree on a side branch.
   await git(["checkout", "-q", "-b", "feature"]);
   await writeFile(join(repo, "feature.txt"), "feature\n", "utf8");
+  await prepareHead?.(repo);
   await git(["add", "."]);
   await git(["commit", "-q", "-m", "feature"]);
   const headSha = (await git(["rev-parse", "HEAD"])).stdout.trim();
@@ -607,5 +621,138 @@ describe("defaultRemoveSnapshot path resolution", () => {
     await expect(stat(worktree)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(runDir)).rejects.toMatchObject({ code: "ENOENT" });
     expect((await git(["worktree", "list"])).stdout).not.toContain(worktree);
+  });
+});
+
+describe.each(["github", "gitcode"] as const)(
+  "%s snapshot destination safety",
+  (forge) => {
+    it.each(["directory symlink", "file symlinks", "regular file"])(
+      "replaces a PR-controlled %s without touching external files",
+      async (kind) => {
+        const root = await mkdtemp(join(tmpdir(), "pr-adapter-safe-"));
+        tracked.push(root);
+        const outside = join(root, "outside");
+        await mkdir(outside);
+        const names = ["meta.json", "diff.patch", "pr.md", "notes.md"];
+        for (const name of names)
+          await writeFile(join(outside, name), `sentinel:${name}`);
+        const { repo, runCommand, headSha } = await fakeForgeRepo(
+          forge,
+          async (repo) => {
+            const reserved = join(repo, ".cross-review");
+            if (kind === "directory symlink")
+              await symlink(outside, reserved, "dir");
+            else if (kind === "regular file")
+              await writeFile(reserved, "tracked file");
+            else {
+              await mkdir(reserved);
+              for (const name of names)
+                await symlink(join(outside, name), join(reserved, name));
+              await symlink(
+                join(outside, "missing"),
+                join(reserved, "dangling"),
+              );
+            }
+          },
+        );
+        const worktree = join(root, "worktree with spaces");
+        const snapshot = join(worktree, ".cross-review");
+        const argv = [
+          ...flags(repo, "69", worktree, snapshot),
+          "--notes",
+          "caller notes",
+        ];
+        const result =
+          forge === "github"
+            ? await runGithubPrSnapshot(argv, runCommand)
+            : await runGitcodePrSnapshot(
+                argv,
+                "/usr/local/bin/gitcode",
+                runCommand,
+              );
+        expect(result.exitCode).toBe(0);
+        expect((await lstat(snapshot)).isDirectory()).toBe(true);
+        expect((await readdir(outside)).sort()).toEqual([...names].sort());
+        for (const name of names) {
+          expect(await readFile(join(outside, name), "utf8")).toBe(
+            `sentinel:${name}`,
+          );
+          expect((await lstat(join(snapshot, name))).isSymbolicLink()).toBe(
+            false,
+          );
+        }
+        expect(
+          JSON.parse(await readFile(join(snapshot, "meta.json"), "utf8"))
+            .headSha,
+        ).toBe(headSha);
+        expect(await readFile(join(snapshot, "notes.md"), "utf8")).toBe(
+          "caller notes",
+        );
+        expect(await readFile(join(snapshot, "diff.patch"), "utf8")).toContain(
+          "feature.txt",
+        );
+        // The source checkout is still on main and has no generated evidence.
+        await expect(lstat(join(repo, ".cross-review"))).rejects.toMatchObject({
+          code: "ENOENT",
+        });
+      },
+    );
+
+    it("rejects a destination outside the reserved worktree directory", async () => {
+      const { repo, runCommand, commands } = await fakeForgeRepo(forge);
+      const root = await mkdtemp(join(tmpdir(), "pr-adapter-safe-"));
+      tracked.push(root);
+      const outside = join(root, "outside");
+      await mkdir(outside);
+      await writeFile(join(outside, "meta.json"), "untouched");
+      const argv = flags(repo, "69", join(root, "worktree"), outside);
+      const result =
+        forge === "github"
+          ? await runGithubPrSnapshot(argv, runCommand)
+          : await runGitcodePrSnapshot(
+              argv,
+              "/usr/local/bin/gitcode",
+              runCommand,
+            );
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain(
+        "Snapshot destination must be worktree/.cross-review",
+      );
+      expect(await readFile(join(outside, "meta.json"), "utf8")).toBe(
+        "untouched",
+      );
+      expect(commands.some(({ args }) => args.includes("worktree"))).toBe(
+        false,
+      );
+    });
+  },
+);
+
+describe("clearSnapshotDirectory", () => {
+  it("rejects a symlink worktree without removing its target contents", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pr-adapter-root-"));
+    tracked.push(root);
+    const outside = join(root, "outside");
+    await mkdir(join(outside, ".cross-review"), { recursive: true });
+    const sentinel = join(outside, ".cross-review", "meta.json");
+    await writeFile(sentinel, "untouched");
+    const worktree = join(root, "worktree");
+    await symlink(outside, worktree, "dir");
+    await expect(clearSnapshotDirectory(worktree)).rejects.toThrow(
+      "Snapshot worktree must be a directory",
+    );
+    expect(await readFile(sentinel, "utf8")).toBe("untouched");
+  });
+
+  it("rejects an unexpected destination before deleting anything", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pr-adapter-root-"));
+    tracked.push(root);
+    const sentinel = join(root, "meta.json");
+    await writeFile(sentinel, "untouched");
+    await expect(clearSnapshotDirectory(root, root)).rejects.toThrow(
+      "Snapshot destination must be worktree/.cross-review",
+    );
+    expect(await readFile(sentinel, "utf8")).toBe("untouched");
   });
 });
