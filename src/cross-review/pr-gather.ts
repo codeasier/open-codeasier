@@ -17,6 +17,7 @@ import type { PrForge } from "./pr-target.js";
 import { findGitRoot } from "./config.js";
 import { writeEvidencePack, type EvidencePack } from "./evidence.js";
 import type { CrossReviewRun } from "./run-store.js";
+import { clearSnapshotDirectory } from "./snapshot-directory.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -323,8 +324,7 @@ export async function createParentSnapshot(input: {
     );
     await mkdir(dirname(paths.worktree), { recursive: true });
     await git("worktree", "add", "--detach", paths.worktree, headSha);
-    // A repository may track this name, even as a symlink. Never write through it.
-    await rm(paths.snapshotDir, { recursive: true, force: true });
+    await clearSnapshotDirectory(paths.worktree, paths.snapshotDir);
     if (input.pack) await writeEvidencePack(paths.snapshotDir, input.pack);
     else {
       await mkdir(paths.snapshotDir);

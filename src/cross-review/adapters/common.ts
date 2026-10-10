@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { barePrNumber } from "../pr-target.js";
+import { clearSnapshotDirectory } from "../snapshot-directory.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -258,6 +259,11 @@ export async function materializePrSnapshot(
 ): Promise<MaterializeResult> {
   const { repo, worktree, snapshot, view, runCommand } = input;
   try {
+    if (resolve(snapshot) !== resolve(worktree, ".cross-review"))
+      return {
+        ok: false,
+        error: "Snapshot destination must be worktree/.cross-review",
+      };
     const head = await ensureCommit(
       runCommand,
       repo,
@@ -327,7 +333,8 @@ export async function materializePrSnapshot(
     }
 
     const fetchedAt = input.fetchedAt ?? new Date().toISOString();
-    await mkdir(snapshot, { recursive: true });
+    await clearSnapshotDirectory(worktree, snapshot);
+    await mkdir(snapshot, { mode: 0o700 });
     await writeFile(
       resolve(snapshot, "meta.json"),
       `${JSON.stringify(
@@ -344,9 +351,12 @@ export async function materializePrSnapshot(
         null,
         2,
       )}\n`,
-      "utf8",
+      { encoding: "utf8", flag: "wx" },
     );
-    await writeFile(resolve(snapshot, "diff.patch"), diff, "utf8");
+    await writeFile(resolve(snapshot, "diff.patch"), diff, {
+      encoding: "utf8",
+      flag: "wx",
+    });
     await writeFile(
       resolve(snapshot, "pr.md"),
       [
@@ -363,10 +373,13 @@ export async function materializePrSnapshot(
         view.body.length === 0 ? "(no description)" : view.body,
         "",
       ].join("\n"),
-      "utf8",
+      { encoding: "utf8", flag: "wx" },
     );
     if (input.notes !== undefined)
-      await writeFile(resolve(snapshot, "notes.md"), input.notes, "utf8");
+      await writeFile(resolve(snapshot, "notes.md"), input.notes, {
+        encoding: "utf8",
+        flag: "wx",
+      });
 
     try {
       await worktreeExcludeLine(runCommand, worktree);
