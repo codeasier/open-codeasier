@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-10-11
+
 ### Changed
 
 - Reject session reads above 10,000 messages with `RESPONSE_TOO_LARGE` rather
@@ -411,7 +413,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/codeasier/open-codeasier/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/codeasier/open-codeasier/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/codeasier/open-codeasier/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/codeasier/open-codeasier/compare/v0.3.2...v0.3.3
