@@ -1574,11 +1574,14 @@ describe("cross_review tool PR snapshot path", () => {
       runPrAdapter?: any;
       removeSnapshot?: any;
       loadConfig?: () => Promise<LoadedCrossReviewConfig>;
+      assertInvocation?: any;
     } = {},
   ) {
     const runPrAdapter = options.runPrAdapter ?? okAdapter();
     const removeSnapshot =
       options.removeSnapshot ?? vi.fn().mockResolvedValue(undefined);
+    const assertInvocation =
+      options.assertInvocation ?? vi.fn().mockResolvedValue(undefined);
     const tool = createCrossReviewTool(
       mock,
       options.loadConfig ?? emptyConfig,
@@ -1589,18 +1592,21 @@ describe("cross_review tool PR snapshot path", () => {
         runPrAdapter,
         stateRoot: "/state",
         removeSnapshot,
+        assertInvocation,
       },
     );
-    return { tool, runPrAdapter, removeSnapshot };
+    return { tool, runPrAdapter, removeSnapshot, assertInvocation };
   }
 
   it.each([
     ["effect", "approve"],
     ["effect", "deny"],
     ["effect", "cancel"],
+    ["effect", "revoke"],
     ["promise", "approve"],
     ["promise", "deny"],
     ["promise", "cancel"],
+    ["promise", "revoke"],
   ] as const)(
     "waits for an executed host permission %s before legacy PR side effects: %s",
     async (shape, action) => {
@@ -1608,14 +1614,15 @@ describe("cross_review tool PR snapshot path", () => {
       const classify = vi
         .fn()
         .mockResolvedValue({ kind: "pr", forge: "github" });
-      const { tool, runPrAdapter, removeSnapshot } = legacyPrTool(mock, {
-        classify,
-        loadConfig: () =>
-          wrapConfig({
-            reviewers: [{ model: "a/one" }, { model: "a/two" }],
-            judgeModel: "b/judge",
-          }),
-      });
+      const { tool, runPrAdapter, removeSnapshot, assertInvocation } =
+        legacyPrTool(mock, {
+          classify,
+          loadConfig: () =>
+            wrapConfig({
+              reviewers: [{ model: "a/one" }, { model: "a/two" }],
+              judgeModel: "b/judge",
+            }),
+        });
       const persist = vi.spyOn(FileCrossReviewRunStore.prototype, "create");
       const approval = pendingPermission({ ask: shape });
       const abort = new AbortController();
@@ -1645,6 +1652,7 @@ describe("cross_review tool PR snapshot path", () => {
           shape === "effect" ? ["/host-worktree"] : [],
         );
         expect(classify).toHaveBeenCalledOnce();
+        expect(assertInvocation).toHaveBeenCalledOnce();
         expect(runPrAdapter).not.toHaveBeenCalled();
         expect(persist).not.toHaveBeenCalled();
         expect(mock.session.create).not.toHaveBeenCalled();
@@ -1658,11 +1666,17 @@ describe("cross_review tool PR snapshot path", () => {
           );
           expect(runPrAdapter).toHaveBeenCalledOnce();
           expect(mock.session.create).toHaveBeenCalledTimes(3);
+          expect(assertInvocation).toHaveBeenCalledTimes(2);
         } else {
           const rejected = expect(started).rejects.toThrow();
           if (action === "deny")
             approval.decision.reject(new Error("Permission denied"));
-          else abort.abort();
+          else if (action === "revoke") {
+            assertInvocation.mockRejectedValueOnce(
+              new Error("command revoked"),
+            );
+            approval.decision.resolve(undefined);
+          } else abort.abort();
           await rejected;
           // A late approval after cancellation must not resume the tool.
           approval.decision.resolve(undefined);

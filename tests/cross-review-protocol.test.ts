@@ -3633,7 +3633,10 @@ describe("cross_review_config preview", () => {
       previewConfig,
     );
 
-    const previewed = await tools.cross_review_config.execute({}, context());
+    const previewed = await tools.cross_review_config.execute(
+      { target: "HEAD" },
+      context(),
+    );
     const preview = output(previewed);
 
     expect(preview.config).toEqual(PROJECT_CONFIG_BLOCK);
@@ -3667,7 +3670,7 @@ describe("cross_review_config preview", () => {
     );
 
     const preview = output(
-      await tools.cross_review_config.execute({}, context()),
+      await tools.cross_review_config.execute({ target: "HEAD" }, context()),
     );
 
     expect(preview.config).toEqual({
@@ -3694,7 +3697,12 @@ describe("cross_review_config preview", () => {
 
     const preview = output(
       await tools.cross_review_config.execute(
-        { reviewModels: ["a/one"], agents: 1, focus: "override focus" },
+        {
+          target: "HEAD",
+          reviewModels: ["a/one"],
+          agents: 1,
+          focus: "override focus",
+        },
         context(),
       ),
     );
@@ -3715,7 +3723,7 @@ describe("cross_review_config preview", () => {
         new MemoryRunStore(),
         () => 1_000,
         previewConfig,
-      ).cross_review_config.execute({}, context()),
+      ).cross_review_config.execute({ target: "HEAD" }, context()),
     );
 
     const { client } = mockClient();
@@ -3743,7 +3751,7 @@ describe("cross_review_config preview", () => {
         () => 1_000,
         previewConfig,
       ).cross_review_config.execute(
-        { reviewModels: ["a/one", "a/two"], agents: 2 },
+        { target: "HEAD", reviewModels: ["a/one", "a/two"], agents: 2 },
         context(),
       ),
     );
@@ -3763,7 +3771,7 @@ describe("cross_review_config preview", () => {
     const tools = protocol(client, new MemoryRunStore());
 
     await expect(
-      tools.cross_review_config.execute({}, context()),
+      tools.cross_review_config.execute({ target: "HEAD" }, context()),
     ).rejects.toThrow("No review models configured");
     expect(client.session.create).not.toHaveBeenCalled();
   });
@@ -3773,11 +3781,14 @@ describe("cross_review_config preview", () => {
     const tools = protocol(client, new MemoryRunStore());
 
     await expect(
-      tools.cross_review_config.execute({ agents: 9 }, context()),
+      tools.cross_review_config.execute(
+        { target: "HEAD", agents: 9 },
+        context(),
+      ),
     ).rejects.toThrow("`agents` must be an integer from 1 to 8");
     await expect(
       tools.cross_review_config.execute(
-        { reviewModels: ["a/one"], reviewerTimeoutMs: 1 },
+        { target: "HEAD", reviewModels: ["a/one"], reviewerTimeoutMs: 1 },
         context(),
       ),
     ).rejects.toThrow(
@@ -3799,6 +3810,7 @@ describe("cross_review_config preview", () => {
     const preview = output(
       await tools.cross_review_config.execute(
         {
+          target: "HEAD",
           reviewModels: [],
           agents: 0,
           maxConcurrency: 0,
@@ -3824,7 +3836,7 @@ describe("cross_review_config preview", () => {
 
     await expect(
       tools.cross_review_config.execute(
-        { reviewModels: ["a/missing"], agents: 1 },
+        { target: "HEAD", reviewModels: ["a/missing"], agents: 1 },
         context(),
       ),
     ).rejects.toThrow("Unavailable model: a/missing");
@@ -3839,7 +3851,10 @@ describe("cross_review_config preview", () => {
     const tools = protocol(client, new MemoryRunStore());
 
     await expect(
-      tools.cross_review_config.execute({}, context("child-session")),
+      tools.cross_review_config.execute(
+        { target: "HEAD" },
+        context("child-session"),
+      ),
     ).rejects.toThrow(
       "cross_review_config can only be invoked from primary sessions",
     );
@@ -3876,6 +3891,7 @@ describe("cross-review PR snapshot protocol", () => {
     runPrAdapter = okAdapter(),
     removeSnapshot: (worktree: string) => Promise<void> = vi.fn(),
     loadConfig: () => Promise<LoadedCrossReviewConfig> = loadedConfig,
+    assertInvocation = vi.fn().mockResolvedValue(undefined),
   ) {
     // Child sessions report themselves bound to the snapshot worktree so
     // the S10 directory assertion passes; hostile-binding tests override
@@ -3898,17 +3914,20 @@ describe("cross-review PR snapshot protocol", () => {
       runPrAdapter,
       stateRoot: "/state",
       removeSnapshot,
+      assertInvocation,
     });
-    return { tools, runPrAdapter, removeSnapshot };
+    return { tools, runPrAdapter, removeSnapshot, assertInvocation };
   }
 
   it.each([
     ["effect", "approve"],
     ["effect", "deny"],
     ["effect", "cancel"],
+    ["effect", "revoke"],
     ["promise", "approve"],
     ["promise", "deny"],
     ["promise", "cancel"],
+    ["promise", "revoke"],
   ] as const)(
     "waits for an executed host permission %s before async PR side effects: %s",
     async (shape, action) => {
@@ -3918,11 +3937,8 @@ describe("cross-review PR snapshot protocol", () => {
       const classify = vi
         .fn()
         .mockResolvedValue({ kind: "pr", forge: "github" });
-      const { tools, runPrAdapter, removeSnapshot } = prProtocol(
-        client,
-        store,
-        classify,
-      );
+      const { tools, runPrAdapter, removeSnapshot, assertInvocation } =
+        prProtocol(client, store, classify);
       const approval = pendingPermission({ ask: shape });
       const abort = new AbortController();
       const target = "https://github.com/org/repo/pull/69";
@@ -3958,6 +3974,7 @@ describe("cross-review PR snapshot protocol", () => {
         shape === "effect" ? ["/host-worktree"] : [],
       );
       expect(classify).toHaveBeenCalledOnce();
+      expect(assertInvocation).toHaveBeenCalledOnce();
       expect(runPrAdapter).not.toHaveBeenCalled();
       expect(persist).not.toHaveBeenCalled();
       expect(store.cleanupExpiredRuns).not.toHaveBeenCalled();
@@ -3970,11 +3987,15 @@ describe("cross-review PR snapshot protocol", () => {
         expect(runPrAdapter).toHaveBeenCalledOnce();
         expect(persist).toHaveBeenCalledOnce();
         expect(client.session.create).toHaveBeenCalledTimes(3);
+        expect(assertInvocation).toHaveBeenCalledTimes(2);
       } else {
         const rejected = expect(started).rejects.toThrow();
         if (action === "deny")
           approval.decision.reject(new Error("Permission denied"));
-        else abort.abort();
+        else if (action === "revoke") {
+          assertInvocation.mockRejectedValueOnce(new Error("command revoked"));
+          approval.decision.resolve(undefined);
+        } else abort.abort();
         await rejected;
         approval.decision.resolve(undefined);
         expect(runPrAdapter).not.toHaveBeenCalled();

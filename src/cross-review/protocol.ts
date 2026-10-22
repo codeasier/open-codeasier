@@ -5,6 +5,11 @@ import { tool } from "@opencode-ai/plugin";
 import { readEvidencePack, writeEvidencePack } from "./evidence.js";
 import { assertPrimarySession } from "../primary-session.js";
 import { crossReviewAuthorization } from "./authorization.js";
+import type { CrossReviewInvocationCheck } from "./invocation.js";
+import type {
+  CrossReviewConfirmStart,
+  CrossReviewPrepareConfirmation,
+} from "./confirmation.js";
 import {
   configWarning,
   embeddedContext,
@@ -34,6 +39,7 @@ import {
 } from "./tool.js";
 import {
   findGitRoot,
+  DEFAULT_REVIEWER_TIMEOUT_MS,
   loadCrossReviewConfig,
   normalizeHostDefaultOverrides,
   prepareCrossReviewOverrides,
@@ -68,7 +74,6 @@ export const PR_MATERIALS_COLLISION_ERROR =
   "the PR head already contains .cross-review/materials; cannot attach evidence pack";
 
 const DEFAULT_CONCURRENCY = 3;
-const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1_000;
 const DEFAULT_POLL_AFTER_MS = 3_000;
 const SETTLED_POLL_AFTER_MS = 10_000;
 const DEADLINE_WARNING_MS = 30_000;
@@ -163,6 +168,9 @@ type ProtocolContext = {
 };
 
 type ProtocolOptions = {
+  assertInvocation?: CrossReviewInvocationCheck;
+  prepareConfirmation?: CrossReviewPrepareConfirmation;
+  confirmStart?: CrossReviewConfirmStart;
   loadConfig?: CrossReviewConfigLoader;
   store?: CrossReviewRunStore;
   now?: () => number;
@@ -1807,8 +1815,9 @@ export function createCrossReviewProtocolTools(
 
   const configPreview = tool({
     description:
-      "Preview the resolved cross-review configuration without creating sessions; invoke only with explicit user cross-review intent from primary sessions to confirm the effective config before starting",
+      "Preview the target and resolved cross-review configuration without creating sessions; requires the user's explicit /cross-review <target> command in the current turn, from a primary session. Ask the returned confirmation.questions verbatim with the question tool and wait for explicit Start cross-review before starting. Never preview or solicit escalation from natural-language review intent or command mentions",
     args: {
+      target: tool.schema.string().min(1).max(4_000),
       reviewModels: tool.schema
         .array(tool.schema.string())
         .min(1)
@@ -1847,6 +1856,7 @@ export function createCrossReviewProtocolTools(
         "cross_review_config",
         requestSignal(context.abort),
       );
+      await options.assertInvocation?.(context, "cross_review_config");
       // Same fast-fail bounds as `start`, even when the host skips
       // tool-schema validation. Host type-defaults are stripped first.
       const overrides = prepareCrossReviewOverrides(args);
@@ -1860,7 +1870,17 @@ export function createCrossReviewProtocolTools(
       );
       const warning = configWarning(loaded);
       const sharedFocus = overrides.focus ?? loaded.config.focus;
+      const confirmation = await options.prepareConfirmation?.(context, {
+        target: args.target,
+        reviewers: plan.reviewers,
+        judgeModel: plan.judgeModel,
+        maxConcurrency: plan.maxConcurrency,
+        reviewerTimeoutMs: plan.reviewerTimeoutMs,
+        focus: sharedFocus,
+      });
       return result("Cross-review config preview", {
+        target: args.target,
+        ...(confirmation === undefined ? {} : { confirmation }),
         config: {
           sources: loaded.sources,
           projectConfigPath: loaded.projectPath,
@@ -1886,7 +1906,7 @@ export function createCrossReviewProtocolTools(
 
   const start = tool({
     description:
-      "Start isolated cross-review sessions asynchronously and return a run ID; invoke only with explicit user cross-review intent (independent multi-model review), not ordinary review, from primary sessions. For a non-PR target without judgeModel, parent-gathered context or evidenceDir is required; omit optional overrides instead of passing an empty array or 0",
+      "Start isolated cross-review sessions asynchronously and return a run ID; requires the user's explicit /cross-review <target> command and a fresh affirmative answer to the preview's exact confirmation.questions in the question tool. Configuration or permission approval alone is insufficient. Primary sessions only; never trigger from natural-language review intent or command mentions. For a non-PR target without judgeModel, parent-gathered context or evidenceDir is required; omit optional overrides instead of passing an empty array or 0",
     args: {
       target: tool.schema.string().min(1).max(4_000),
       context: tool.schema.string().min(1).max(1_000_000).optional(),
@@ -1936,6 +1956,7 @@ export function createCrossReviewProtocolTools(
         "cross_review_start",
         requestSignal(context.abort),
       );
+      await options.assertInvocation?.(context, "cross_review_start");
       // The host may not enforce the declared tool schema, so type-default
       // empty overrides are stripped and remaining values are revalidated
       // against the loader's bounds.
@@ -1972,7 +1993,17 @@ export function createCrossReviewProtocolTools(
         hasEvidencePack: args.evidenceDir !== undefined,
         target: args.target,
       });
+      const assertConfirmationCurrent = await options.confirmStart?.(context, {
+        target: args.target,
+        reviewers,
+        judgeModel,
+        maxConcurrency,
+        reviewerTimeoutMs: plan.reviewerTimeoutMs,
+        focus: overrides.focus ?? loaded.config.focus,
+      });
       await authorize({ target: args.target, reviewers, judgeModel });
+      await options.assertInvocation?.(context, "cross_review_start");
+      assertConfirmationCurrent?.();
       const pack =
         args.evidenceDir === undefined
           ? undefined

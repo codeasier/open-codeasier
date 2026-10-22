@@ -108,6 +108,44 @@ describe("plugin module", () => {
     expect(cleanup).toHaveBeenCalled();
   });
 
+  it.each(["cross_review_config", "cross_review_start", "cross_review"])(
+    "blocks unsolicited %s before discovery, permission, or child creation",
+    async (name) => {
+      const client = {
+        session: {
+          get: vi.fn().mockResolvedValue({ data: { id: "parent" } }),
+          create: vi.fn(),
+          message: vi.fn(),
+        },
+        provider: { list: vi.fn() },
+      };
+      const hooks = await plugin.server({ client } as any);
+      const ask = vi.fn();
+      const entry = hooks.tool?.[name];
+      if (entry === undefined) throw new Error(`Missing tool: ${name}`);
+      await expect(
+        entry.execute(
+          { target: "#42" },
+          {
+            sessionID: "parent",
+            messageID: "assistant",
+            directory: "/repo",
+            worktree: "/repo",
+            agent: "build",
+            abort: new AbortController().signal,
+            metadata() {},
+            ask,
+          },
+        ),
+      ).rejects.toThrow(
+        "requires an explicit user /cross-review <target> command",
+      );
+      expect(client.provider.list).not.toHaveBeenCalled();
+      expect(client.session.create).not.toHaveBeenCalled();
+      expect(ask).not.toHaveBeenCalled();
+    },
+  );
+
   it("configures review tools as primary_tools in experimental config hook", async () => {
     const hooks = await plugin.server({
       client: {},
