@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Require the user's current-turn `/cross-review <target>` command before
+  configuration preview or either cross-review start entry point. Bind expanded
+  slash commands to the admitted user message and verify the calling assistant's
+  parent; natural-language requests, quoted examples, prior turns, setup, and
+  remembered permissions no longer authorize a new review. Existing run control
+  remains available. Setup now also requires an explicit slash command.
+- Require a fresh affirmative answer to the preview's dedicated startup question
+  before every asynchronous or legacy start. Bind host question-tool answers to
+  the exact target and resolved plan, consume each confirmation once, and reject
+  missing, cancelled, stale, or mismatched confirmations even when permissions
+  allow automatically. Configuration preview now requires the review target.
+
 ## [0.3.6] - 2026-10-11
 
 ### Changed

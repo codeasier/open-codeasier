@@ -47,7 +47,7 @@ describe("distributed workflow assets", () => {
     const content = await readFile("skills/cross-review/SKILL.md", "utf8");
     expect(content).toContain("Do not glob `.opencode/**`");
     expect(content).toContain(
-      "Call `cross_review_start` with the target plus only user-supplied overrides",
+      "Only after the affirmative answer, call `cross_review_start` with the same target plus only user-supplied overrides",
     );
     expect(content).toContain(
       "never copy models from either config file into `--review-models`",

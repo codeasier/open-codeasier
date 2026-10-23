@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { isGitcodeCliPath } from "./gitcode-cli.js";
 
 export const MODEL_ID = /^[^/\s]+\/[^/\s]+(?:\/[^/\s]+)*$/;
+export const DEFAULT_REVIEWER_TIMEOUT_MS = 10 * 60 * 1_000;
 
 export type CrossReviewReviewer = {
   model: string;

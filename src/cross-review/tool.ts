@@ -3,9 +3,12 @@ import { join } from "node:path";
 import { tool } from "@opencode-ai/plugin";
 import { assertPrimarySession } from "../primary-session.js";
 import { crossReviewAuthorization } from "./authorization.js";
+import type { CrossReviewInvocationCheck } from "./invocation.js";
+import type { CrossReviewConfirmStart } from "./confirmation.js";
 import {
   findGitRoot,
   loadCrossReviewConfig,
+  DEFAULT_REVIEWER_TIMEOUT_MS,
   MODEL_ID,
   normalizeHostDefaultOverrides,
   prepareCrossReviewOverrides,
@@ -34,6 +37,8 @@ import {
 
 /** Injection points for the legacy tool's PR snapshot path (tests). */
 export type LegacyPrSnapshotOptions = {
+  assertInvocation?: CrossReviewInvocationCheck;
+  confirmStart?: CrossReviewConfirmStart;
   classifyTarget?: (
     target: string,
     directory: string,
@@ -629,7 +634,7 @@ export function createCrossReviewTool(
     prSnapshotOptions.removeSnapshot ?? defaultRemoveSnapshot;
   return tool({
     description:
-      "Legacy blocking cross-review entry point; invoke only with explicit user cross-review intent (independent multi-model review), not ordinary review, from primary sessions and prefer cross_review_start/status/finalize",
+      "Legacy blocking cross-review entry point; requires the user's explicit /cross-review <target> command and fresh affirmative question-tool confirmation of the preview's exact target and configuration. Permission approval alone is insufficient. Primary sessions only; never trigger from natural-language review intent or command mentions; prefer cross_review_start/status/finalize",
     args: {
       target: tool.schema.string().min(1).max(4_000),
       context: tool.schema.string().min(1).max(1_000_000).optional(),
@@ -665,6 +670,7 @@ export function createCrossReviewTool(
         "cross_review",
         context.abort,
       );
+      await prSnapshotOptions.assertInvocation?.(context, "cross_review");
       const sessions = new Set<string>();
       // Child sessions live in the PR snapshot worktree once one exists; the
       // abort path must target the same directory the sessions were created
@@ -794,7 +800,19 @@ export function createCrossReviewTool(
           isPrSnapshot: classification.kind === "pr",
           target: args.target,
         });
+        const assertConfirmationCurrent =
+          await prSnapshotOptions.confirmStart?.(context, {
+            target: args.target,
+            reviewers,
+            judgeModel,
+            maxConcurrency,
+            reviewerTimeoutMs:
+              config.reviewerTimeoutMs ?? DEFAULT_REVIEWER_TIMEOUT_MS,
+            focus: sharedFocus,
+          });
         await authorize({ target: args.target, reviewers, judgeModel });
+        await prSnapshotOptions.assertInvocation?.(context, "cross_review");
+        assertConfirmationCurrent?.();
         throwIfCancelled();
         publishProgress("preparing");
 

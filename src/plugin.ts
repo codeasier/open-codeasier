@@ -13,15 +13,23 @@ import { createCrossReviewAuditTool } from "./cross-review/audit.js";
 import type { SessionClient } from "./session-review/fetch.js";
 import { createSessionReviewTool } from "./session-review/tool.js";
 import { CROSS_REVIEW_START_PERMISSIONS } from "./cross-review/authorization.js";
+import { createCrossReviewInvocationGuard } from "./cross-review/invocation.js";
 
 export const server: Plugin = async ({ client }) => {
   const store = new FileCrossReviewRunStore();
   await store.cleanupExpiredRuns().catch(() => undefined);
+  const {
+    assertInvocation,
+    prepareConfirmation,
+    confirmStart,
+    ...invocationHooks
+  } = createCrossReviewInvocationGuard(client);
   const protocol = createCrossReviewProtocolTools(
     client as AsyncCrossReviewClient,
-    { store },
+    { store, assertInvocation, prepareConfirmation, confirmStart },
   );
   return {
+    ...invocationHooks,
     config: async (config) => {
       const permission =
         typeof config.permission === "string"
@@ -43,7 +51,11 @@ export const server: Plugin = async ({ client }) => {
       };
     },
     tool: {
-      cross_review: createCrossReviewTool(client as CrossReviewClient),
+      cross_review: createCrossReviewTool(
+        client as CrossReviewClient,
+        undefined,
+        { assertInvocation, confirmStart },
+      ),
       ...protocol,
       session_review: createSessionReviewTool(client as SessionClient),
       cross_review_audit: createCrossReviewAuditTool(client as SessionClient),
