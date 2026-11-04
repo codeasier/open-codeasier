@@ -56,6 +56,92 @@ export function remoteUrlsFromVerboseOutput(output: string): string[] {
   return urls;
 }
 
+export type GitRemote = { name: string; url: string };
+
+export function remotesFromVerboseOutput(output: string): GitRemote[] {
+  const byName = new Map<string, string>();
+  for (const line of output.split("\n")) {
+    const match = /^(\S+)\t(\S+)\s+\((?:fetch|push)\)$/.exec(line.trim());
+    if (match?.[1] !== undefined && match[2] !== undefined)
+      byName.set(match[1], match[2]);
+  }
+  return Array.from(byName, ([name, url]) => ({ name, url }));
+}
+
+function normalizeRepoSlug(owner: string, repo: string): string {
+  const stripGit = (segment: string) => segment.replace(/\.git$/i, "");
+  return `${stripGit(owner).toLowerCase()}/${stripGit(repo).toLowerCase()}`;
+}
+
+/** Owner/repo slug from a GitHub or GitCode pull request URL. */
+export function repoSlugFromPrUrl(url: string): string | undefined {
+  try {
+    const parts = new URL(url).pathname.split("/").filter(Boolean);
+    const owner = parts[0];
+    const repoName = parts[1];
+    if (owner === undefined || repoName === undefined) return undefined;
+    return normalizeRepoSlug(owner, repoName);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Owner/repo slug from a git remote URL (HTTPS or SCP-style). */
+export function repoSlugFromRemoteUrl(url: string): string | undefined {
+  const trimmed = url.trim();
+  if (trimmed.length === 0) return undefined;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    try {
+      const parts = new URL(trimmed).pathname.split("/").filter(Boolean);
+      const owner = parts[0];
+      const repoName = parts[1];
+      if (owner === undefined || repoName === undefined) return undefined;
+      return normalizeRepoSlug(owner, repoName);
+    } catch {
+      return undefined;
+    }
+  }
+  if (
+    /^[A-Za-z]:/.test(trimmed) ||
+    trimmed.startsWith("/") ||
+    trimmed.startsWith(".")
+  )
+    return undefined;
+  const colon = trimmed.indexOf(":");
+  if (colon === -1) return undefined;
+  const path = trimmed.slice(colon + 1);
+  const segments = path.split("/").filter(Boolean);
+  const owner = segments[0];
+  const repoName = segments[1];
+  if (owner === undefined || repoName === undefined) return undefined;
+  return normalizeRepoSlug(owner, repoName);
+}
+
+/**
+ * Order git remote names for PR commit fetches: the remote whose URL matches
+ * the PR repository first, then `upstream`, then `origin`, then others.
+ */
+export function orderFetchRemotesForPr(
+  remotes: GitRemote[],
+  prUrl: string,
+): string[] {
+  if (remotes.length === 0) return ["origin"];
+  const slug = repoSlugFromPrUrl(prUrl);
+  const rank = (name: string, remoteUrl: string): number => {
+    const remoteSlug = repoSlugFromRemoteUrl(remoteUrl);
+    if (slug !== undefined && remoteSlug === slug) return 0;
+    if (name === "upstream") return 1;
+    if (name === "origin") return 2;
+    return 3;
+  };
+  return [...remotes]
+    .sort((left, right) => {
+      const byRank = rank(left.name, left.url) - rank(right.name, right.url);
+      return byRank !== 0 ? byRank : left.name.localeCompare(right.name);
+    })
+    .map((remote) => remote.name);
+}
+
 function forgeFromTargetUrl(target: string): PrForge | "other" | undefined {
   try {
     const url = new URL(target);

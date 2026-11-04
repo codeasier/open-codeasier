@@ -8,7 +8,11 @@ import {
   classifyPrTarget,
   classifyPrTargetInRepository,
   hostFromRemoteUrl,
+  orderFetchRemotesForPr,
+  remotesFromVerboseOutput,
   remoteUrlsFromVerboseOutput,
+  repoSlugFromPrUrl,
+  repoSlugFromRemoteUrl,
 } from "../src/cross-review/pr-target.js";
 
 const execFileAsync = promisify(execFile);
@@ -235,6 +239,81 @@ describe("hostFromRemoteUrl", () => {
     expect(hostFromRemoteUrl("C:\\repo")).toBeUndefined();
     expect(hostFromRemoteUrl("./relative")).toBeUndefined();
     expect(hostFromRemoteUrl("")).toBeUndefined();
+  });
+});
+
+describe("repoSlugFromPrUrl", () => {
+  it("extracts owner/repo from GitHub and GitCode pull request URLs", () => {
+    expect(
+      repoSlugFromPrUrl("https://gitcode.com/Ascend/msinsight/pull/1370"),
+    ).toBe("ascend/msinsight");
+    expect(repoSlugFromPrUrl("https://github.com/org/repo/pull/5")).toBe(
+      "org/repo",
+    );
+  });
+});
+
+describe("repoSlugFromRemoteUrl", () => {
+  it("extracts owner/repo from HTTPS and SCP-style remotes", () => {
+    expect(
+      repoSlugFromRemoteUrl("https://gitcode.com/Ascend/msinsight.git"),
+    ).toBe("ascend/msinsight");
+    expect(repoSlugFromRemoteUrl("git@gitcode.com:Ascend/msinsight.git")).toBe(
+      "ascend/msinsight",
+    );
+    expect(
+      repoSlugFromRemoteUrl("https://gitcode.com/codeasier/msinsight"),
+    ).toBe("codeasier/msinsight");
+  });
+});
+
+describe("remotesFromVerboseOutput", () => {
+  it("deduplicates remotes by name", () => {
+    expect(
+      remotesFromVerboseOutput(
+        [
+          "origin\thttps://gitcode.com/codeasier/msinsight.git (fetch)",
+          "origin\thttps://gitcode.com/codeasier/msinsight.git (push)",
+          "upstream\thttps://gitcode.com/Ascend/msinsight.git (fetch)",
+          "upstream\thttps://gitcode.com/Ascend/msinsight.git (push)",
+        ].join("\n"),
+      ),
+    ).toEqual([
+      {
+        name: "origin",
+        url: "https://gitcode.com/codeasier/msinsight.git",
+      },
+      {
+        name: "upstream",
+        url: "https://gitcode.com/Ascend/msinsight.git",
+      },
+    ]);
+  });
+});
+
+describe("orderFetchRemotesForPr", () => {
+  it("prefers the remote matching the PR repository, then upstream, then origin", () => {
+    const remotes = remotesFromVerboseOutput(
+      [
+        "origin\thttps://gitcode.com/codeasier/msinsight.git (fetch)",
+        "upstream\thttps://gitcode.com/Ascend/msinsight.git (fetch)",
+      ].join("\n"),
+    );
+    expect(
+      orderFetchRemotesForPr(
+        remotes,
+        "https://gitcode.com/Ascend/msinsight/pull/1370",
+      ),
+    ).toEqual(["upstream", "origin"]);
+  });
+
+  it("falls back to origin when no remotes are configured", () => {
+    expect(
+      orderFetchRemotesForPr(
+        [],
+        "https://gitcode.com/Ascend/msinsight/pull/1370",
+      ),
+    ).toEqual(["origin"]);
   });
 });
 

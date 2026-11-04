@@ -554,6 +554,90 @@ describe("ensureCommit ref hardening", () => {
     ).toBe(false);
   });
 
+  it("tries upstream before origin when upstream matches the PR repository", async () => {
+    const { repo, runCommand, mergeBase } = await fakeForgeRepo("gitcode");
+    const root = await mkdtemp(join(tmpdir(), "pr-adapter-fork-"));
+    tracked.push(root);
+    const worktree = join(root, "worktree");
+    const absentHead = "d".repeat(40);
+    const view = prViewJson({
+      headRefOid: absentHead,
+      baseRefOid: mergeBase,
+      url: "https://gitcode.com/Ascend/msinsight/pull/1370",
+    });
+    const remoteListing = [
+      "origin\thttps://gitcode.com/codeasier/msinsight.git (fetch)",
+      "upstream\thttps://gitcode.com/Ascend/msinsight.git (fetch)",
+    ].join("\n");
+    const fetchOrder: string[] = [];
+    const forkRunner = async (
+      command: string,
+      args: string[],
+      options: { cwd?: string },
+    ) => {
+      if (command.includes("gitcode")) {
+        if (args[0] === "pr" && args[1] === "view")
+          return { stdout: view, stderr: "" };
+      }
+      if (command === "git" && args.includes("remote") && args.includes("-v"))
+        return { stdout: remoteListing, stderr: "" };
+      if (command === "git" && args.includes("fetch")) {
+        const remote = args[args.indexOf("fetch") + 1];
+        if (typeof remote === "string") fetchOrder.push(remote);
+        throw new Error("fetch failed");
+      }
+      return runCommand(command, args, options);
+    };
+
+    const result = await runGitcodePrSnapshot(
+      flags(
+        repo,
+        "https://gitcode.com/Ascend/msinsight/pull/1370",
+        worktree,
+        join(worktree, ".cross-review"),
+      ),
+      "/usr/local/bin/gitcode",
+      forkRunner,
+    );
+    expect(result.exitCode).toBe(1);
+    expect(fetchOrder[0]).toBe("upstream");
+    expect(fetchOrder).toContain("origin");
+    expect(result.stderr).toContain('"upstream"');
+    expect(result.stderr).toContain('"origin"');
+  });
+
+  it("reports repository path and remotes tried when the commit cannot be fetched", async () => {
+    const { repo, runCommand } = await fakeForgeRepo("gitcode");
+    const root = await mkdtemp(join(tmpdir(), "pr-adapter-out-"));
+    tracked.push(root);
+    const worktree = join(root, "worktree");
+    const absentView = prViewJson({
+      headRefOid: "f".repeat(40),
+      baseRefOid: "e".repeat(40),
+      url: "https://gitcode.com/Ascend/msinsight/pull/1370",
+    });
+    const missingRunner = async (
+      command: string,
+      args: string[],
+      options: { cwd?: string },
+    ) => {
+      if (command.includes("gitcode")) {
+        if (args[0] === "pr" && args[1] === "view")
+          return { stdout: absentView, stderr: "" };
+      }
+      return runCommand(command, args, options);
+    };
+    const result = await runGitcodePrSnapshot(
+      flags(repo, "1370", worktree, join(worktree, ".cross-review")),
+      "/usr/local/bin/gitcode",
+      missingRunner,
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(JSON.stringify(repo));
+    expect(result.stderr).toContain("Ascend/msinsight/pull/1370");
+    expect(result.stderr).toContain("git fetch upstream");
+  });
+
   it("fetches refspecs behind -- so a hostile ref can never be a flag", async () => {
     const { repo, commands, runCommand, mergeBase } =
       await fakeForgeRepo("github");

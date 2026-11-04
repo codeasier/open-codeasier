@@ -3,7 +3,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
-import { barePrNumber } from "../pr-target.js";
+import {
+  barePrNumber,
+  orderFetchRemotesForPr,
+  remotesFromVerboseOutput,
+} from "../pr-target.js";
 import { clearSnapshotDirectory } from "../snapshot-directory.js";
 
 const execFileAsync = promisify(execFile);
@@ -194,12 +198,47 @@ async function commitPresent(
   }
 }
 
+async function fetchRemotesForPr(
+  runCommand: CommandRunner,
+  repo: string,
+  prUrl: string,
+): Promise<string[]> {
+  try {
+    const listed = await git(runCommand, repo, ["remote", "-v"]);
+    const remotes = remotesFromVerboseOutput(listed.stdout);
+    return orderFetchRemotesForPr(remotes, prUrl);
+  } catch {
+    return ["origin"];
+  }
+}
+
+function commitFetchFailureMessage(input: {
+  label: string;
+  sha: string;
+  repo: string;
+  prUrl: string;
+  remotes: string[];
+}): string {
+  const remoteList =
+    input.remotes.length === 0
+      ? "origin"
+      : input.remotes.map((name) => `"${name}"`).join(", ");
+  return (
+    `${input.label} commit ${input.sha} is not available in git repository ${JSON.stringify(input.repo)} ` +
+    `after fetching from ${remoteList}. ` +
+    `Pull request: ${input.prUrl}. ` +
+    `Add or fix a remote that points at that repository (for example \`git remote add upstream <url>\` and \`git fetch upstream\`), ` +
+    `or fetch the commit into this repository before starting cross-review.`
+  );
+}
+
 async function ensureCommit(
   runCommand: CommandRunner,
   repo: string,
   sha: string,
   extraRefs: string[],
   label: string,
+  prUrl: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   // Ref names come from the PR view payload and are attacker-influenced;
   // a ref starting with `-` would be parsed as a git option (for example
@@ -213,19 +252,28 @@ async function ensureCommit(
       };
   }
   if (await commitPresent(runCommand, repo, sha)) return { ok: true };
-  for (const ref of refs) {
-    try {
-      // `--` ends option parsing so a refspec can never be interpreted
-      // as a flag, even if a future check misses one.
-      await git(runCommand, repo, ["fetch", "origin", "--", ref]);
-    } catch {
-      continue;
+  const remotes = await fetchRemotesForPr(runCommand, repo, prUrl);
+  for (const remote of remotes) {
+    for (const ref of refs) {
+      try {
+        // `--` ends option parsing so a refspec can never be interpreted
+        // as a flag, even if a future check misses one.
+        await git(runCommand, repo, ["fetch", remote, "--", ref]);
+      } catch {
+        continue;
+      }
+      if (await commitPresent(runCommand, repo, sha)) return { ok: true };
     }
-    if (await commitPresent(runCommand, repo, sha)) return { ok: true };
   }
   return {
     ok: false,
-    error: `${label} commit ${sha} is not available from origin (fetch failed or the commit is missing)`,
+    error: commitFetchFailureMessage({
+      label,
+      sha,
+      repo,
+      prUrl,
+      remotes,
+    }),
   };
 }
 
@@ -270,6 +318,7 @@ export async function materializePrSnapshot(
       view.headRefOid,
       input.headFetchRefs ?? [],
       "PR head",
+      view.url,
     );
     if (!head.ok) return { ok: false, error: head.error };
     const base = await ensureCommit(
@@ -278,6 +327,7 @@ export async function materializePrSnapshot(
       view.baseRefOid,
       [],
       "PR base",
+      view.url,
     );
     if (!base.ok) return { ok: false, error: base.error };
 
