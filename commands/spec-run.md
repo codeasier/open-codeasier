@@ -2,4 +2,8 @@
 description: Execute a spec: <change-id>
 ---
 
-Load the `spec-run` skill and follow it with these arguments: $ARGUMENTS
+The user invoked this OpenCode slash command:
+
+/spec-run $ARGUMENTS
+
+Load the `spec-run` skill and follow it with the command arguments above.

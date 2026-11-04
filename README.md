@@ -89,7 +89,7 @@ npx open-codeasier detect-gitcode
 
 It prints `found: <absolute-path>` and exits 0, or install guidance and exits 1.
 
-OpenCode can guide the same setup interactively. Run `/cross-review init` (local by default), `/cross-review init --global`, or ask the session to "set up cross-review". It treats `opencode models` as the authoritative source, shows the complete connected model list, and recommends reviewers and an optional judge only from that list. The recommendations favor code-review strength, complementary model families, and strong evidence synthesis, but you can choose any listed models. Guided setup also asks whether GitCode support is needed and, when it is, runs `detect-gitcode` to persist `gitcodeCli`. Nothing is written until you confirm the full selection, and the guided flow validates the written file with `npx open-codeasier validate` before reporting success.
+OpenCode can guide the same setup interactively. Run `/cross-review init` (local by default) or `/cross-review init --global`. It treats `opencode models` as the authoritative source, shows the complete connected model list, and recommends reviewers and an optional judge only from that list. The recommendations favor code-review strength, complementary model families, and strong evidence synthesis, but you can choose any listed models. Guided setup also asks whether GitCode support is needed and, when it is, runs `detect-gitcode` to persist `gitcodeCli`. Nothing is written until you confirm the full selection, and the guided flow validates the written file with `npx open-codeasier validate` before reporting success.
 
 Configuration shape after guided setup (model values are schematic, not defaults):
 

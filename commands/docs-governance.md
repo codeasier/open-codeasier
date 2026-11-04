@@ -2,4 +2,8 @@
 description: Govern docs: [audit|fix] [scope]
 ---
 
-Load the `docs-governance` skill and follow it with these arguments: $ARGUMENTS
+The user invoked this OpenCode slash command:
+
+/docs-governance $ARGUMENTS
+
+Load the `docs-governance` skill and follow it with the command arguments above.
