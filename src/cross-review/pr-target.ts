@@ -47,23 +47,57 @@ export function hostFromRemoteUrl(url: string): string | undefined {
   return bareHost?.[1]?.toLowerCase();
 }
 
+export type GitRemote = { name: string; url: string };
+
+type ParsedRemoteLine = GitRemote & { kind: "fetch" | "push" };
+
+const FETCH_SUFFIX = " (fetch)";
+const PUSH_SUFFIX = " (push)";
+
+/**
+ * Parse one `git remote -v` line. The URL is the text between the name's
+ * trailing tab and the ` (fetch)` / ` (push)` suffix, so local paths that
+ * contain spaces are preserved.
+ */
+function parseRemoteVerboseLine(line: string): ParsedRemoteLine | undefined {
+  const trimmed = line.trim();
+  const tab = trimmed.indexOf("\t");
+  if (tab <= 0) return undefined;
+  const name = trimmed.slice(0, tab);
+  const rest = trimmed.slice(tab + 1);
+  const kind = rest.endsWith(FETCH_SUFFIX)
+    ? "fetch"
+    : rest.endsWith(PUSH_SUFFIX)
+      ? "push"
+      : undefined;
+  if (kind === undefined) return undefined;
+  const url = rest.slice(
+    0,
+    -(kind === "fetch" ? FETCH_SUFFIX.length : PUSH_SUFFIX.length),
+  );
+  if (name.length === 0 || url.length === 0) return undefined;
+  return { name, url, kind };
+}
+
 export function remoteUrlsFromVerboseOutput(output: string): string[] {
   const urls: string[] = [];
   for (const line of output.split("\n")) {
-    const match = /^\S+\t(\S+)\s+\((?:fetch|push)\)$/.exec(line.trim());
-    if (match?.[1] !== undefined) urls.push(match[1]);
+    const parsed = parseRemoteVerboseLine(line);
+    if (parsed !== undefined) urls.push(parsed.url);
   }
   return urls;
 }
 
-export type GitRemote = { name: string; url: string };
-
 export function remotesFromVerboseOutput(output: string): GitRemote[] {
   const byName = new Map<string, string>();
   for (const line of output.split("\n")) {
-    const match = /^(\S+)\t(\S+)\s+\((?:fetch|push)\)$/.exec(line.trim());
-    if (match?.[1] !== undefined && match[2] !== undefined)
-      byName.set(match[1], match[2]);
+    const parsed = parseRemoteVerboseLine(line);
+    if (parsed === undefined) continue;
+    // Fetch URL is the one `git fetch` uses. Keep a push URL only when no
+    // fetch line for that name has been seen yet, so a later push cannot
+    // overwrite the pull identity.
+    if (parsed.kind === "fetch" || !byName.has(parsed.name))
+      byName.set(parsed.name, parsed.url);
   }
   return Array.from(byName, ([name, url]) => ({ name, url }));
 }
@@ -117,19 +151,58 @@ export function repoSlugFromRemoteUrl(url: string): string | undefined {
   return normalizeRepoSlug(owner, repoName);
 }
 
+function stripWww(host: string): string {
+  return host.replace(/^www\./i, "");
+}
+
+function repoIdentityFromPrUrl(
+  url: string,
+): { host: string; slug: string } | undefined {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    const slug = repoSlugFromPrUrl(url);
+    if (host.length === 0 || slug === undefined) return undefined;
+    return { host: stripWww(host), slug };
+  } catch {
+    return undefined;
+  }
+}
+
+function repoIdentityFromRemoteUrl(
+  url: string,
+): { host: string; slug: string } | undefined {
+  const host = hostFromRemoteUrl(url);
+  const slug = repoSlugFromRemoteUrl(url);
+  if (host === undefined || slug === undefined) return undefined;
+  return { host: stripWww(host), slug };
+}
+
+function sameRepoIdentity(
+  left: { host: string; slug: string } | undefined,
+  right: { host: string; slug: string } | undefined,
+): boolean {
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    left.host === right.host &&
+    left.slug === right.slug
+  );
+}
+
 /**
- * Order git remote names for PR commit fetches: the remote whose URL matches
- * the PR repository first, then `upstream`, then `origin`, then others.
+ * Order git remote names for PR commit fetches: the remote whose host and
+ * owner/repo match the PR repository first, then `upstream`, then `origin`,
+ * then others.
  */
 export function orderFetchRemotesForPr(
   remotes: GitRemote[],
   prUrl: string,
 ): string[] {
   if (remotes.length === 0) return ["origin"];
-  const slug = repoSlugFromPrUrl(prUrl);
+  const prIdentity = repoIdentityFromPrUrl(prUrl);
   const rank = (name: string, remoteUrl: string): number => {
-    const remoteSlug = repoSlugFromRemoteUrl(remoteUrl);
-    if (slug !== undefined && remoteSlug === slug) return 0;
+    if (sameRepoIdentity(prIdentity, repoIdentityFromRemoteUrl(remoteUrl)))
+      return 0;
     if (name === "upstream") return 1;
     if (name === "origin") return 2;
     return 3;

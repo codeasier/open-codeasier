@@ -14,6 +14,7 @@ import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  FETCH_ATTEMPT_TIMEOUT_MS,
   parseAdapterFlags,
   parsePrViewJson,
   prViewTarget,
@@ -96,7 +97,7 @@ async function fakeForgeRepo(
   const runCommand = async (
     command: string,
     args: string[],
-    options: { cwd?: string },
+    options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number },
   ) => {
     commands.push({
       command,
@@ -113,6 +114,8 @@ async function fakeForgeRepo(
     }
     return execFileAsync(command, args, {
       ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      ...(options.env === undefined ? {} : { env: options.env }),
+      ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
       encoding: "utf8",
     });
   };
@@ -604,6 +607,136 @@ describe("ensureCommit ref hardening", () => {
     expect(fetchOrder).toContain("origin");
     expect(result.stderr).toContain('"upstream"');
     expect(result.stderr).toContain('"origin"');
+  });
+
+  it("falls back to origin when the preferred remote fetch times out", async () => {
+    const source = await fakeForgeRepo("github");
+    const root = await mkdtemp(join(tmpdir(), "pr-adapter-timeout-"));
+    tracked.push(root);
+    const checkout = join(root, "checkout");
+    const worktree = join(root, "worktree");
+    await execFileAsync("git", ["init", "-q", checkout], { encoding: "utf8" });
+    await execFileAsync(
+      "git",
+      ["-C", checkout, "remote", "add", "origin", source.repo],
+      { encoding: "utf8" },
+    );
+    const view = prViewJson({
+      headRefOid: source.headSha,
+      baseRefOid: source.mergeBase,
+      url: "https://github.com/org/repo/pull/69",
+    });
+    const remoteListing = [
+      "origin\thttps://github.com/fork/repo.git (fetch)",
+      "upstream\thttps://github.com/org/repo.git (fetch)",
+    ].join("\n");
+    const fetchOrder: string[] = [];
+    const fetchTimeouts: number[] = [];
+    const timeoutRunner = async (
+      command: string,
+      args: string[],
+      options: { cwd?: string; timeout?: number },
+    ) => {
+      if (command === "gh") return { stdout: view, stderr: "" };
+      if (command === "git" && args.includes("remote") && args.includes("-v"))
+        return { stdout: remoteListing, stderr: "" };
+      if (command === "git" && args.includes("fetch")) {
+        const remote = args[args.indexOf("fetch") + 1];
+        if (typeof remote === "string") fetchOrder.push(remote);
+        if (remote === "upstream") {
+          if (options.timeout !== undefined)
+            fetchTimeouts.push(options.timeout);
+          throw Object.assign(new Error("fetch timed out"), { killed: true });
+        }
+      }
+      return source.runCommand(command, args, options);
+    };
+
+    const result = await runGithubPrSnapshot(
+      flags(
+        checkout,
+        "https://github.com/org/repo/pull/69",
+        worktree,
+        join(worktree, ".cross-review"),
+      ),
+      timeoutRunner,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(fetchOrder[0]).toBe("upstream");
+    expect(fetchOrder).toContain("origin");
+    expect(fetchOrder.filter((name) => name === "upstream")).toHaveLength(1);
+    expect(fetchTimeouts[0]).toBe(FETCH_ATTEMPT_TIMEOUT_MS);
+    const head = await execFileAsync(
+      "git",
+      ["-C", worktree, "rev-parse", "HEAD"],
+      { encoding: "utf8" },
+    );
+    expect(head.stdout.trim()).toBe(source.headSha);
+  });
+
+  it("fetches from a remote whose local path contains spaces", async () => {
+    const source = await fakeForgeRepo("github");
+    const root = await mkdtemp(join(tmpdir(), "pr-adapter-space-"));
+    tracked.push(root);
+    const upstream = join(root, "upstream repo");
+    const empty = join(root, "empty.git");
+    const checkout = join(root, "checkout");
+    const worktree = join(root, "worktree");
+    await execFileAsync(
+      "git",
+      ["clone", "--bare", "-q", source.repo, upstream],
+      {
+        encoding: "utf8",
+      },
+    );
+    await execFileAsync("git", ["init", "-q", "--bare", empty], {
+      encoding: "utf8",
+    });
+    await execFileAsync("git", ["init", "-q", checkout], { encoding: "utf8" });
+    await execFileAsync(
+      "git",
+      ["-C", checkout, "remote", "add", "origin", empty],
+      { encoding: "utf8" },
+    );
+    await execFileAsync(
+      "git",
+      ["-C", checkout, "remote", "add", "mirror", upstream],
+      { encoding: "utf8" },
+    );
+    const view = prViewJson({
+      headRefOid: source.headSha,
+      baseRefOid: source.mergeBase,
+      url: "https://github.com/org/repo/pull/69",
+    });
+    const spaceRunner = async (
+      command: string,
+      args: string[],
+      options: { cwd?: string; timeout?: number },
+    ) => {
+      if (command === "gh") return { stdout: view, stderr: "" };
+      return execFileAsync(command, args, {
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+        ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
+        encoding: "utf8",
+      });
+    };
+
+    const result = await runGithubPrSnapshot(
+      flags(
+        checkout,
+        "https://github.com/org/repo/pull/69",
+        worktree,
+        join(worktree, ".cross-review"),
+      ),
+      spaceRunner,
+    );
+    expect(result.exitCode).toBe(0);
+    const head = await execFileAsync(
+      "git",
+      ["-C", worktree, "rev-parse", "HEAD"],
+      { encoding: "utf8" },
+    );
+    expect(head.stdout.trim()).toBe(source.headSha);
   });
 
   it("reports repository path and remotes tried when the commit cannot be fetched", async () => {

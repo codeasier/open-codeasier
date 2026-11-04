@@ -289,6 +289,53 @@ describe("remotesFromVerboseOutput", () => {
       },
     ]);
   });
+
+  it("keeps local remote URLs that contain spaces", () => {
+    expect(
+      remotesFromVerboseOutput(
+        [
+          "origin\thttps://gitcode.com/codeasier/msinsight.git (fetch)",
+          "origin\thttps://gitcode.com/codeasier/msinsight.git (push)",
+          "upstream\t/tmp/upstream repo (fetch)",
+          "upstream\t/tmp/upstream repo (push)",
+        ].join("\n"),
+      ),
+    ).toEqual([
+      {
+        name: "origin",
+        url: "https://gitcode.com/codeasier/msinsight.git",
+      },
+      { name: "upstream", url: "/tmp/upstream repo" },
+    ]);
+  });
+
+  it("ranks by the fetch URL when push URLs differ", () => {
+    expect(
+      remotesFromVerboseOutput(
+        [
+          "origin\thttps://github.com/fork/repo.git (fetch)",
+          "origin\thttps://github.com/fork/repo.git (push)",
+          "source\thttps://github.com/org/repo.git (fetch)",
+          "source\thttps://github.com/fork/repo.git (push)",
+        ].join("\n"),
+      ),
+    ).toEqual([
+      { name: "origin", url: "https://github.com/fork/repo.git" },
+      { name: "source", url: "https://github.com/org/repo.git" },
+    ]);
+  });
+
+  it("does not let a later push URL replace an earlier fetch URL", () => {
+    expect(
+      remotesFromVerboseOutput(
+        [
+          "source\thttps://github.com/fork/repo.git (push)",
+          "source\thttps://github.com/org/repo.git (fetch)",
+          "source\thttps://github.com/other/repo.git (push)",
+        ].join("\n"),
+      ),
+    ).toEqual([{ name: "source", url: "https://github.com/org/repo.git" }]);
+  });
 });
 
 describe("orderFetchRemotesForPr", () => {
@@ -312,6 +359,43 @@ describe("orderFetchRemotesForPr", () => {
       orderFetchRemotesForPr(
         [],
         "https://gitcode.com/Ascend/msinsight/pull/1370",
+      ),
+    ).toEqual(["origin"]);
+  });
+
+  it("prefers the remote whose fetch URL matches the PR host and repo", () => {
+    const remotes = remotesFromVerboseOutput(
+      [
+        "origin\thttps://github.com/fork/repo.git (fetch)",
+        "origin\thttps://github.com/fork/repo.git (push)",
+        "source\thttps://github.com/org/repo.git (fetch)",
+        "source\thttps://github.com/fork/repo.git (push)",
+      ].join("\n"),
+    );
+    expect(
+      orderFetchRemotesForPr(remotes, "https://github.com/org/repo/pull/1"),
+    ).toEqual(["source", "origin"]);
+  });
+
+  it("does not treat a same owner/repo on another host as a match", () => {
+    const remotes = remotesFromVerboseOutput(
+      [
+        "origin\thttps://gitcode.com/org/repo.git (fetch)",
+        "upstream\thttps://github.com/org/repo.git (fetch)",
+      ].join("\n"),
+    );
+    expect(
+      orderFetchRemotesForPr(remotes, "https://github.com/org/repo/pull/1"),
+    ).toEqual(["upstream", "origin"]);
+  });
+
+  it("matches HTTPS, www, and SCP-style remotes on the same host", () => {
+    expect(
+      orderFetchRemotesForPr(
+        remotesFromVerboseOutput(
+          "origin\tgit@github.com:org/repo.git (fetch)\n",
+        ),
+        "https://www.github.com/org/repo/pull/1",
       ),
     ).toEqual(["origin"]);
   });
@@ -341,6 +425,14 @@ describe("remoteUrlsFromVerboseOutput", () => {
     expect(remoteUrlsFromVerboseOutput("not a remote line\n\n\t\n")).toEqual(
       [],
     );
+  });
+
+  it("keeps URLs that contain spaces", () => {
+    expect(
+      remoteUrlsFromVerboseOutput(
+        "upstream\t/tmp/upstream repo (fetch)\nupstream\t/tmp/upstream repo (push)\n",
+      ),
+    ).toEqual(["/tmp/upstream repo", "/tmp/upstream repo"]);
   });
 });
 

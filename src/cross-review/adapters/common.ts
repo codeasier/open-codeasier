@@ -18,7 +18,7 @@ export const PR_VIEW_JSON_FIELDS =
 export type CommandRunner = (
   command: string,
   args: string[],
-  options: { cwd?: string; env?: NodeJS.ProcessEnv },
+  options: { cwd?: string; env?: NodeJS.ProcessEnv; timeout?: number },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 // Matches the outer spawn limit in pr-gather.ts: `git diff` output can far
@@ -26,12 +26,17 @@ export type CommandRunner = (
 // snapshot validator (not kill the child with an opaque spawn error).
 const ADAPTER_MAX_BUFFER = 16 * 1024 * 1024;
 
+// Outer adapter spawn budget is 120s (`ADAPTER_TIMEOUT_MS` in pr-gather).
+// A hung preferred remote must fail in time for origin/other remotes to run.
+export const FETCH_ATTEMPT_TIMEOUT_MS = 20_000;
+
 export const defaultRunCommand: CommandRunner = (command, args, options) =>
   execFileAsync(command, args, {
     encoding: "utf8",
     maxBuffer: ADAPTER_MAX_BUFFER,
     ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     ...(options.env === undefined ? {} : { env: options.env }),
+    ...(options.timeout === undefined ? {} : { timeout: options.timeout }),
   });
 
 export type AdapterFlags = {
@@ -177,12 +182,25 @@ export type MaterializeInput = {
   fetchedAt?: string;
 };
 
+function isCommandTimeout(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { killed?: boolean }).killed === true
+  );
+}
+
 async function git(
   runCommand: CommandRunner,
   repo: string,
   args: string[],
+  options: { timeout?: number } = {},
 ): Promise<{ stdout: string; stderr: string }> {
-  return runCommand("git", ["-C", repo, ...args], {});
+  return runCommand(
+    "git",
+    ["-C", repo, ...args],
+    options.timeout === undefined ? {} : { timeout: options.timeout },
+  );
 }
 
 async function commitPresent(
@@ -258,8 +276,13 @@ async function ensureCommit(
       try {
         // `--` ends option parsing so a refspec can never be interpreted
         // as a flag, even if a future check misses one.
-        await git(runCommand, repo, ["fetch", remote, "--", ref]);
-      } catch {
+        await git(runCommand, repo, ["fetch", remote, "--", ref], {
+          timeout: FETCH_ATTEMPT_TIMEOUT_MS,
+        });
+      } catch (error) {
+        // A hung remote must not consume the remaining adapter budget;
+        // skip its other refs and try the next remote.
+        if (isCommandTimeout(error)) break;
         continue;
       }
       if (await commitPresent(runCommand, repo, sha)) return { ok: true };
