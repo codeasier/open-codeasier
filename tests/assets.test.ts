@@ -40,6 +40,12 @@ describe("distributed workflow assets", () => {
       expect(
         content.match(new RegExp("Load the `" + name + "` skill", "g")),
       ).toHaveLength(1);
+      const argumentsText = 'https://example.com/item/42 --focus "a b"';
+      const expanded = content.replaceAll("$ARGUMENTS", () => argumentsText);
+      expect(expanded).toContain(
+        `The user invoked this OpenCode slash command:\n\n/${name} ${argumentsText}`,
+      );
+      expect(content.match(/\$ARGUMENTS/g)).toHaveLength(1);
     }
   });
 

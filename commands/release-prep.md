@@ -2,4 +2,8 @@
 description: Prepare a release: [version]
 ---
 
-Load the `release-prep` skill and follow it with these arguments: $ARGUMENTS
+The user invoked this OpenCode slash command:
+
+/release-prep $ARGUMENTS
+
+Load the `release-prep` skill and follow it with the command arguments above.

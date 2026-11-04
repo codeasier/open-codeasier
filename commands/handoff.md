@@ -2,4 +2,8 @@
 description: Create a handoff or load one by name: [name]
 ---
 
-Load the `handoff` skill and follow it with these arguments: $ARGUMENTS
+The user invoked this OpenCode slash command:
+
+/handoff $ARGUMENTS
+
+Load the `handoff` skill and follow it with the command arguments above.

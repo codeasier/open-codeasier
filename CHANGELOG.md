@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve the invoked slash command and its arguments in OpenCode's expanded
+  workflow prompts, so models can recognize an explicit `/cross-review` request
+  without asking the user to resend it. Runtime command provenance and the
+  separate startup confirmation remain required.
+
 ## [0.3.7] - 2026-10-23
 
 ### Fixed

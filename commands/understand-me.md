@@ -2,4 +2,8 @@
 description: Challenge and refine an idea
 ---
 
-Load the `understand-me` skill and follow it with these arguments: $ARGUMENTS
+The user invoked this OpenCode slash command:
+
+/understand-me $ARGUMENTS
+
+Load the `understand-me` skill and follow it with the command arguments above.

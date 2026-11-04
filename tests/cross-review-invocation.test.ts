@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import type { ToolContext } from "@opencode-ai/plugin";
 import type { Part, UserMessage } from "@opencode-ai/sdk";
 import { Effect } from "effect";
@@ -111,6 +112,12 @@ function fixture() {
   };
 }
 
+async function expandedCrossReviewCommand(args: string) {
+  const command = await readFile("commands/cross-review.md", "utf8");
+  const template = command.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+  return template.replaceAll("$ARGUMENTS", () => args);
+}
+
 describe("cross-review command provenance", () => {
   it.each([
     "Review this PR",
@@ -171,6 +178,34 @@ describe("cross-review command provenance", () => {
     await expect(
       f.guard.assertInvocation(f.context, "cross_review_config"),
     ).resolves.toBeUndefined();
+  });
+
+  it("admits the distributed command expansion while still requiring confirmation", async () => {
+    const f = fixture();
+    const target = "https://gitcode.com/Ascend/msinsight/pull/1370";
+    const args = `${target} --focus "regressions and tests"`;
+    const text = await expandedCrossReviewCommand(args);
+    expect(text).toContain(`/cross-review ${args}`);
+    const input = f.parts(text);
+    await f.guard["command.execute.before"](
+      { sessionID: "parent", command: "cross-review", arguments: args },
+      { parts: input },
+    );
+    await f.admit(input);
+    await expect(f.check()).resolves.toBeUndefined();
+    const plan = { ...f.plan, target };
+    await expect(
+      f.guard.prepareConfirmation(f.context, plan),
+    ).resolves.toHaveProperty("questions");
+    await expect(f.confirm(plan)).rejects.toThrow(
+      "fresh explicit user confirmation",
+    );
+  });
+
+  it("does not authorize copied distributed command text without a host event", async () => {
+    const f = fixture();
+    await f.admit(f.parts(await expandedCrossReviewCommand("#42")));
+    await expect(f.check()).rejects.toThrow("requires an explicit user");
   });
 
   it.each([
