@@ -336,6 +336,25 @@ describe("remotesFromVerboseOutput", () => {
       ),
     ).toEqual([{ name: "source", url: "https://github.com/org/repo.git" }]);
   });
+
+  it("keeps the fetch URL when a partial clone filter follows (fetch)", () => {
+    expect(
+      remotesFromVerboseOutput(
+        [
+          "origin\thttps://github.com/fork/repo.git (fetch)",
+          "origin\thttps://github.com/fork/repo.git (push)",
+          "source\thttps://github.com/org/repo.git (fetch) [blob:none]",
+          "source\thttps://github.com/fork/repo.git (push)",
+          "mirror\t/tmp/upstream repo (fetch) [blob:limit=1k]",
+          "mirror\t/tmp/upstream repo (push)",
+        ].join("\n"),
+      ),
+    ).toEqual([
+      { name: "origin", url: "https://github.com/fork/repo.git" },
+      { name: "source", url: "https://github.com/org/repo.git" },
+      { name: "mirror", url: "/tmp/upstream repo" },
+    ]);
+  });
 });
 
 describe("orderFetchRemotesForPr", () => {
@@ -389,6 +408,20 @@ describe("orderFetchRemotesForPr", () => {
     ).toEqual(["upstream", "origin"]);
   });
 
+  it("prefers the matching fetch URL when partial clone annotates that line", () => {
+    const remotes = remotesFromVerboseOutput(
+      [
+        "origin\thttps://github.com/fork/repo.git (fetch)",
+        "origin\thttps://github.com/fork/repo.git (push)",
+        "source\thttps://github.com/org/repo.git (fetch) [blob:none]",
+        "source\thttps://github.com/fork/repo.git (push)",
+      ].join("\n"),
+    );
+    expect(
+      orderFetchRemotesForPr(remotes, "https://github.com/org/repo/pull/1"),
+    ).toEqual(["source", "origin"]);
+  });
+
   it("matches HTTPS, www, and SCP-style remotes on the same host", () => {
     expect(
       orderFetchRemotesForPr(
@@ -433,6 +466,17 @@ describe("remoteUrlsFromVerboseOutput", () => {
         "upstream\t/tmp/upstream repo (fetch)\nupstream\t/tmp/upstream repo (push)\n",
       ),
     ).toEqual(["/tmp/upstream repo", "/tmp/upstream repo"]);
+  });
+
+  it("strips a partial clone filter annotation from fetch lines", () => {
+    expect(
+      remoteUrlsFromVerboseOutput(
+        "source\thttps://github.com/org/repo.git (fetch) [blob:none]\nsource\thttps://github.com/fork/repo.git (push)\n",
+      ),
+    ).toEqual([
+      "https://github.com/org/repo.git",
+      "https://github.com/fork/repo.git",
+    ]);
   });
 });
 

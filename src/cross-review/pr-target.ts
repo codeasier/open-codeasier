@@ -53,11 +53,22 @@ type ParsedRemoteLine = GitRemote & { kind: "fetch" | "push" };
 
 const FETCH_SUFFIX = " (fetch)";
 const PUSH_SUFFIX = " (push)";
+// Git prints a partial-clone filter after the fetch marker, e.g. ` (fetch) [blob:none]`.
+const PARTIAL_CLONE_ANNOTATION = /^ \[[^\]]*\]$/;
+
+function verboseSuffixIndex(rest: string, suffix: string): number | undefined {
+  const at = rest.lastIndexOf(suffix);
+  if (at < 0) return undefined;
+  const after = rest.slice(at + suffix.length);
+  if (after.length === 0 || PARTIAL_CLONE_ANNOTATION.test(after)) return at;
+  return undefined;
+}
 
 /**
  * Parse one `git remote -v` line. The URL is the text between the name's
- * trailing tab and the ` (fetch)` / ` (push)` suffix, so local paths that
- * contain spaces are preserved.
+ * trailing tab and the ` (fetch)` / ` (push)` marker, so local paths that
+ * contain spaces are preserved. A partial-clone annotation after `(fetch)`
+ * stays outside the URL.
  */
 function parseRemoteVerboseLine(line: string): ParsedRemoteLine | undefined {
   const trimmed = line.trim();
@@ -65,16 +76,19 @@ function parseRemoteVerboseLine(line: string): ParsedRemoteLine | undefined {
   if (tab <= 0) return undefined;
   const name = trimmed.slice(0, tab);
   const rest = trimmed.slice(tab + 1);
-  const kind = rest.endsWith(FETCH_SUFFIX)
-    ? "fetch"
-    : rest.endsWith(PUSH_SUFFIX)
-      ? "push"
-      : undefined;
-  if (kind === undefined) return undefined;
-  const url = rest.slice(
-    0,
-    -(kind === "fetch" ? FETCH_SUFFIX.length : PUSH_SUFFIX.length),
-  );
+  const fetchAt = verboseSuffixIndex(rest, FETCH_SUFFIX);
+  const pushAt = verboseSuffixIndex(rest, PUSH_SUFFIX);
+  let kind: ParsedRemoteLine["kind"] | undefined;
+  let at: number | undefined;
+  if (fetchAt !== undefined && (pushAt === undefined || fetchAt > pushAt)) {
+    kind = "fetch";
+    at = fetchAt;
+  } else if (pushAt !== undefined) {
+    kind = "push";
+    at = pushAt;
+  }
+  if (kind === undefined || at === undefined) return undefined;
+  const url = rest.slice(0, at);
   if (name.length === 0 || url.length === 0) return undefined;
   return { name, url, kind };
 }
