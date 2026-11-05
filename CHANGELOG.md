@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-11-06
+
 ### Fixed
 
 - Preserve the invoked slash command and its arguments in OpenCode's expanded
   workflow prompts, so models can recognize an explicit `/cross-review` request
   without asking the user to resend it. Runtime command provenance and the
   separate startup confirmation remain required.
+- Fetch PR snapshots from the PR repository's upstream remote when `origin` is a
+  fork, preferring remotes that match the PR repository and reporting the
+  repository path, remotes tried, and recovery steps when fetching fails.
+- Bound hung PR snapshot fetches so the origin fallback can still run, and keep
+  partial-clone fetch URLs whose local paths contain spaces when ranking
+  remotes.
 
 ## [0.3.7] - 2026-10-23
 
@@ -436,7 +444,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/codeasier/open-codeasier/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/codeasier/open-codeasier/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/codeasier/open-codeasier/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/codeasier/open-codeasier/compare/v0.3.4...v0.3.5
