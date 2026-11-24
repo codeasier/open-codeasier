@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-24
+
 ### Added
 
 - Load the same tools on OpenCode V2. The package root export keeps the V1
@@ -455,7 +457,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Add a read-only, SDK-backed session review tool.
 - Add project and global installation support for packaged workflow assets.
 
-[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/codeasier/open-codeasier/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/codeasier/open-codeasier/compare/v0.3.8...v0.4.0
 [0.3.8]: https://github.com/codeasier/open-codeasier/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/codeasier/open-codeasier/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/codeasier/open-codeasier/compare/v0.3.5...v0.3.6
