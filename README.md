@@ -5,9 +5,24 @@ OpenCode-native workflow skills, configurable cross-review orchestration, cross-
 ## Requirements
 
 - Node.js 22 or newer
-- OpenCode 1.14.49 or newer
+- OpenCode V1 (1.14.49 or newer), or OpenCode V2 (adapter targets 2.4.1)
+
+OpenCode V1 loads the `server()` export. OpenCode V2 does not run V1 plugins;
+it calls `setup()` on the package root. V2 registers the same tools and a
+native `/cross-review` command. The start tools default to asking without
+reordering your existing permissions. The explicit command and the separate
+startup confirmation are still required on either host.
+
+On V2, an external PR snapshot needs the plugin's read-only guards and the
+`cross-reviewer` agent at the snapshot location. Use a global installation in
+the OpenCode profile for snapshot reviews; a project-only installation may
+not be visible in the new worktree. The V2 session APIs expose only the context
+after compaction; full session review and audit report
+`SESSION_HISTORY_INCOMPLETE` rather than treating that context as complete.
 
 ## Install
+
+### OpenCode V1
 
 Resolve the published version once, then install the runtime plugin and workflow assets at the same exact version and scope. For a global install:
 
@@ -31,6 +46,20 @@ Use the same paired commands to upgrade, then restart OpenCode. An exact version
 npx open-codeasier uninstall
 npx open-codeasier uninstall --project .
 ```
+
+### OpenCode V2 (2.4.1)
+
+Use the runtime **and** install the assets with `--opencode-v2`. For a published version that includes V2 support, run the following in the intended user profile:
+
+```bash
+VERSION="$(npm view open-codeasier version)"
+opencode plugin add "open-codeasier@$VERSION"
+npx "open-codeasier@$VERSION" install --opencode-v2
+```
+
+For an unreleased build, do not install the registry version: run `npm ci` and `npm pack` in the candidate checkout, install the resulting tarball into a disposable npm prefix, and use that prefix's `node_modules/.bin/open-codeasier` for the asset step. In the V2 profile's `opencode.json`, include the **installed package directory** as a file URL in the `plugin` array (e.g. `{"plugin":["file:///absolute/prefix/node_modules/open-codeasier"]}`). Do not point V2 to `dist/plugin.js`: that file URL is for V1. Use a disposable HOME and XDG directories when testing; `opencode debug paths` shows the effective config directory. Prefer a profile-wide runtime and assets for snapshots outside the current project. For a project-only install, use the project's `opencode.json` and pass `--project . --opencode-v2` to the asset installer. Project-only registration is not inherited by an unrelated worktree.
+
+The V2 runtime supplies the real `/cross-review` command; its skill, the reviewer agent, and other commands still come from the installer. A same-name Markdown command can override the native handler. The V2 asset installer omits it, removes an unchanged package-owned V1 copy from the selected scope, and refuses to touch custom copies. Preview a migration with `install --opencode-v2 --dry-run`. Back up and move any conflicting custom command out of discovery paths yourself, and check other active config sources for a command named `cross-review`. Restart OpenCode; in the command picker its description should be **Configure or run independent cross-reviews**, not **Initialize cross-review or review a target**. Don't share an asset directory between V1 and V2. To remove this profile's package-owned assets, run `uninstall --opencode-v2` with the same scope.
 
 ## Commands
 

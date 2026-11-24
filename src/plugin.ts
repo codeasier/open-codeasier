@@ -1,19 +1,14 @@
 import type { Plugin, PluginModule } from "@opencode-ai/plugin";
-import {
-  createCrossReviewTool,
-  PRIMARY_TOOL_IDS,
-  type CrossReviewClient,
-} from "./cross-review/tool.js";
-import {
-  createCrossReviewProtocolTools,
-  type AsyncCrossReviewClient,
-} from "./cross-review/protocol.js";
+import { PRIMARY_TOOL_IDS } from "./cross-review/tool.js";
+import type { AsyncCrossReviewClient } from "./cross-review/protocol.js";
 import { FileCrossReviewRunStore } from "./cross-review/run-store.js";
-import { createCrossReviewAuditTool } from "./cross-review/audit.js";
 import type { SessionClient } from "./session-review/fetch.js";
-import { createSessionReviewTool } from "./session-review/tool.js";
 import { CROSS_REVIEW_START_PERMISSIONS } from "./cross-review/authorization.js";
 import { createCrossReviewInvocationGuard } from "./cross-review/invocation.js";
+import { setup as setupV2 } from "./opencode-v2/setup.js";
+import type { V2Host } from "./opencode-v2/host.js";
+import { createOpenCodeasierTools } from "./plugin-tools.js";
+import type { CrossReviewClient } from "./cross-review/tool.js";
 
 export const server: Plugin = async ({ client }) => {
   const store = new FileCrossReviewRunStore();
@@ -24,10 +19,6 @@ export const server: Plugin = async ({ client }) => {
     confirmStart,
     ...invocationHooks
   } = createCrossReviewInvocationGuard(client);
-  const protocol = createCrossReviewProtocolTools(
-    client as AsyncCrossReviewClient,
-    { store, assertInvocation, prepareConfirmation, confirmStart },
-  );
   return {
     ...invocationHooks,
     config: async (config) => {
@@ -50,17 +41,18 @@ export const server: Plugin = async ({ client }) => {
         primary_tools: merged,
       };
     },
-    tool: {
-      cross_review: createCrossReviewTool(
-        client as CrossReviewClient,
-        undefined,
-        { assertInvocation, confirmStart },
-      ),
-      ...protocol,
-      session_review: createSessionReviewTool(client as SessionClient),
-      cross_review_audit: createCrossReviewAuditTool(client as SessionClient),
-    },
+    tool: createOpenCodeasierTools(
+      client as CrossReviewClient & AsyncCrossReviewClient & SessionClient,
+      { store, assertInvocation, prepareConfirmation, confirmStart },
+    ),
   };
 };
 
-export default { id: "open-codeasier", server } satisfies PluginModule;
+/** V2 calls `setup` and ignores `server`. V1 calls `server` and ignores `setup`. */
+export async function setup(ctx: V2Host): Promise<() => Promise<void>> {
+  return setupV2(ctx);
+}
+
+const v1Module = { id: "open-codeasier", server } satisfies PluginModule;
+
+export default { ...v1Module, setup };

@@ -27,7 +27,15 @@ jobs:
           grep -qx 'package/commands/session-review.md' "$RUNNER_TEMP/package-contents"
           mkdir "$RUNNER_TEMP/package-smoke"
           npm install --prefix "$RUNNER_TEMP/package-smoke" "$GITHUB_WORKSPACE"/open-codeasier-*.tgz
-          (cd "$RUNNER_TEMP/package-smoke" && node --input-type=module -e "import('open-codeasier/server').then((m) => { if (!m.default.server) process.exit(1) })")
+          (cd "$RUNNER_TEMP/package-smoke" && node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import v2 from "open-codeasier";
+          import v1 from "open-codeasier/server";
+          assert.equal(typeof v1.server, "function");
+          assert.equal(typeof v2.setup, "function");
+          assert.equal(v2.server, v1.server);
+          NODE
+          )
           HOME="$RUNNER_TEMP/home" "$RUNNER_TEMP/package-smoke/node_modules/.bin/open-codeasier" install
           test -f "$RUNNER_TEMP/home/.config/opencode/skills/session-review/SKILL.md"
           test -f "$RUNNER_TEMP/home/.config/opencode/commands/session-review.md"

@@ -48,9 +48,25 @@ type Confirmation = {
 
 type InvocationGrant = {
   userMessageID: string;
+  nativeReceipt?: Promise<boolean>;
   confirmation?: Confirmation;
   declined?: boolean;
 };
+
+/** Prompt hooks precede durable admission. Wait for the host's receipt, not just the hook. */
+async function accepted(receipt: Promise<boolean>, signal: AbortSignal) {
+  if (signal.aborted) throw new Error("Cross-review cancelled");
+  let onAbort!: () => void;
+  const cancelled = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new Error("Cross-review cancelled"));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([receipt, cancelled]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
 
 function isReviewArguments(args: string): boolean {
   const first = args.trim().split(/\s+/, 1)[0];
@@ -78,7 +94,14 @@ function isLiteralCommand(
  * load, quoted command, remembered permission, or old turn cannot mint a grant.
  * Grants are deliberately process-local: after a restart, reissue the command.
  */
-export function createCrossReviewInvocationGuard(client: InvocationClient) {
+export function createCrossReviewInvocationGuard(
+  client: InvocationClient,
+  /** V2's command handler owns this exact session/message ID; read it once. */
+  takeCommand?: (
+    sessionID: string,
+    messageID: string,
+  ) => { args: string; receipt: Promise<boolean> } | undefined,
+) {
   const pending = new Map<string, { token: string; review: boolean }>();
   const grants = new Map<string, InvocationGrant>();
 
@@ -102,6 +125,15 @@ export function createCrossReviewInvocationGuard(client: InvocationClient) {
 
   const message: NonNullable<Hooks["chat.message"]> = async (input, output) => {
     const invocation = pending.get(input.sessionID);
+    // A repeated admission of the exact user message is not a new command
+    // and must not reset a pending, declined or consumed confirmation.
+    if (
+      invocation === undefined &&
+      output.message.role === "user" &&
+      output.message.sessionID === input.sessionID &&
+      grants.get(input.sessionID)?.userMessageID === output.message.id
+    )
+      return;
     pending.delete(input.sessionID);
     grants.delete(input.sessionID);
     if (
@@ -109,8 +141,10 @@ export function createCrossReviewInvocationGuard(client: InvocationClient) {
       output.message.sessionID !== input.sessionID
     )
       return;
-    const authorized =
-      invocation === undefined
+    const native = takeCommand?.(input.sessionID, output.message.id);
+    const authorized = takeCommand
+      ? native !== undefined && isReviewArguments(native.args)
+      : invocation === undefined
         ? isLiteralCommand(output.parts)
         : invocation.review &&
           output.parts.some(
@@ -119,7 +153,10 @@ export function createCrossReviewInvocationGuard(client: InvocationClient) {
               part.metadata?.[MARKER] === invocation.token,
           );
     if (authorized) {
-      grants.set(input.sessionID, { userMessageID: output.message.id });
+      grants.set(input.sessionID, {
+        userMessageID: output.message.id,
+        ...(native === undefined ? {} : { nativeReceipt: native.receipt }),
+      });
     }
   };
 
@@ -134,6 +171,12 @@ export function createCrossReviewInvocationGuard(client: InvocationClient) {
     const grant = grants.get(context.sessionID);
     if (grant === undefined) throw denied();
     if (context.abort.aborted) throw new Error("Cross-review cancelled");
+    if (
+      grant.nativeReceipt !== undefined &&
+      (!(await accepted(grant.nativeReceipt, context.abort)) ||
+        grants.get(context.sessionID) !== grant)
+    )
+      throw denied();
     let result;
     try {
       result = await client.session.message({

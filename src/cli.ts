@@ -2,7 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   findGitRoot,
@@ -152,14 +152,22 @@ export async function run(
   if (command !== "install" && command !== "uninstall") return 2;
   let project: string | undefined;
   let dryRun = false;
+  let opencodeV2 = false;
   while (argv.length) {
     const option = argv.shift();
     if (option === "--dry-run") dryRun = true;
+    else if (option === "--opencode-v2") opencodeV2 = true;
     else if (option === "--project" && argv[0] !== undefined)
       project = argv.shift();
     else return 2;
   }
-  const target = resolveTarget(project === undefined ? {} : { project });
+  const target =
+    project === undefined && opencodeV2 && process.env.XDG_CONFIG_HOME
+      ? {
+          root: join(process.env.XDG_CONFIG_HOME, "opencode"),
+          scope: "global" as const,
+        }
+      : resolveTarget(project === undefined ? { home } : { project });
   try {
     if (command === "install") {
       const packageVersion = JSON.parse(
@@ -176,6 +184,7 @@ export async function run(
       const result = await installAssets({
         target,
         assets,
+        opencodeV2,
         packageVersion,
         dryRun,
       });
@@ -184,9 +193,14 @@ export async function run(
           console.log(`${dryRun ? "would-" : ""}${operation}: ${path}`);
       if (target.scope === "project")
         console.log(`runtime-plugin-cwd: ${dirname(target.root)}`);
-      console.log(
-        `runtime-plugin: ${runtimePluginInstallCommand(packageVersion, target.scope)}`,
-      );
+      if (opencodeV2 && target.scope === "project")
+        console.log(
+          `runtime-plugin: add "open-codeasier@${packageVersion}" to the plugin array in the project's opencode.json (after publication). For a local build use its installed package directory file: URL.`,
+        );
+      else
+        console.log(
+          `runtime-plugin: ${opencodeV2 ? `opencode plugin add open-codeasier@${packageVersion}` : runtimePluginInstallCommand(packageVersion, target.scope)}`,
+        );
     } else {
       const result = await uninstallAssets({ target, dryRun });
       for (const [operation, paths] of Object.entries(result))

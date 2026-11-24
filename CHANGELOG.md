@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Load the same tools on OpenCode V2. The package root export keeps the V1
+  `server()` entry and adds `setup()`, which registers `cross_review`, the
+  async cross-review protocol, `session_review`, and `cross_review_audit`.
+  On V2, a native `/cross-review` command binds authorization to its admitted
+  user message, and startup still requires the separate `question` answer.
+  Missing start permission defaults do not reorder configured rules. Child
+  status is tracked from host events because the V2 plugin context has no
+  status query.
+
 ## [0.3.8] - 2026-11-06
 
 ### Fixed

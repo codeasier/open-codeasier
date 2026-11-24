@@ -253,6 +253,15 @@ describe("cross-review command provenance", () => {
     await expect(f.check()).rejects.toThrow("requires an explicit user");
   });
 
+  it("keeps the grant when the same authorized user message is admitted again", async () => {
+    const f = fixture();
+    const input = await f.command();
+    await f.admit(input);
+    await expect(f.check()).resolves.toBeUndefined();
+    await f.admit(input);
+    await expect(f.check()).resolves.toBeUndefined();
+  });
+
   it("revokes a prior command when the user sends a new task", async () => {
     const f = fixture();
     await f.admit(await f.command());
