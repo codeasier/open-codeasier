@@ -1,5 +1,19 @@
-import type { V2Event, V2Host, V2Request, V2SessionInfo } from "./host.js";
-import { toV1Messages, type V1SessionMessage } from "./messages.js";
+import { childReviewPermissions, hasChildReviewPermissions } from "./policy.js";
+import { REVIEWER_AGENT } from "../cross-review/tool.js";
+import { realpath } from "node:fs/promises";
+import type { VerifyChildDestination } from "./destination.js";
+import type {
+  V2Event,
+  V2Host,
+  V2PermissionRule,
+  V2Request,
+  V2SessionInfo,
+} from "./host.js";
+import {
+  hasCompactedHistory,
+  toV1Messages,
+  type V1SessionMessage,
+} from "./messages.js";
 
 export type V1Activity =
   | { type: "busy" }
@@ -160,6 +174,7 @@ export type OpenCodeV2Client = {
       query?: { directory?: string; limit?: number };
       signal?: AbortSignal;
     }): Promise<SdkResult<V1SessionMessage[]>>;
+    completeMessages: OpenCodeV2Client["session"]["messages"];
     children(input: {
       path: { id: string };
       query?: { directory?: string };
@@ -268,6 +283,36 @@ function applyLimit<T>(items: T[], limit: number | undefined): T[] {
   return items.slice(items.length - limit);
 }
 
+async function sameDirectory(
+  actual: string | undefined,
+  expected: string,
+): Promise<boolean> {
+  if (!actual) return false;
+  if (actual === expected) return true;
+  const [left, right] = await Promise.all(
+    [actual, expected].map((path) => realpath(path).catch(() => undefined)),
+  );
+  return left !== undefined && left === right;
+}
+
+/** A host that silently trims inherited denies must not be accepted. */
+function sameRules(
+  actual: readonly V2PermissionRule[] | undefined,
+  expected: readonly V2PermissionRule[],
+) {
+  return (
+    actual?.length === expected.length &&
+    expected.every((rule, index) => {
+      const stored = actual[index];
+      return (
+        stored?.action === rule.action &&
+        stored.resource === rule.resource &&
+        stored.effect === rule.effect
+      );
+    })
+  );
+}
+
 /**
  * V1-shaped client backed by the V2 session and model APIs.
  * `restricted` records tool names a child prompt turned off, so the context
@@ -277,22 +322,54 @@ export function createV1Client(
   host: V2Host,
   restricted: Map<string, ReadonlySet<string>>,
   activity: Map<string, V1Activity> = new Map(),
+  verifyDestination?: VerifyChildDestination,
 ): OpenCodeV2Client {
   async function readMessages(
     sessionID: string,
     signal: AbortSignal | undefined,
     limit?: number,
+    requireComplete = false,
   ): Promise<V1SessionMessage[]> {
     const messages = await host.session.context({ sessionID }, request(signal));
+    if (requireComplete && hasCompactedHistory(messages)) {
+      const error = new Error(
+        `OpenCode V2 exposes only the context after compaction for session ${sessionID}; a complete session review is unavailable.`,
+      );
+      error.name = "SessionHistoryIncompleteError";
+      throw error;
+    }
     return applyLimit(toV1Messages(sessionID, messages), limit);
   }
 
   async function preparePrompt(
     sessionID: string,
     body: V1PromptBody,
+    directory: string,
     signal: AbortSignal | undefined,
   ): Promise<void> {
     const options = request(signal);
+    const denied = Object.entries(body.tools ?? {})
+      .filter(([, allowed]) => allowed === false)
+      .map(([name]) => name);
+    if (denied.length > 0) {
+      const persisted = await host.session.get({ sessionID }, options);
+      if (
+        persisted.id !== sessionID ||
+        !hasChildReviewPermissions(persisted.permissions)
+      )
+        throw new Error(
+          "OpenCode V2 child lacks persistent read-only permissions; refusing to dispatch",
+        );
+      // Do not resume or dispatch a child after it has moved out of the
+      // verified location or after its destination plugin was removed.
+      if (verifyDestination) {
+        if (!(await sameDirectory(persisted.location?.directory, directory)))
+          throw new Error(
+            "OpenCode V2 child left its verified review directory; refusing to dispatch",
+          );
+      }
+      restricted.set(sessionID, new Set(denied));
+    }
     if (body.agent !== undefined && body.agent.length > 0)
       await host.session.switchAgent({ sessionID, agent: body.agent }, options);
     if (body.model !== undefined)
@@ -303,10 +380,9 @@ export function createV1Client(
         },
         options,
       );
-    const denied = Object.entries(body.tools ?? {})
-      .filter(([, allowed]) => allowed === false)
-      .map(([name]) => name);
-    if (denied.length > 0) restricted.set(sessionID, new Set(denied));
+    if (denied.length > 0)
+      await verifyDestination?.(sessionID, directory, signal);
+    signal?.throwIfAborted();
   }
 
   function sessionRecord(session: V2SessionInfo) {
@@ -357,21 +433,96 @@ export function createV1Client(
       },
       create(input) {
         return attempt(async () => {
+          const options = request(input.signal);
+          const parent = await host.session.get(
+            { sessionID: input.body.parentID },
+            options,
+          );
+          if (parent.id !== input.body.parentID)
+            throw new Error("OpenCode V2 returned a different parent session");
+          const permissions = childReviewPermissions(parent.permissions ?? []);
+          input.signal?.throwIfAborted();
           const created = await host.session.create(
             {
               parentID: input.body.parentID,
+              permissions,
+              agent: REVIEWER_AGENT,
               title: input.body.title,
-              location: { directory: input.query.directory },
             },
             request(input.signal),
           );
+          // V2 always inherits the parent's location, even if create is given a
+          // location. Move an idle, unprompted child, wait for the inbox handoff
+          // and verify the binding before giving the child to the orchestrator.
+          const sessionID = created.id;
+          if (
+            !sessionID ||
+            sessionID === parent.id ||
+            created.parentID !== parent.id
+          )
+            throw new Error(
+              "OpenCode V2 did not return a new child of the requested parent",
+            );
+          try {
+            input.signal?.throwIfAborted();
+            if (!sameRules(created.permissions, permissions))
+              throw new Error(
+                "OpenCode V2 failed to persist read-only permissions on the new child",
+              );
+            if (
+              !(await sameDirectory(
+                created.location?.directory,
+                input.query.directory,
+              ))
+            ) {
+              if (host.location.workspaceID || created.location?.workspaceID)
+                throw new Error(
+                  "OpenCode V2 cannot preserve workspace identity when moving a child to a review snapshot",
+                );
+              input.signal?.throwIfAborted();
+              await host.session.move(
+                { sessionID, directory: input.query.directory },
+                options,
+              );
+              await host.session.wait({ sessionID }, options);
+              input.signal?.throwIfAborted();
+              const bound = await host.session.get({ sessionID }, options);
+              if (
+                bound.id !== sessionID ||
+                bound.parentID !== input.body.parentID ||
+                !sameRules(bound.permissions, permissions) ||
+                !(await sameDirectory(
+                  bound.location?.directory,
+                  input.query.directory,
+                ))
+              )
+                throw new Error(
+                  `OpenCode V2 could not bind child ${sessionID} to the requested review directory`,
+                );
+            }
+            await verifyDestination?.(
+              sessionID,
+              input.query.directory,
+              input.signal,
+            );
+          } catch (error) {
+            // Nobody else has received this new child ID. Do not leave a failed
+            // bind as an orphan, and never dispatch it in the parent's checkout.
+            await host.session.remove({ sessionID }).catch(() => undefined);
+            throw error;
+          }
           return { id: created.id };
         });
       },
       async prompt(input) {
         return attempt(async () => {
-          await preparePrompt(input.path.id, input.body, input.signal);
-          await host.session.prompt(
+          await preparePrompt(
+            input.path.id,
+            input.body,
+            input.query.directory,
+            input.signal,
+          );
+          const accepted = await host.session.prompt(
             {
               sessionID: input.path.id,
               ...(input.body.messageID === undefined
@@ -389,7 +540,11 @@ export function createV1Client(
           const messages = await readMessages(input.path.id, input.signal);
           const assistant = [...messages]
             .reverse()
-            .find((message) => message.info.role === "assistant");
+            .find(
+              (message) =>
+                message.info.role === "assistant" &&
+                message.info.parentID === accepted.id,
+            );
           return {
             ...(assistant === undefined ? {} : { info: assistant.info }),
             parts: assistant?.parts ?? [],
@@ -398,7 +553,12 @@ export function createV1Client(
       },
       promptAsync(input) {
         return attempt(async () => {
-          await preparePrompt(input.path.id, input.body, input.signal);
+          await preparePrompt(
+            input.path.id,
+            input.body,
+            input.query.directory,
+            input.signal,
+          );
           await host.session.prompt(
             {
               sessionID: input.path.id,
@@ -418,6 +578,11 @@ export function createV1Client(
       messages(input) {
         return attempt(() =>
           readMessages(input.path.id, input.signal, input.query?.limit),
+        );
+      },
+      completeMessages(input) {
+        return attempt(() =>
+          readMessages(input.path.id, input.signal, input.query?.limit, true),
         );
       },
       children(input) {

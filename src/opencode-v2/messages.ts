@@ -4,6 +4,16 @@ import type {
   V2ToolContent,
 } from "./host.js";
 
+/** session.context starts at the latest completed compaction, not at session creation. */
+export function hasCompactedHistory(
+  messages: readonly V2SessionMessage[],
+): boolean {
+  return messages.some(
+    (message) =>
+      message.type === "compaction" && message.status === "completed",
+  );
+}
+
 export type V1Part = {
   type: string;
   text?: string;

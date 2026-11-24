@@ -5,7 +5,14 @@ import {
   createV1Client,
 } from "../src/opencode-v2/client.js";
 import { toV1Messages } from "../src/opencode-v2/messages.js";
-import type { V2Host, V2ToolDefinition } from "../src/opencode-v2/host.js";
+import { childReviewPermissions } from "../src/opencode-v2/policy.js";
+import type {
+  V2CommandDefinition,
+  V2Host,
+  V2PromptEvent,
+  V2ToolDefinition,
+  V2ToolHookEvent,
+} from "../src/opencode-v2/host.js";
 import { FileCrossReviewRunStore } from "../src/cross-review/run-store.js";
 
 describe("OpenCode V2 messages", () => {
@@ -45,6 +52,10 @@ describe("OpenCode V2 client", () => {
       {
         location: { directory: "/repo" },
         session: {
+          get: vi.fn().mockResolvedValue({
+            id: "child",
+            permissions: childReviewPermissions([]),
+          }),
           prompt,
           wait,
           switchAgent: vi.fn().mockResolvedValue(undefined),
@@ -188,6 +199,12 @@ describe("OpenCode V2 plugin", () => {
 
   function host() {
     const tools: V2ToolDefinition[] = [];
+    const commands = new Map<string, V2CommandDefinition>();
+    const toolHooks = new Map<
+      string,
+      (event: V2ToolHookEvent) => Promise<void>
+    >();
+    let currentUserID = "user";
     const agents: Array<{
       id: string;
       permissions: Array<Record<string, string>>;
@@ -203,19 +220,23 @@ describe("OpenCode V2 plugin", () => {
           tools: Record<string, { description: string; input: unknown }>;
         }) => void)
       | undefined;
-    let promptHook:
-      | ((event: {
-          sessionID: string;
-          messageID: string;
-          prompt: { text?: string };
-        }) => Promise<void>)
-      | undefined;
+    let promptHook: ((event: V2PromptEvent) => Promise<void>) | undefined;
     const queued: Array<{ type: string; data?: Record<string, unknown> }> = [];
     let wake: (() => void) | undefined;
     const created = vi.fn();
     const asserted = vi.fn();
     const v2 = {
       location: { directory: "/repo" },
+      command: {
+        async transform(
+          edit: (editor: {
+            add: (command: V2CommandDefinition) => void;
+          }) => void,
+        ) {
+          edit({ add: (command) => commands.set(command.name, command) });
+          return { async dispose() {} };
+        },
+      },
       session: {
         get: vi.fn(async ({ sessionID }: { sessionID: string }) => ({
           id: sessionID,
@@ -226,9 +247,9 @@ describe("OpenCode V2 plugin", () => {
         context: vi.fn(async () => [
           {
             type: "user",
-            id: "user",
+            id: currentUserID,
             time: { created: 1 },
-            text: "/cross-review #42",
+            text: "review target",
           },
           {
             type: "assistant",
@@ -240,7 +261,17 @@ describe("OpenCode V2 plugin", () => {
         ]),
         create: created,
         list: vi.fn(),
-        prompt: vi.fn(),
+        prompt: vi.fn(
+          async (input: { sessionID: string; id: string; text: string }) => {
+            currentUserID = input.id;
+            await promptHook?.({
+              sessionID: input.sessionID,
+              messageID: input.id,
+              prompt: { text: input.text },
+            });
+            return { id: input.id };
+          },
+        ),
         interrupt: vi.fn(),
         switchAgent: vi.fn(),
         switchModel: vi.fn(),
@@ -268,7 +299,15 @@ describe("OpenCode V2 plugin", () => {
             return { async dispose() {} };
           },
         ),
-        hook: vi.fn(async () => ({ async dispose() {} })),
+        hook: vi.fn(
+          async (
+            name: string,
+            callback: (event: V2ToolHookEvent) => Promise<void>,
+          ) => {
+            toolHooks.set(name, callback);
+            return { async dispose() {} };
+          },
+        ),
       },
       agent: {
         transform: vi.fn(
@@ -319,6 +358,8 @@ describe("OpenCode V2 plugin", () => {
         wake?.();
       },
       tools,
+      commands,
+      toolHooks,
       agents,
       created,
       asserted,
@@ -394,51 +435,229 @@ describe("OpenCode V2 plugin", () => {
     });
   });
 
-  it("blocks cross_review_start until /cross-review is executed", async () => {
+  it("does not run a tool under the plugin checkout when its session directory is unavailable", async () => {
     const v2 = host();
     cleanups.push(await plugin.setup(v2 as unknown as V2Host));
-    const start = v2.tools.find((entry) => entry.name === "cross_review_start");
-    if (start === undefined) throw new Error("missing cross_review_start");
-    const context = {
-      sessionID: "parent",
-      agent: "build",
-      messageID: "assistant",
-      id: "call",
-      signal: new AbortController().signal,
-      progress: vi.fn(),
-    };
-    await expect(start.execute({ target: "#42" }, context)).rejects.toThrow(
-      "requires an explicit user /cross-review <target> command",
+    const definition = v2.tools.find(
+      (entry) => entry.name === "session_review",
     );
-    v2.push({
-      type: "command.executed",
-      data: {
-        name: "cross-review",
+    if (!definition) throw new Error("missing session_review");
+    const execute = () =>
+      definition.execute(
+        { sessionID: "target", mode: "summary" },
+        {
+          sessionID: "current",
+          agent: "build",
+          messageID: "assistant",
+          id: "call",
+          signal: new AbortController().signal,
+          progress: vi.fn(),
+        },
+      );
+    v2.session.get.mockRejectedValueOnce(new Error("session access denied"));
+    await expect(execute()).rejects.toThrow("session access denied");
+    v2.session.get.mockResolvedValueOnce({
+      id: "current",
+      title: "x",
+      time: { created: 1, updated: 2 },
+      location: { directory: "" },
+    });
+    await expect(execute()).rejects.toThrow("Cannot verify");
+    expect(v2.session.context).not.toHaveBeenCalled();
+  });
+
+  it.each(["failed", "different ID"])(
+    "keeps a %s command admission from authorizing a concurrent preview",
+    async (outcome) => {
+      const v2 = host();
+      cleanups.push(await plugin.setup(v2 as unknown as V2Host));
+      const command = v2.commands.get("cross-review");
+      const prompt = v2.promptHook();
+      const config = v2.tools.find(
+        (entry) => entry.name === "cross_review_config",
+      );
+      if (!command || !prompt || !config)
+        throw new Error("missing V2 registration");
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let finish!: () => void;
+      const proceed = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      v2.session.prompt.mockImplementationOnce(
+        async ({ id, sessionID, text }) => {
+          await prompt({ messageID: id, sessionID, prompt: { text } });
+          entered();
+          await proceed;
+          if (outcome === "failed") throw new Error("attachment unavailable");
+          return { id: "msg_other" };
+        },
+      );
+      const executing = command.execute({
+        sessionID: "parent",
+        prompt: { text: "review target" },
+        delivery: "queue",
+      });
+      await started;
+      const controller = new AbortController();
+      const context = {
+        sessionID: "parent",
+        agent: "build",
+        messageID: "assistant",
+        id: "call",
+        signal: controller.signal,
+        progress: vi.fn(),
+      };
+      const preview = config.execute({ target: "review target" }, context);
+      // Both current directory and primary-session checks run before the guard.
+      await vi.waitFor(() =>
+        expect(v2.session.get.mock.calls.length).toBeGreaterThanOrEqual(2),
+      );
+      expect(v2.session.context).not.toHaveBeenCalled();
+      const commandResult = expect(executing).rejects.toThrow(
+        outcome === "failed"
+          ? "attachment unavailable"
+          : "unexpected command admission ID",
+      );
+      const previewResult = expect(preview).rejects.toThrow(
+        "requires an explicit user",
+      );
+      finish();
+      await Promise.all([commandResult, previewResult]);
+      expect(v2.session.context).not.toHaveBeenCalled();
+      expect(v2.asserted).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["Start cross-review", "Cancel", "dismissed"])(
+    "binds a native command to its prompt and keeps a duplicate admission from resetting %s",
+    async (answer) => {
+      const v2 = host();
+      v2.model.list.mockResolvedValue({
+        data: [{ providerID: "p", modelID: "model" }],
+      });
+      // Stop at the actual permission boundary; this test must not dispatch reviewers.
+      v2.asserted.mockRejectedValue(new Error("host permission declined"));
+      cleanups.push(await plugin.setup(v2 as unknown as V2Host));
+      function tool(name: string) {
+        const definition = v2.tools.find((entry) => entry.name === name);
+        if (!definition) throw new Error(`missing tool: ${name}`);
+        return definition;
+      }
+      const config = tool("cross_review_config");
+      const start = tool("cross_review_start");
+      const args = {
+        target: "review target",
+        reviewModels: ["p/model"],
+        judgeModel: "p/model",
+      };
+      const context = {
+        sessionID: "parent",
+        agent: "build",
+        messageID: "assistant",
+        id: "call",
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+      };
+      const prompt = v2.promptHook();
+      const command = v2.commands.get("cross-review");
+      const before = v2.toolHooks.get("execute.before");
+      const after = v2.toolHooks.get("execute.after");
+      if (!prompt || !command || !before || !after)
+        throw new Error("missing V2 registration");
+
+      await prompt({
         sessionID: "parent",
         messageID: "user",
-        arguments: "#42",
-      },
-    });
-    await vi.waitFor(async () => {
-      await expect(
-        start.execute({ target: "#42" }, context),
-      ).rejects.not.toThrow(/requires an explicit user/);
-    });
-    const prompt = v2.promptHook();
-    if (prompt === undefined) throw new Error("missing prompt hook");
-    await prompt({
-      sessionID: "parent",
-      messageID: "user",
-      prompt: {
-        text: "The user invoked this OpenCode slash command:\n\n/cross-review #42\n\nLoad the skill.",
-      },
-    });
-    await expect(start.execute({ target: "#42" }, context)).rejects.not.toThrow(
-      /requires an explicit user/,
-    );
-    expect(v2.created).not.toHaveBeenCalled();
-    expect(v2.asserted).not.toHaveBeenCalled();
-    const hideTools = v2.contextHook();
-    expect(hideTools).toBeTypeOf("function");
-  });
+        prompt: { text: "/cross-review review target" },
+        metadata: { command: "cross-review", arguments: "review target" },
+      });
+      await expect(config.execute(args, context)).rejects.toThrow(
+        "requires an explicit user",
+      );
+      await command.execute({
+        sessionID: "parent",
+        prompt: { text: "init" },
+        delivery: "queue",
+      });
+      await expect(config.execute(args, context)).rejects.toThrow(
+        "requires an explicit user",
+      );
+      const attachments = [{ uri: "file:///docs/notes" }];
+      await command.execute({
+        sessionID: "parent",
+        prompt: { text: "review target", files: attachments },
+        delivery: "steer",
+      });
+      const submitted = v2.session.prompt.mock.lastCall?.[0];
+      if (!submitted) throw new Error("no submitted V2 prompt");
+      expect(submitted).toMatchObject({
+        id: expect.stringMatching(/^msg_/),
+        files: attachments,
+        delivery: "steer",
+      });
+      const repeat = () =>
+        prompt({
+          sessionID: "parent",
+          messageID: submitted.id,
+          prompt: { text: submitted.text },
+        });
+      const preview = await config.execute(args, context);
+      const plan = JSON.parse(preview.content ?? "") as {
+        confirmation: { questions: unknown[] };
+      };
+      const question = {
+        tool: "question",
+        agent: "build",
+        sessionID: "parent",
+        id: "question-1",
+        input: { questions: plan.confirmation.questions },
+      };
+      await expect(start.execute(args, context)).rejects.toThrow(
+        "fresh explicit user confirmation",
+      );
+      await before(question);
+      await repeat();
+      await after(
+        answer === "dismissed"
+          ? { ...question, status: "error" }
+          : {
+              ...question,
+              status: "completed",
+              result: { metadata: { answers: [[answer]] } },
+            },
+      );
+      await repeat();
+      if (answer !== "Start cross-review") {
+        await expect(config.execute(args, context)).rejects.toThrow(
+          "Cross-review was declined",
+        );
+        await expect(start.execute(args, context)).rejects.toThrow(
+          "fresh explicit user confirmation",
+        );
+        expect(v2.asserted).not.toHaveBeenCalled();
+      } else {
+        await expect(start.execute(args, context)).rejects.toThrow(
+          "host permission declined",
+        );
+        await repeat();
+        await expect(start.execute(args, context)).rejects.toThrow(
+          "fresh explicit user confirmation",
+        );
+        expect(v2.asserted).toHaveBeenCalledTimes(1);
+      }
+      await prompt({
+        sessionID: "parent",
+        messageID: "new-user",
+        prompt: { text: "different task" },
+      });
+      await repeat();
+      await expect(config.execute(args, context)).rejects.toThrow(
+        "requires an explicit user",
+      );
+      expect(v2.created).not.toHaveBeenCalled();
+    },
+  );
 });

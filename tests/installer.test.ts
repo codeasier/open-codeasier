@@ -7,7 +7,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { discoverAssets, sha256 } from "../src/installer/assets.js";
 import {
@@ -316,6 +316,124 @@ describe("CLI parser", () => {
     }
   });
 
+  it("migrates only the owned V1 command, dry-runs safely and restores V1 on opt-out", async () => {
+    const f = await fixture();
+    const project = join(f.root, "project");
+    const options = { home: join(f.root, "home") };
+    const target = resolveTarget({ project });
+    const legacy = join(target.root, "commands/cross-review.md");
+    const manifest = join(target.root, ".open-codeasier/installed-assets.json");
+    const { run } = await import("../src/cli.js");
+    const install = (...args: string[]) =>
+      run(["install", "--project", project, ...args], options);
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      expect(await install()).toBe(0);
+      const original = await readFile(legacy);
+      const owned = await readFile(manifest);
+      expect(await install("--opencode-v2", "--dry-run")).toBe(0);
+      expect(log).toHaveBeenCalledWith(
+        "would-removed: commands/cross-review.md",
+      );
+      expect(await readFile(legacy)).toEqual(original);
+      expect(await readFile(manifest)).toEqual(owned);
+      expect(await install("--opencode-v2")).toBe(0);
+      await expect(readFile(legacy)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(manifest, "utf8")).not.toContain(
+        "commands/cross-review.md",
+      );
+      expect(
+        await readFile(join(target.root, "skills/cross-review/SKILL.md")),
+      ).toEqual(await readFile("skills/cross-review/SKILL.md"));
+      expect(await install("--opencode-v2")).toBe(0);
+      expect(await install()).toBe(0);
+      expect(await readFile(legacy)).toEqual(original);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it.each(["commands/cross-review.md", "command/cross-review.md"])(
+    "refuses a user-owned V2 command shadow %s before any writes",
+    async (name) => {
+      const f = await fixture();
+      const project = join(f.root, "project");
+      const root = resolveTarget({ project }).root;
+      const path = join(root, name);
+      await mkdir(dirname(path), { recursive: true });
+      // Even a byte-identical unowned copy must not be deleted.
+      const original = await readFile("commands/cross-review.md");
+      await writeFile(path, original);
+      const { run } = await import("../src/cli.js");
+      const error = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => undefined);
+      try {
+        expect(
+          await run(["install", "--opencode-v2", "--project", project], {
+            home: join(f.root, "home"),
+          }),
+        ).toBe(1);
+        expect(error).toHaveBeenCalledWith(
+          expect.stringContaining("Back up and rename"),
+        );
+        expect(await readFile(path)).toEqual(original);
+        await expect(
+          readFile(join(root, ".open-codeasier/installed-assets.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        error.mockRestore();
+      }
+    },
+  );
+
+  it("uses the V2 XDG config directory for global installation and refuses a changed owned command", async () => {
+    const f = await fixture();
+    const home = join(f.root, "home");
+    vi.stubEnv("XDG_CONFIG_HOME", join(f.root, "config"));
+    const { run } = await import("../src/cli.js");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    try {
+      expect(await run(["install", "--opencode-v2"], { home })).toBe(0);
+      expect(log).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /^runtime-plugin: opencode plugin add open-codeasier@/,
+        ),
+      );
+      const xdg = join(f.root, "config/opencode");
+      await expect(
+        readFile(join(xdg, "commands/cross-review.md")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        await readFile(join(xdg, "commands/cross-review-audit.md"), "utf8"),
+      ).toContain("cross-review-audit");
+      expect(await run(["uninstall", "--opencode-v2"], { home })).toBe(0);
+      await expect(
+        readFile(join(xdg, "commands/cross-review-audit.md")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      const project = join(f.root, "project");
+      expect(await run(["install", "--project", project], { home })).toBe(0);
+      const path = join(project, ".opencode/commands/cross-review.md");
+      await writeFile(path, "keep my edit");
+      expect(
+        await run(["install", "--opencode-v2", "--project", project], { home }),
+      ).toBe(1);
+      expect(await readFile(path, "utf8")).toBe("keep my edit");
+      expect(
+        await readFile(
+          join(project, ".opencode/.open-codeasier/installed-assets.json"),
+          "utf8",
+        ),
+      ).toContain("commands/cross-review.md");
+    } finally {
+      vi.unstubAllEnvs();
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
   it("rejects unknown commands and options", async () => {
     const { run } = await import("../src/cli.js");
     expect(await run(["unknown"])).toBe(2);

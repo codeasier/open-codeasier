@@ -1,7 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { tool } from "@opencode-ai/plugin";
 import type { Event, Part, UserMessage } from "@opencode-ai/sdk";
 import type { ZodRawShape } from "zod";
-import { CROSS_REVIEW_START_PERMISSIONS } from "../cross-review/authorization.js";
 import { createCrossReviewInvocationGuard } from "../cross-review/invocation.js";
 import { FileCrossReviewRunStore } from "../cross-review/run-store.js";
 import {
@@ -13,14 +13,14 @@ import {
   createV1Client,
   type V1Activity,
 } from "./client.js";
-import type {
-  V2Host,
-  V2PermissionRule,
-  V2PromptEvent,
-  V2ToolExecuteContext,
-} from "./host.js";
+import { createChildDestinationVerifier } from "./destination.js";
+import type { V2Host, V2ToolExecuteContext } from "./host.js";
 
-const START_PERMISSIONS = new Set<string>(CROSS_REVIEW_START_PERMISSIONS);
+import {
+  withAskDefaults,
+  filterReviewTools,
+  assertReviewTool,
+} from "./policy.js";
 
 type V1Tool = {
   description: string;
@@ -91,43 +91,17 @@ async function directoryFor(
   sessionID: string,
   signal: AbortSignal,
 ): Promise<string> {
-  try {
-    const session = await host.session.get({ sessionID }, { signal });
-    const directory = session.location?.directory;
-    if (typeof directory === "string" && directory.length > 0) return directory;
-  } catch {
-    // Fall back to the plugin instance directory when the session has no location.
-  }
-  return host.location.directory;
-}
-
-function withAskDefaults(
-  permissions: readonly V2PermissionRule[],
-): V2PermissionRule[] {
-  const rest = permissions.filter(
-    (rule) =>
-      !(
-        START_PERMISSIONS.has(rule.action) &&
-        rule.resource === "*" &&
-        rule.effect === "ask"
-      ),
-  );
-  return [
-    ...CROSS_REVIEW_START_PERMISSIONS.map(
-      (action) => ({ action, resource: "*", effect: "ask" }) as const,
-    ),
-    ...rest,
-  ];
-}
-
-function commandArguments(event: V2PromptEvent): string | undefined {
-  const metadata = event.metadata;
-  const named = metadata?.command;
-  if (named === "cross-review" && typeof metadata?.arguments === "string")
-    return metadata.arguments;
-  const text = event.prompt.text?.trim() ?? "";
-  const match = /^\/cross-review[\t ]+(\S[^\r\n]*)$/.exec(text);
-  return match?.[1];
+  signal.throwIfAborted();
+  const session = await host.session.get({ sessionID }, { signal });
+  signal.throwIfAborted();
+  const directory = session.location?.directory;
+  if (
+    session.id !== sessionID ||
+    typeof directory !== "string" ||
+    !directory.trim()
+  )
+    throw new Error("Cannot verify the current OpenCode V2 session directory");
+  return directory;
 }
 
 /**
@@ -137,10 +111,25 @@ function commandArguments(event: V2PromptEvent): string | undefined {
 export async function setup(ctx: V2Host): Promise<() => Promise<void>> {
   const restricted = new Map<string, ReadonlySet<string>>();
   const activity = new Map<string, V1Activity>();
-  const client = createV1Client(ctx, restricted, activity);
+  const destination = createChildDestinationVerifier(ctx);
+  const client = createV1Client(
+    ctx,
+    restricted,
+    activity,
+    destination.verifyDestination,
+  );
   const store = new FileCrossReviewRunStore();
   await store.cleanupExpiredRuns().catch(() => undefined);
-  const guard = createCrossReviewInvocationGuard(client);
+  const commands = new Map<
+    string,
+    { sessionID: string; args: string; receipt: Promise<boolean> }
+  >();
+  const guard = createCrossReviewInvocationGuard(client, (sessionID, id) => {
+    const command = commands.get(id);
+    if (command?.sessionID !== sessionID) return undefined;
+    commands.delete(id);
+    return command;
+  });
   // The adapter implements the methods the tools call. Their declared return
   // values still name the full V1 SDK Session, which this client does not build.
   const tools = createOpenCodeasierTools(client as unknown as RuntimeClient, {
@@ -177,9 +166,11 @@ export async function setup(ctx: V2Host): Promise<() => Promise<void>> {
   });
 
   await ctx.session.hook("context", (event) => {
-    const denied = restricted.get(event.sessionID);
-    if (denied === undefined) return;
-    for (const name of denied) Reflect.deleteProperty(event.tools, name);
+    filterReviewTools(
+      event.agent,
+      restricted.get(event.sessionID),
+      event.tools,
+    );
   });
 
   await ctx.agent.transform((editor) => {
@@ -191,13 +182,19 @@ export async function setup(ctx: V2Host): Promise<() => Promise<void>> {
   });
 
   await ctx.tool.hook("execute.before", async (event) => {
+    assertReviewTool(
+      event.agent,
+      restricted.get(event.sessionID),
+      event.tool,
+      event.info?.name,
+    );
     await guard["tool.execute.before"](
       { tool: event.tool, callID: event.id, sessionID: event.sessionID },
       { args: asQuestionArgs(event.input) },
     );
   });
   await ctx.tool.hook("execute.after", async (event) => {
-    if (event.status !== "completed") return;
+    if (event.status !== "completed" && event.status !== "error") return;
     await guard["tool.execute.after"](
       {
         tool: event.tool,
@@ -205,16 +202,17 @@ export async function setup(ctx: V2Host): Promise<() => Promise<void>> {
         sessionID: event.sessionID,
         args: asQuestionArgs(event.input),
       },
-      { title: "", output: "", metadata: event.result?.metadata ?? {} },
+      {
+        title: "",
+        output: "",
+        // A dismissed/failed matching question has no affirmative answer.
+        metadata:
+          event.status === "completed" ? (event.result?.metadata ?? {}) : {},
+      },
     );
   });
 
   await ctx.session.hook("prompt", async (event) => {
-    const args = commandArguments(event);
-    if (args !== undefined) {
-      await admitCommand(guard, event.sessionID, event.messageID, args);
-      return;
-    }
     await guard["chat.message"](
       { sessionID: event.sessionID },
       {
@@ -226,6 +224,44 @@ export async function setup(ctx: V2Host): Promise<() => Promise<void>> {
         ),
       },
     );
+  });
+
+  // V2 Markdown commands submit expanded text, with no command-executed
+  // event. Register the command itself and bind it to the exact admission.
+  // Never treat prompt metadata or a copied expansion as command provenance.
+  await ctx.command.transform((editor) => {
+    editor.add({
+      name: "cross-review",
+      description: "Configure or run independent cross-reviews",
+      async execute({ sessionID, prompt, delivery }) {
+        const id = `msg_${randomUUID()}`;
+        let settle!: (accepted: boolean) => void;
+        const receipt = new Promise<boolean>((resolve) => {
+          settle = resolve;
+        });
+        commands.set(id, { sessionID, args: prompt.text, receipt });
+        let admitted = false;
+        try {
+          const admission = await ctx.session.prompt({
+            ...prompt,
+            id,
+            sessionID,
+            delivery,
+            // Keep attachment/agent mention offsets within the original text.
+            text: `${prompt.text}\n\nThe user invoked /cross-review with the arguments above. Load the cross-review skill and follow it.`,
+          });
+          if (admission.id !== id)
+            throw new Error(
+              "OpenCode V2 returned an unexpected command admission ID",
+            );
+          admitted = true;
+        } finally {
+          settle(admitted);
+          commands.delete(id);
+        }
+      },
+    });
+    editor.add(destination.command);
   });
 
   const controller = new AbortController();
@@ -243,19 +279,6 @@ export async function setup(ctx: V2Host): Promise<() => Promise<void>> {
       });
       return;
     }
-    if (event.type !== "command.executed") return;
-    const name = event.data?.name;
-    const sessionID = event.data?.sessionID;
-    const messageID = event.data?.messageID;
-    const args = event.data?.arguments;
-    if (
-      name !== "cross-review" ||
-      typeof sessionID !== "string" ||
-      typeof messageID !== "string" ||
-      typeof args !== "string"
-    )
-      return;
-    await admitCommand(guard, sessionID, messageID, args);
   });
 
   return async () => {
@@ -328,23 +351,6 @@ function userMessage(sessionID: string, messageID: string): UserMessage {
   };
 }
 
-async function admitCommand(
-  guard: ReturnType<typeof createCrossReviewInvocationGuard>,
-  sessionID: string,
-  messageID: string,
-  args: string,
-) {
-  const parts = textParts(sessionID, messageID, `/cross-review ${args}`);
-  await guard["command.execute.before"](
-    { sessionID, command: "cross-review", arguments: args },
-    { parts },
-  );
-  await guard["chat.message"](
-    { sessionID },
-    { message: userMessage(sessionID, messageID), parts },
-  );
-}
-
 function asQuestionArgs(input: unknown): { questions?: unknown } {
   if (typeof input !== "object" || input === null) return {};
   return input as { questions?: unknown };
@@ -364,7 +370,7 @@ function listen(
         try {
           await onEvent(event);
         } catch {
-          // One event must not stop later command or deletion notices.
+          // One event must not stop later activity or deletion notices.
         }
       }
     } catch (error) {

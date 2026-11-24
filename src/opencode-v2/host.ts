@@ -13,7 +13,8 @@ export type V2SessionInfo = {
   parentID?: string;
   title?: string;
   time?: { created: number; updated?: number };
-  location?: { directory?: string };
+  location?: { directory?: string; workspaceID?: string };
+  permissions?: readonly V2PermissionRule[];
 };
 
 export type V2StructuredError = { type?: string; message?: string };
@@ -44,6 +45,7 @@ export type V2MessagePart =
 
 export type V2SessionMessage = {
   type?: string;
+  status?: string;
   id?: string;
   time?: { created?: number; completed?: number };
   text?: string;
@@ -106,14 +108,34 @@ export type V2PromptEvent = {
   metadata?: Record<string, unknown>;
 };
 
+export type V2CommandPrompt = {
+  text: string;
+  files?: readonly unknown[];
+  agents?: readonly unknown[];
+  skills?: readonly unknown[];
+};
+
+export type V2CommandDefinition = {
+  name: string;
+  description: string;
+  execute(input: {
+    sessionID: string;
+    prompt: V2CommandPrompt;
+    delivery: "queue" | "steer";
+  }): Promise<void>;
+};
+
 export type V2ContextEvent = {
   sessionID: string;
+  agent: string;
   tools: Record<string, { description: string; input: unknown }>;
 };
 
 export type V2ToolHookEvent = {
   tool: string;
   sessionID: string;
+  agent: string;
+  info?: { name: string };
   id: string;
   input: unknown;
   status?: "completed" | "error";
@@ -126,7 +148,12 @@ export type V2Event = {
 };
 
 export type V2Host = {
-  location: { directory: string };
+  location: { directory: string; workspaceID?: string };
+  command: {
+    transform(
+      callback: (editor: { add(command: V2CommandDefinition): void }) => void,
+    ): Promise<V2Registration>;
+  };
   session: {
     create(
       input: {
@@ -134,6 +161,7 @@ export type V2Host = {
         title?: string | null;
         location?: { directory: string } | null;
         agent?: string | null;
+        permissions?: readonly V2PermissionRule[];
       },
       request?: V2Request,
     ): Promise<V2SessionInfo>;
@@ -141,6 +169,15 @@ export type V2Host = {
       input: { sessionID: string },
       request?: V2Request,
     ): Promise<V2SessionInfo>;
+    move(
+      input: { sessionID: string; directory: string },
+      request?: V2Request,
+    ): Promise<void>;
+    remove(input: { sessionID: string }, request?: V2Request): Promise<void>;
+    command(
+      input: { sessionID: string; name: string; text: string },
+      request?: V2Request,
+    ): Promise<void>;
     list(
       input: {
         parentID?: string | null;
@@ -201,6 +238,10 @@ export type V2Host = {
     ): Promise<V2Registration>;
   };
   agent: {
+    get(
+      input: { agentID: string },
+      request?: V2Request,
+    ): Promise<{ data: { id: string } }>;
     transform(
       callback: (editor: V2AgentEditor) => void,
     ): Promise<V2Registration>;

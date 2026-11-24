@@ -25,6 +25,8 @@ export type SessionClient = {
       query?: { directory?: string; limit?: number };
       signal?: AbortSignal;
     }): Promise<SdkResult<Array<{ info: Message; parts: Part[] }>>>;
+    /** V2 exposes a compacted context window. Audit callers must not mistake it for the transcript. */
+    completeMessages?: SessionClient["session"]["messages"];
     children?(input: {
       path: { id: string };
       query?: { directory?: string };
@@ -39,6 +41,11 @@ export type SessionBundle = {
 };
 
 function failure(sessionID: string, result: SdkResult<unknown>) {
+  if (result.error?.name === "SessionHistoryIncompleteError")
+    return new SessionReviewError(
+      "SESSION_HISTORY_INCOMPLETE",
+      result.error.data.message,
+    );
   if (result.response.status === 404 || result.error?.name === "NotFoundError")
     return new SessionReviewError(
       "SESSION_NOT_FOUND",
@@ -71,11 +78,14 @@ export async function fetchSessionBundle(input: {
     input.signal?.throwIfAborted();
     if (session.error !== undefined || session.data === undefined)
       throw failure(input.sessionID, session);
-    const messages = await input.client.session.messages({
+    const query = {
       path: { id: input.sessionID },
       query: { directory: input.directory, limit: MAX_FETCH_MESSAGES + 1 },
       ...(input.signal === undefined ? {} : { signal: input.signal }),
-    });
+    };
+    const messages = input.client.session.completeMessages
+      ? await input.client.session.completeMessages(query)
+      : await input.client.session.messages(query);
     input.signal?.throwIfAborted();
     if (messages.error !== undefined || messages.data === undefined)
       throw failure(input.sessionID, messages);

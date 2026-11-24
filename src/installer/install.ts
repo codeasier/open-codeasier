@@ -12,8 +12,8 @@ import {
 import type { InstallTarget } from "./paths.js";
 
 export class AssetConflictError extends Error {
-  constructor(path: string) {
-    super(`Refusing to modify unowned or changed asset: ${path}`);
+  constructor(path: string, guidance = "") {
+    super(`Refusing to modify unowned or changed asset: ${path}${guidance}`);
     this.name = "AssetConflictError";
   }
 }
@@ -64,12 +64,29 @@ export async function installAssets(input: {
   assets: PackagedAsset[];
   packageVersion: string;
   dryRun: boolean;
+  opencodeV2?: boolean;
 }): Promise<{ written: string[]; removed: string[]; unchanged: string[] }> {
   const prior = await readManifest(input.target.root);
   const owned = new Map(prior?.files.map((file) => [file.path, file.sha256]));
-  const next = new Set<string>(
-    input.assets.map((asset) => asset.relativeTarget),
-  );
+  // V2 loads its command from setup(). The config Markdown transform can
+  // otherwise replace it after plugin setup, losing command provenance.
+  const command = "commands/cross-review.md";
+  const assets = input.opencodeV2
+    ? input.assets.filter((asset) => asset.relativeTarget !== command)
+    : input.assets;
+  if (input.opencodeV2) {
+    for (const name of [command, "command/cross-review.md"]) {
+      const path = join(input.target.root, name);
+      await rejectSymlinks(input.target.root, path);
+      const current = await currentHash(path);
+      if (current !== undefined && owned.get(name) !== current)
+        throw new AssetConflictError(
+          path,
+          ". Back up and rename the custom command outside OpenCode's command directories, then retry. V2 requires the native /cross-review command.",
+        );
+    }
+  }
+  const next = new Set<string>(assets.map((asset) => asset.relativeTarget));
   const result = {
     written: [] as string[],
     removed: [] as string[],
@@ -77,7 +94,7 @@ export async function installAssets(input: {
   };
   const staged = new Map<string, Buffer>();
 
-  for (const asset of input.assets) {
+  for (const asset of assets) {
     validateAssetPath(asset.relativeTarget);
     const contents = await readFile(asset.source);
     if (sha256(contents) !== asset.sha256)
@@ -123,7 +140,7 @@ export async function installAssets(input: {
   await writeManifest(input.target.root, {
     schemaVersion: 1,
     packageVersion: input.packageVersion,
-    files: input.assets.map(({ relativeTarget: path, sha256 }) => ({
+    files: assets.map(({ relativeTarget: path, sha256 }) => ({
       path,
       sha256,
     })),
