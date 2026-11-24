@@ -5,7 +5,13 @@ OpenCode-native workflow skills, configurable cross-review orchestration, cross-
 ## Requirements
 
 - Node.js 22 or newer
-- OpenCode 1.14.49 or newer
+- OpenCode 1.14.49 or newer, or OpenCode V2
+
+OpenCode V1 loads the `server()` export. OpenCode V2 does not run V1 plugins;
+it calls `setup()` on the package root. One install serves both. V2 registers
+the same tools, asks before `cross_review` and `cross_review_start`, and still
+requires an explicit `/cross-review <target>` command plus the startup
+confirmation. Reviewer, gatherer, and judge sessions stay read-only.
 
 ## Install
 

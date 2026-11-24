@@ -102,6 +102,16 @@ export function createCrossReviewInvocationGuard(client: InvocationClient) {
 
   const message: NonNullable<Hooks["chat.message"]> = async (input, output) => {
     const invocation = pending.get(input.sessionID);
+    // OpenCode V2 can deliver the same admitted user message twice (the
+    // command event and the prompt hook). A repeat must not drop the grant
+    // or its one-time confirmation.
+    if (
+      invocation === undefined &&
+      output.message.role === "user" &&
+      output.message.sessionID === input.sessionID &&
+      grants.get(input.sessionID)?.userMessageID === output.message.id
+    )
+      return;
     pending.delete(input.sessionID);
     grants.delete(input.sessionID);
     if (

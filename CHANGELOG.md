@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Load the same tools on OpenCode V2. The package root export keeps the V1
+  `server()` entry and adds `setup()`, which registers `cross_review`, the
+  async cross-review protocol, `session_review`, and `cross_review_audit`.
+  V2 child prompts keep the read-only tool deny list, start permissions still
+  default to ask, and `/cross-review` authorization follows `command.executed`
+  plus the existing confirmation gate. Child session status is tracked from
+  `session.status` and execution events, because the V2 plugin context has no
+  status query. Startup confirmation still reads the `question` tool answer.
+
 ## [0.3.8] - 2026-11-06
 
 ### Fixed
